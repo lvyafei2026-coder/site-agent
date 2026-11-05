@@ -1,7 +1,7 @@
 # Render Blueprint — Background Worker
 # 注意：免费实例的文件系统是临时的（重启即丢），而 LangGraph checkpointer 需要持久化，
-# 因此这里用 Starter 计划 + 1GB 磁盘（$7/月）。若想保持 $0，见 docs/tech-design.md §5.3
-# 的 Postgres checkpointer 方案（Neon 免费层）。
+# 因此这里用 Starter 计划 + 1GB 磁盘（$7/月）。若想保持 $0，见 docs/03-tech-design.md §2
+# 的 Postgres checkpointer 方案（Neon 免费层）。部署步骤见 docs/04-runbook.md。
 services:
   - type: worker
     name: site-agent
@@ -23,6 +23,8 @@ services:
       - key: CF_API_TOKEN
         sync: false
       - key: D1_DATABASE_ID
+        sync: false
+      - key: KV_NAMESPACE_ID
         sync: false
       - key: GITHUB_TOKEN
         sync: false
@@ -51,6 +53,8 @@ services:
       - key: IMAP_USER
         sync: false
       - key: IMAP_PASS
+        sync: false
+      - key: DEVTO_API_KEY
         sync: false
     disk:
       name: agent-data

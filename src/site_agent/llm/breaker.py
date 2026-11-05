@@ -26,7 +26,12 @@ class BreakerPaused(RuntimeError):
 
 
 def ensure_alive(scope: str) -> None:
-    flag = kv.get(f"pause:{scope}")
+    """熔断器自身故障时 fail-open：读不到标记就按未熔断放行。"""
+    try:
+        flag = kv.get(f"pause:{scope}")
+    except Exception:  # noqa: BLE001 - 保护装置不应阻断业务
+        log.warning("读熔断标记失败，按未熔断放行 scope=%s", scope)
+        return
     if flag:
         raise BreakerPaused(scope, flag)
 
@@ -43,16 +48,25 @@ def record(scope: str, ok: bool, error: str | None = None) -> None:
 
 def pause(scope: str, reason: str) -> None:
     payload = {"reason": reason, "ts": int(time.time())}
-    kv.put(f"pause:{scope}", payload, ttl_sec=BREAKER_COOLDOWN_SEC)
+    try:
+        kv.put(f"pause:{scope}", payload, ttl_sec=BREAKER_COOLDOWN_SEC)
+    except Exception:  # noqa: BLE001 - 写标记失败不能掩盖原始错误
+        log.exception("写熔断标记失败 scope=%s", scope)
     _failures[scope] = 0
     log.error("熔断触发 scope=%s reason=%s", scope, reason)
-    send_alert(
-        f"[site-agent] 熔断：{scope}",
-        f"<p>{scope} 连续失败 {BREAKER_THRESHOLD} 次，已暂停 "
-        f"{BREAKER_COOLDOWN_SEC // 60} 分钟。</p><pre>{reason}</pre>",
-    )
+    try:
+        send_alert(
+            f"[site-agent] 熔断：{scope}",
+            f"<p>{scope} 连续失败 {BREAKER_THRESHOLD} 次，已暂停 "
+            f"{BREAKER_COOLDOWN_SEC // 60} 分钟。</p><pre>{reason}</pre>",
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("熔断告警发送失败 scope=%s", scope)
 
 
 def clear(scope: str) -> None:
-    kv.delete(f"pause:{scope}")
+    try:
+        kv.delete(f"pause:{scope}")
+    except Exception:  # noqa: BLE001
+        log.exception("清除熔断标记失败 scope=%s", scope)
     _failures[scope] = 0
