@@ -1,0 +1,87 @@
+# Copyright (c) 2026 lvyafei · https://toolara.dev
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE。
+
+"""Google Search Console：官方 API（替代 v1.0 的浏览器抓取）。
+
+需要：
+1. Google Cloud 建服务账号，下载 JSON，填入 GSC_SA_JSON
+2. 在 GSC 把服务账号邮箱加为该资源（sc-domain:toolara.dev）的所有者
+3. 启用 Search Console API 与 Indexing API
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+from datetime import date, timedelta
+from typing import Any
+
+log = logging.getLogger(__name__)
+
+SCOPES = [
+    "https://www.googleapis.com/auth/webmasters.readonly",
+    "https://www.googleapis.com/auth/indexing",
+]
+
+
+def _credentials():
+    from google.oauth2 import service_account
+
+    raw = os.environ.get("GSC_SA_JSON", "")
+    if not raw:
+        return None
+    info = json.loads(raw)
+    return service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+
+
+def _property() -> str:
+    return os.environ.get("GSC_PROPERTY", "sc-domain:toolara.dev")
+
+
+def search_analytics(days: int = 7, dimensions: tuple[str, ...] = ("page",)) -> list[dict[str, Any]]:
+    """按维度拉取展示/点击/CTR/排名。无凭据时返回空列表（fail-open）。"""
+    creds = _credentials()
+    if creds is None:
+        log.info("未配置 GSC_SA_JSON，跳过 GSC 数据")
+        return []
+    try:
+        from googleapiclient.discovery import build
+
+        service = build("searchconsole", "v1", credentials=creds, cache_discovery=False)
+        end = date.today() - timedelta(days=2)      # GSC 数据有 2 天延迟
+        start = end - timedelta(days=days)
+        body = {
+            "startDate": start.isoformat(),
+            "endDate": end.isoformat(),
+            "dimensions": list(dimensions),
+            "rowLimit": 200,
+        }
+        resp = (
+            service.searchanalytics()
+            .query(siteUrl=_property(), body=body)
+            .execute()
+        )
+        return resp.get("rows", [])
+    except Exception as exc:  # noqa: BLE001 - 采集失败不应阻塞日报
+        log.warning("GSC 查询失败：%s", exc)
+        return []
+
+
+def submit_url(url: str) -> bool:
+    """提交新增/更新的 URL 给 Indexing API（配额 200/天）。"""
+    creds = _credentials()
+    if creds is None:
+        return False
+    try:
+        from googleapiclient.discovery import build
+
+        service = build("indexing", "v3", credentials=creds, cache_discovery=False)
+        service.urlNotifications().publish(
+            body={"url": url, "type": "URL_UPDATED"}
+        ).execute()
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Indexing 提交失败 %s: %s", url, exc)
+        return False

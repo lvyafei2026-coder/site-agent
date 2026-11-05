@@ -1,0 +1,8 @@
+# 统一使用 LF：本机 Windows 开发，Render 上是 Linux，避免换行符反复变动
+* text=auto eol=lf
+
+# 二进制文件不做换行转换
+*.png binary
+*.jpg binary
+*.ico binary
+*.sqlite binary

@@ -1,0 +1,58 @@
+# Render Blueprint — Background Worker
+# 注意：免费实例的文件系统是临时的（重启即丢），而 LangGraph checkpointer 需要持久化，
+# 因此这里用 Starter 计划 + 1GB 磁盘（$7/月）。若想保持 $0，见 docs/tech-design.md §5.3
+# 的 Postgres checkpointer 方案（Neon 免费层）。
+services:
+  - type: worker
+    name: site-agent
+    runtime: python
+    plan: starter
+    region: singapore
+    buildCommand: pip install uv && uv sync --frozen --no-dev
+    startCommand: uv run python -m site_agent.main
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: TZ
+        value: Asia/Shanghai
+      - key: AGENT_STATE_DIR
+        value: /data
+      - key: CF_ACCOUNT_ID
+        sync: false
+      - key: CF_API_TOKEN
+        sync: false
+      - key: D1_DATABASE_ID
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GH_ORG
+        sync: false
+      - key: GSC_SA_JSON
+        sync: false
+      - key: GSC_PROPERTY
+        value: sc-domain:toolara.dev
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_BASE_URL
+        sync: false
+      - key: RADAR_URL
+        sync: false
+      - key: RADAR_USER
+        sync: false
+      - key: RADAR_PASS
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: IMAP_HOST
+        sync: false
+      - key: IMAP_USER
+        sync: false
+      - key: IMAP_PASS
+        sync: false
+    disk:
+      name: agent-data
+      mountPath: /data
+      sizeGB: 1
