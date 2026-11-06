@@ -13,6 +13,18 @@ SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 ## 1. 系统上下文
 
+**系统全景图（手绘定稿，权威版）：**
+
+![系统架构全景图](images/architecture-overview.png)
+
+图中要素速查（与后文各节一一对应）：
+
+- **入口代理（粉色）**：所有流量的唯一入口，代理转发经 `service binding` 到 33 个子站 Worker；埋点 `/_ev` 与轻登录 `/_auth` 只写 D1（web-clicks-analytics 库的 `events` / `auth_users` 表）。
+- **google-trend-radar（金色）**：数据采集（Google Trends 热词、Suggest 种子词、DDG SERP）→ 判死打分 → 候选池写 KV（RadarKV）；QuotaKV 记录额度用量；候选与统计数据供给 site-agent。
+- **site-agent（绿色）**：LangGraph 五节点状态机，sense 读 GSC/KV/radar，decide 用 LLM 预案 + KV 规则缓冲，execute 写 GitHub / 通知 D1 / 状态栏 KV / DOMAIN_MAP，verify 更新 KV 状态、通知 D1；cron ×5 由 APScheduler 驱动；外部依赖 GSC / Reddit / Devto + Resend / IMAP 审批。
+- **GitHub（蓝色圆柱）**：建站产物存储——agent push 代码，CF 构建部署到舰队；fleet ⇢ github 为 Worker 关联（部署目标）。
+- **存储权限边界**：D1 = proxy 只写 / radar 只读 / agent 读写；KV 按命名空间分 RadarKV（radar）与 QuotaKV（agent 熔断、审批、额度）。
+
 先看这个 Agent 在真实世界里跟谁打交道。
 
 ```mermaid
