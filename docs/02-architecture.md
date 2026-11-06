@@ -21,7 +21,7 @@ SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 - **入口代理（粉色）**：所有流量的唯一入口，代理转发经 `service binding` 到 33 个子站 Worker；埋点 `/_ev` 与轻登录 `/_auth` 只写 D1（web-clicks-analytics 库的 `events` / `auth_users` 表）。
 - **google-trend-radar（金色）**：纯数据采集与规则判断（无页面、无代理依赖）——Google Trends 热词、Suggest 种子词、DDG SERP → 判死打分 → 候选池写 KV（RadarKV）；QuotaKV 记录额度用量；候选与统计数据供给 site-agent。
-- **site-console（人机界面层，2026-11-06 新增）**：站群**全部页面与页面操作**的载体——总览 / 候选表 / 地区榜 / 埋点看板 / 报告 / 数据源，以及后续 Agent 状态页。`/api/stats` 自持（绑 D1 只读），其余 `/api/*` 服务端代理回 radar（业务逻辑不复制）。与 radar 一样不走 tool-proxy 代理（管理面与访客入口无关），自定义域直绑。
+- **site-console（人机界面层，2026-11-06 新增）**：站群**全部页面与页面操作**的载体——总览 / 候选表 / 地区榜 / 埋点看板 / 报告 / 数据源，以及后续 Agent 状态页。`/api/stats` 自持（绑 D1 只读）；候选/地区榜/收藏/标签等**直读同一个 KV**（不经过 radar）；只有 refresh / analyze / serp / trend 四个"计算型"接口经 **service binding** 内网调 radar。与 radar 一样不走 tool-proxy 代理（管理面与访客入口无关），自定义域直绑。
 - **site-agent（绿色）**：LangGraph 五节点状态机，sense 读 GSC/KV/radar，decide 用 LLM 预案 + KV 规则缓冲，execute 写 GitHub / 通知 D1 / 状态栏 KV / DOMAIN_MAP，verify 更新 KV 状态、通知 D1；cron ×5 由 APScheduler 驱动；外部依赖 GSC / Reddit / Devto + Resend / IMAP 审批。
 - **GitHub（蓝色圆柱）**：建站产物存储——agent push 代码，CF 构建部署到舰队；fleet ⇢ github 为 Worker 关联（部署目标）。
 - **存储权限边界**：D1 = proxy 只写 / site-console 只读 / agent 读写；KV 按命名空间分 RadarKV（radar 写、site-console 读写）与 QuotaKV（agent 熔断、审批、额度）。
