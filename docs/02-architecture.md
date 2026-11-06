@@ -24,6 +24,7 @@ SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 - **site-agent（绿色）**：LangGraph 五节点状态机，sense 读 GSC/KV/radar，decide 用 LLM 预案 + KV 规则缓冲，execute 写 GitHub / 通知 D1 / 状态栏 KV / DOMAIN_MAP，verify 更新 KV 状态、通知 D1；cron ×5 由 APScheduler 驱动；外部依赖 GSC / Reddit / Devto + Resend / IMAP 审批。
 - **GitHub（蓝色圆柱）**：建站产物存储——agent push 代码，CF 构建部署到舰队；fleet ⇢ github 为 Worker 关联（部署目标）。
 - **存储权限边界**：D1 = proxy 只写 / radar 只读 / agent 读写；KV 按命名空间分 RadarKV（radar）与 QuotaKV（agent 熔断、审批、额度）。
+- **后台管理系统（人机界面）**：归属 radar，不进 agent——radar 已有鉴权、页面框架和 D1 只读通道，agent 的任务/状态表本身落 D1，radar 加一个「Agent」页（运行状态 / 任务历史 / 审批队列）即可看到 agent 数据，无需 agent 提供页面。执行追踪（LangSmith/Langfuse）是 SaaS，agent 只配环境变量接入，用它们自带的界面。
 
 先看这个 Agent 在真实世界里跟谁打交道。
 
