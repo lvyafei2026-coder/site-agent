@@ -20,11 +20,11 @@ SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 图中要素速查（与后文各节一一对应）：
 
 - **入口代理（粉色）**：所有流量的唯一入口，代理转发经 `service binding` 到 33 个子站 Worker；埋点 `/_ev` 与轻登录 `/_auth` 只写 D1（web-clicks-analytics 库的 `events` / `auth_users` 表）。
-- **google-trend-radar（金色）**：数据采集（Google Trends 热词、Suggest 种子词、DDG SERP）→ 判死打分 → 候选池写 KV（RadarKV）；QuotaKV 记录额度用量；候选与统计数据供给 site-agent。
+- **google-trend-radar（金色）**：纯数据采集与规则判断（无页面、无代理依赖）——Google Trends 热词、Suggest 种子词、DDG SERP → 判死打分 → 候选池写 KV（RadarKV）；QuotaKV 记录额度用量；候选与统计数据供给 site-agent。
+- **site-console（人机界面层，2026-11-06 新增）**：埋点看板 `/stats` 与后续 Agent 状态页的载体；直接绑 D1 只读 + radar 的 KV 命名空间；与 radar 一样不走 tool-proxy 代理（管理面与访客入口无关），自定义域直绑。
 - **site-agent（绿色）**：LangGraph 五节点状态机，sense 读 GSC/KV/radar，decide 用 LLM 预案 + KV 规则缓冲，execute 写 GitHub / 通知 D1 / 状态栏 KV / DOMAIN_MAP，verify 更新 KV 状态、通知 D1；cron ×5 由 APScheduler 驱动；外部依赖 GSC / Reddit / Devto + Resend / IMAP 审批。
 - **GitHub（蓝色圆柱）**：建站产物存储——agent push 代码，CF 构建部署到舰队；fleet ⇢ github 为 Worker 关联（部署目标）。
-- **存储权限边界**：D1 = proxy 只写 / radar 只读 / agent 读写；KV 按命名空间分 RadarKV（radar）与 QuotaKV（agent 熔断、审批、额度）。
-- **后台管理系统（人机界面）**：归属 radar，不进 agent——radar 已有鉴权、页面框架和 D1 只读通道，agent 的任务/状态表本身落 D1，radar 加一个「Agent」页（运行状态 / 任务历史 / 审批队列）即可看到 agent 数据，无需 agent 提供页面。执行追踪（LangSmith/Langfuse）是 SaaS，agent 只配环境变量接入，用它们自带的界面。
+- **存储权限边界**：D1 = proxy 只写 / site-console 只读 / agent 读写；KV 按命名空间分 RadarKV（radar 写、site-console 读写）与 QuotaKV（agent 熔断、审批、额度）。
 
 先看这个 Agent 在真实世界里跟谁打交道。
 
