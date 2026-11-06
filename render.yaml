@@ -22,6 +22,8 @@ services:
         sync: false
       - key: CF_API_TOKEN
         sync: false
+      - key: FLEET_DOMAIN
+        sync: false          # 站群主域，如 toolara.dev；子站 host / radar / GSC 都从这里派生
       - key: D1_DATABASE_ID
         sync: false
       - key: KV_NAMESPACE_ID
@@ -33,13 +35,13 @@ services:
       - key: GSC_SA_JSON
         sync: false
       - key: GSC_PROPERTY
-        value: sc-domain:toolara.dev
+        sync: false          # 留空 = sc-domain:<FLEET_DOMAIN>
       - key: LLM_API_KEY
         sync: false
       - key: LLM_BASE_URL
         sync: false
       - key: RADAR_URL
-        sync: false
+        sync: false          # 留空 = https://radar.<FLEET_DOMAIN>
       - key: RADAR_USER
         sync: false
       - key: RADAR_PASS

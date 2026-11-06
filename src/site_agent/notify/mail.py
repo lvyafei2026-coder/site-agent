@@ -15,7 +15,12 @@ from ..config import env
 log = logging.getLogger(__name__)
 
 RESEND_API = "https://api.resend.com/emails"
-FROM = "site-agent <hello@toolara.dev>"
+
+
+def _from() -> str:
+    from ..config import CONTACT_EMAIL
+
+    return env("MAIL_FROM", f"site-agent <{CONTACT_EMAIL}>")
 
 
 def send(subject: str, html: str, to: str | None = None) -> bool:
@@ -28,7 +33,7 @@ def send(subject: str, html: str, to: str | None = None) -> bool:
         resp = requests.post(
             RESEND_API,
             headers={"Authorization": f"Bearer {api_key}"},
-            json={"from": FROM, "to": [recipient], "subject": subject, "html": html},
+            json={"from": _from(), "to": [recipient], "subject": subject, "html": html},
             timeout=20,
         )
         if resp.status_code >= 300:

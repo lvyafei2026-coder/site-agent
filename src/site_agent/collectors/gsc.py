@@ -6,7 +6,7 @@
 
 需要：
 1. Google Cloud 建服务账号，下载 JSON，填入 GSC_SA_JSON
-2. 在 GSC 把服务账号邮箱加为该资源（sc-domain:toolara.dev）的所有者
+2. 在 GSC 把服务账号邮箱加为该资源（默认 sc-domain:<FLEET_DOMAIN>）的所有者
 3. 启用 Search Console API 与 Indexing API
 """
 
@@ -37,7 +37,10 @@ def _credentials():
 
 
 def _property() -> str:
-    return os.environ.get("GSC_PROPERTY", "sc-domain:toolara.dev")
+    # 默认按主域派生 domain 属性；特殊资源（URL 前缀等）用 GSC_PROPERTY 覆盖
+    from ..config import FLEET_DOMAIN
+
+    return os.environ.get("GSC_PROPERTY", f"sc-domain:{FLEET_DOMAIN}")
 
 
 def search_analytics(days: int = 7, dimensions: tuple[str, ...] = ("page",)) -> list[dict[str, Any]]:

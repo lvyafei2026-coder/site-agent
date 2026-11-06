@@ -18,7 +18,7 @@ SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 |---|---|---|---|---|
 | 1 | `CF_ACCOUNT_ID` | Cloudflare 控制台 URL 里那串 32 位 hex | — | ✅ |
 | 2 | `CF_API_TOKEN` | My Profile → API Tokens → Create Token | **只勾两项**：D1 Edit、Workers KV Storage Edit | ✅ |
-| 3 | `D1_DATABASE_ID` | Workers & Pages → D1 → 目标库（tool-proxy 的 CLICKS 库） | 建表要用同一个库 | ✅ |
+| 3 | `D1_DATABASE_ID` | Workers & Pages → D1 → 目标库（入口代理写埋点的 CLICKS 库） | 建表要用同一个库 | ✅ |
 | 4 | `KV_NAMESPACE_ID` | Workers & Pages → KV → 命名空间 ID | 建议单独建一个给 agent 用，或复用现有 | ✅ |
 | 5 | `GITHUB_TOKEN` | Settings → Developer settings → Fine-grained tokens | **仅选子站仓库**，Repository permissions → Contents: Read and write | ✅ |
 | 6 | `GH_ORG` | GitHub 用户名或组织名 | 与子站仓库的 owner 一致 | ✅ |
@@ -51,7 +51,7 @@ uv sync                 # 或 python -m venv .venv && .venv/bin/pip install -e .
 
 ### 步骤 2 · 建 D1 表
 
-在 tool-proxy 的 D1 库里执行 `migrations/0001_agent_tables.sql`：
+在入口代理写入埋点的那个 D1 库里执行 `migrations/0001_agent_tables.sql`：
 
 ```bash
 # 方式一：控制台
@@ -136,6 +136,7 @@ site-agent 已启动，等待调度（TZ=Asia/Shanghai）
 |---|---|---|---|
 | `CF_ACCOUNT_ID` | ✅ | — | Cloudflare 账户 ID |
 | `CF_API_TOKEN` | ✅ | — | 仅需 D1 Edit + KV Edit |
+| `FLEET_DOMAIN` | ✅ | 当前实例 `toolara.dev` | **站群主域**。子站 host、radar 地址、GSC 资源、外链话术都从这里派生；换站群只改这一个变量 + `SITES` 清单 + 凭据 |
 | `D1_DATABASE_ID` | ✅ | — | D1 库 ID（与 events 同库） |
 | `KV_NAMESPACE_ID` | ✅ | — | KV 命名空间 ID |
 | `GITHUB_TOKEN` | ✅ | — | 细粒度 PAT，Contents: RW |
@@ -143,12 +144,14 @@ site-agent 已启动，等待调度（TZ=Asia/Shanghai）
 | `LLM_API_KEY` | ✅ | — | LLM 密钥 |
 | `LLM_BASE_URL` | 否 | 官方 | 兼容端点，如 `https://xxx/v1` |
 | `GSC_SA_JSON` | ✅ | — | 服务账号 JSON 单行 |
-| `GSC_PROPERTY` | 否 | `sc-domain:toolara.dev` | GSC 资源标识 |
+| `GSC_PROPERTY` | 否 | 留空 = `sc-domain:<FLEET_DOMAIN>` | GSC 资源标识 |
 | `RESEND_API_KEY` | 否 | — | 缺失则只记日志不发信 |
+| `CONTACT_EMAIL` | 否 | 当前实例 `hello@toolara.dev` | 运营者联系方式：邮件发件人、外链采集 UA 的 contact |
+| `MAIL_FROM` | 否 | `site-agent <CONTACT_EMAIL>` | 覆盖发件人 |
 | `ADMIN_EMAIL` | 否 | — | 收件人（日报 / 告警 / 审批） |
 | `IMAP_HOST` | 否 | `imap.gmail.com` | 审批回复轮询 |
 | `IMAP_USER` / `IMAP_PASS` | 否 | — | 缺失则只能用 CLI 审批 |
-| `RADAR_URL` | 否 | `https://radar.toolara.dev` | 候选词来源 |
+| `RADAR_URL` | 否 | 留空 = `https://radar.<FLEET_DOMAIN>` | 候选词来源 |
 | `RADAR_USER` / `RADAR_PASS` | 否 | — | radar Basic Auth |
 | `DEVTO_API_KEY` | 否 | — | 缺失则 Dev.to 渠道降级为草稿 |
 | `AGENT_STATE_DIR` | 否 | `./data` | **Render 上必须是 `/data`** |
@@ -229,7 +232,7 @@ uv run python -m site_agent.resume 'gen-page:2026-11-05' no
 
 ### 5.1 日报收到但数据全是 0
 
-**原因**：`tasks/daily_report.py` 的 `SQL_DAILY` 里的列名与 tool-proxy 实际 `events` 表不符。
+**原因**：`tasks/daily_report.py` 的 `SQL_DAILY` 里的列名与入口代理实际 `events` 表不符。
 
 **处理**：
 
@@ -371,7 +374,7 @@ D1 里的台账**不受影响**（那是唯一真相源）。
 - ❌ 不要给 `CF_API_TOKEN` 加 Workers Scripts: Edit 权限（Agent 不需要改站点代码）
 - ❌ 不要给 `GITHUB_TOKEN` 开 `admin` 或 `delete` 权限
 - ❌ 不要把 `.env` 提交进仓库（`.gitignore` 已排除，但用 `git add -f` 能绕过）
-- ❌ 不要手动往 `events` / `candidates` 表写数据（那是 tool-proxy 与 radar 的领地）
+- ❌ 不要手动往 `events` / `candidates` 表写数据（那是入口代理与 radar 的领地）
 - ❌ 不要在 Render 上把 instances 调成 > 1（checkpointer 会锁冲突）
 - ❌ 不要把 `AGENT_STATE_DIR` 指向非持久路径
 

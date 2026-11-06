@@ -20,10 +20,10 @@ log = logging.getLogger(__name__)
 
 
 def candidates(status: str = "doing", limit: int = 20) -> list[dict[str, Any]]:
-    base = os.environ.get("RADAR_URL", "").rstrip("/")
-    if not base:
-        log.warning("未配置 RADAR_URL，跳过候选词读取")
-        return []
+    # 地址默认从 FLEET_DOMAIN 派生（config.RADAR_URL），无需显式配置
+    from ..config import RADAR_URL
+
+    base = RADAR_URL.rstrip("/")
     try:
         resp = requests.get(
             f"{base}/api/candidates",

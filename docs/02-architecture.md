@@ -27,8 +27,8 @@ graph TB
         AGENT["运营 Agent<br/>感知 → 决策 → 执行 → 验证 → 反馈"]
     end
 
-    subgraph FLEET["toolara.dev 站群（既有系统，运行在 Cloudflare）"]
-        PROXY["tool-proxy<br/>统一入口 / 埋点 / sitemap"]
+    subgraph FLEET["站群（既有系统，运行在 Cloudflare）"]
+        GATEWAY["入口代理 gateway<br/>统一入口 / 埋点 / sitemap"]
         SITES["33 个子站 Workers<br/>各自独立仓库"]
         STORE["D1 / KV / R2"]
         RADAR["radar<br/>选题雷达"]
@@ -40,10 +40,10 @@ graph TB
         MAIL["Resend + IMAP"]
     end
 
-    VISITOR -->|"HTTPS 访问"| PROXY
-    PROXY --> SITES
-    PROXY -->|"写 events"| STORE
-    GOOGLE -->|"抓取 / 排名"| PROXY
+    VISITOR -->|"HTTPS 访问"| GATEWAY
+    GATEWAY --> SITES
+    GATEWAY -->|"写 events"| STORE
+    GOOGLE -->|"抓取 / 排名"| GATEWAY
 
     AGENT -->|"读 events / 读候选词"| STORE
     AGENT -->|"读 candidates"| RADAR
@@ -344,7 +344,7 @@ graph LR
 
 | 系统 | Agent 的权限 | 绝对不做 |
 |---|---|---|
-| tool-proxy | 只读它写入的 `events` 数据；只读它的站点路径清单 | 不改路由、不改埋点脚本、不改 robots/sitemap 生成逻辑 |
+| 入口代理（gateway） | 只读它写入的 `events` 数据；只读它的站点路径清单 | 不改路由、不改埋点脚本、不改 robots/sitemap 生成逻辑 |
 | radar | 只读 `candidates`（按 `verdict=做` 过滤） | 不改采集 cron、不改打分算法、不写候选池 |
 | 33 个子站 | 只新增 HTML 文件并 push | 不改现有页面、不改样式、不改 `wrangler.toml`；不删任何文件 |
 | D1 | 只 `INSERT` / 有限 `UPDATE`，只操作 `agent_*` 三张表 | 不 `DELETE`（客户端层直接拒绝）；不碰 `events` / `candidates` 的写 |
@@ -352,6 +352,18 @@ graph LR
 | Workers AI | 完全不用 | 账户级 10k neurons/天 留给出图站（figurine 12 张 + creative 8 张） |
 
 **为什么这么严**：站群是运行中的生产资产，有真实流量和收录记录。Agent 是新增的自动化，一旦出问题必须是"少做一件事"，而不是"弄坏一件已有的事"。所有权限都按这个原则收紧。
+
+### 7.1 radar 定时任务的归属
+
+radar（选题雷达）自己挂着几条 Cloudflare cron。哪些移进 Agent、哪些留下，判据只有一条：**任务是否涉及决策、审批或跨系统编排**——这是 Agent 的价值所在，也是它相比裸 cron 多出来的东西（状态机、熔断、人审、台账）。纯采集和纯监控从这个判据里得不到任何收益，反而多一层依赖。
+
+| radar cron | 性质 | 归属 | 理由 |
+|---|---|---|---|
+| `0 */6 * * *` 抓取（Trends / Suggest / SERP / 趋势 → KV） | 纯数据采集，无决策无审批 | **留在 radar** | radar 的定位就是"数据抓取的基础服务"，这条管道是它本体的一部分。CF cron 免费、稳定、不依赖 Render 存活；Agent 接管还得让 radar 暴露内部触发接口或复制抓取代码，两者都更差。Render 免费实例会休眠重启，把基础数据管道放上去是可靠性倒退 |
+| `0 */2 * * *` 账户额度预警巡检（读共享 KV → 汇总 → 发邮件） | 运维监控 + 告警 | **Agent 稳定运行后接管** | 它和 Agent 的熔断/通知体系天然重叠，长期看属于 Agent 的运维面。但它是当前活着的防线，而 Agent 还没上线——把活防线迁进未上线系统是风险倒挂。阶段 1 日报跑稳一个月后迁移，radar 删该条 cron |
+| （已停用的 autopilot：每小时 AI 分析一个词） | LLM 决策类任务 | **天生属于 Agent** | 唯一真正"决策类"的任务。恢复时不给 radar 加回 cron，由 Agent 的 `decide` 节点驱动：选词 → 分析 → 写 KV → radar 前端展示。radar 保持"执行者 + 数据源"，调度权交给 Agent |
+
+一句话：**采集留在源头，监控随 Agent 成熟迁移，决策任务从第一天起就归 Agent。** Agent 对 radar 的关系始终是"读它的数据"，不是"替它跑"。
 
 ---
 
@@ -446,4 +458,4 @@ graph LR
 | 写操作怎么把关？ | `interrupt()` 挂起 + 邮件回复；白名单渠道（Dev.to）例外 |
 | 失败怎么办？ | 重试 2 次 → 连续 3 次熔断 30 分钟 → 邮件告警 |
 | 重启会丢什么？ | 不会丢状态；正在跑的那一步从头重跑（所以动作必须幂等） |
-| 不碰什么？ | tool-proxy 路由、radar 采集、各站现有页面、D1 的 `events`/`candidates` 写、Workers AI 额度 |
+| 不碰什么？ | 入口代理路由、radar 采集、各站现有页面、D1 的 `events`/`candidates` 写、Workers AI 额度 |

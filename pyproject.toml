@@ -1,7 +1,7 @@
 [project]
 name = "site-agent"
 version = "0.1.0"
-description = "Automated ops agent for toolara.dev site fleet (Render + LangGraph + Cloudflare)"
+description = "Automated ops agent for a multi-site fleet on Cloudflare (Render + LangGraph)"
 requires-python = ">=3.11"
 authors = [{ name = "lvyafei", email = "hello@toolara.dev" }]
 license = { text = "PolyForm-Noncommercial-1.0.0" }

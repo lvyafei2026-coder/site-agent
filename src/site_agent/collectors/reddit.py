@@ -16,7 +16,13 @@ import requests
 
 log = logging.getLogger(__name__)
 
-UA = "site-agent/0.1 (read-only research; contact: hello@toolara.dev)"
+def _ua() -> str:
+    from ..config import CONTACT_EMAIL
+
+    return f"site-agent/0.1 (read-only research; contact: {CONTACT_EMAIL})"
+
+
+UA = _ua()
 
 
 def search(query: str, limit: int = 15, timeframe: str = "week") -> list[dict[str, Any]]:

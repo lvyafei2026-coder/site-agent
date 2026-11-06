@@ -21,17 +21,30 @@ def env(key: str, default: str | None = None, *, required: bool = False) -> str:
     return value or ""
 
 
+# 站群主域。本项目对「某个具体站群」的全部绑定都收敛到这一个变量：
+# 子站 host、radar 地址、GSC 资源、外链话术里的域名，全部从这里派生。
+# 换一个站群 = 改这一个变量 + SITES 清单 + 各项凭据，代码零修改。
+FLEET_DOMAIN = env("FLEET_DOMAIN", "toolara.dev")
+
+
 @dataclass(frozen=True)
 class SiteConfig:
-    """一个子站的部署目标（repo 名 = Worker 名 = 目录名）。"""
+    """一个子站的部署目标（repo 名 = Worker 名 = 目录名）。
+
+    host 只在需要完整域名时由 FLEET_DOMAIN 派生；本表本身不绑定任何具体域名。
+    """
 
     name: str
-    host: str
+    subdomain: str          # 子域前缀；空字符串表示主域本身
     repo_name: str
-    brand: str = "Toolara"
+    brand: str = ""
     lang: str = "en"
     branch: str = "main"
     daily_limit: int = 5
+
+    @property
+    def host(self) -> str:
+        return f"{self.subdomain}.{FLEET_DOMAIN}" if self.subdomain else FLEET_DOMAIN
 
     @property
     def repo(self) -> str:
@@ -42,17 +55,24 @@ class SiteConfig:
         return f"https://{self.host}"
 
 
-# host 以 tool-proxy 的 DOMAIN_MAP 为准；repo_name 需与 GitHub 仓库名一致。
+# 子域前缀与仓库映射是「站群清单」，属部署配置而非架构绑定；
+# repo_name 需与 GitHub 仓库名一致。换站群时改这份清单 + FLEET_DOMAIN。
 SITES: dict[str, SiteConfig] = {
     s.name: s
     for s in [
-        SiteConfig("music", "music.toolara.dev", "ai-music-generator", "Toolara Music"),
-        SiteConfig("figurine", "figurine.toolara.dev", "ai-3d-figurine-generator"),
-        SiteConfig("creative", "creative.toolara.dev", "ai-creative-generator"),
-        SiteConfig("background", "background.toolara.dev", "ai-background-remover"),
-        SiteConfig("audio", "audio.toolara.dev", "ai-audio-tool"),
+        SiteConfig("music", "music", "ai-music-generator", "Toolara Music"),
+        SiteConfig("figurine", "figurine", "ai-3d-figurine-generator"),
+        SiteConfig("creative", "creative", "ai-creative-generator"),
+        SiteConfig("background", "background", "ai-background-remover"),
+        SiteConfig("audio", "audio", "ai-audio-tool"),
     ]
 }
+
+# radar 是站群内部的选题数据服务；地址默认从主域派生，也可整体覆盖
+RADAR_URL = env("RADAR_URL", f"https://radar.{FLEET_DOMAIN}")
+
+# 运营者联系方式（邮件发件人、外链采集 User-Agent 的 contact 字段）
+CONTACT_EMAIL = env("CONTACT_EMAIL", "hello@toolara.dev")
 
 STATE_DIR = Path(env("AGENT_STATE_DIR", str(PROJECT_ROOT / "data")))
 STATE_DIR.mkdir(parents=True, exist_ok=True)

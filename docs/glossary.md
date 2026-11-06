@@ -14,7 +14,7 @@ SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 | 术语 | 解释 |
 |---|---|
 | **Worker** | Cloudflare 的边缘计算单元。一段 JS 代码跑在全球节点上，无服务器。本项目 33 个子站各是一个 Worker。 |
-| **service binding** | Worker 之间互相调用的内部通道。`tool-proxy` 靠它把请求转给子站，不经过公网。binding 缺失时直接 503 并打日志。 |
+| **service binding** | Worker 之间互相调用的内部通道。入口代理靠它把请求转给子站，不经过公网。binding 缺失时直接 503 并打日志。 |
 | **D1** | Cloudflare 的 SQLite 托管数据库。本项目用它存埋点 `events`、选题 `candidates`、Agent 台账 `agent_*`。 |
 | **KV** | Cloudflare 的键值存储，全球缓存、最终一致。本项目用它存熔断标记与审批去重键。 |
 | **R2** | Cloudflare 的对象存储（兼容 S3）。本项目用它存 `music` 站的封面图。 |
@@ -46,12 +46,12 @@ SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 | 术语 | 解释 |
 |---|---|
-| **tool-proxy** | 站群的统一入口 Worker。所有子域都绑定在它上面，由它分发、生成 robots/sitemap、注入埋点、处理 Google 登录。 |
-| **radar** | 内部选题雷达（`radar.toolara.dev`）。扫 Google Suggest / Trends / X 热榜，算 SERP 竞争度与 30 天趋势，给候选词打分。**不对外**。 |
+| **入口代理（gateway）** | 站群的统一入口 Worker。所有子域都绑定在它上面，由它分发、生成 robots/sitemap、注入埋点、处理 Google 登录。这是**架构角色**，不绑定具体实现——当前站群里这个 Worker 的名字是 `tool-proxy`。 |
+| **radar** | 站群内部的选题雷达（部署在 `radar.<主域>`）。扫 Google Suggest / Trends / X 热榜，算 SERP 竞争度与 30 天趋势，给候选词打分。**不对外**。 |
 | **candidates** | radar 的候选词表（D1）。每条记录含关键词、搜索量、竞争度、趋势、`verdict`。 |
 | **verdict** | radar 对候选词的结论：`做` / `不做` / `parked`（暂时搁置）。本 Agent 只取 `做` 的。 |
 | **DEAD_RULES** | 判死规则：真人姓名、他人作品名、纯资讯类词一律不做。radar 有一份，本 Agent 的 `DEAD_PATTERNS` 是第二道闸。 |
-| **`events`** | tool-proxy 的埋点表（D1）。记录页面访问与点击事件，是本项目"数据解读"的原料。 |
+| **`events`** | 入口代理的埋点表（D1）。记录页面访问与点击事件，是本项目"数据解读"的原料。 |
 | **PV / UV** | 页面浏览量 / 独立访客数。 |
 | **跳出率（bounce）** | 只访问一页就离开的比例。工具站天然偏高，看趋势不看绝对值。 |
 | **GSC** | Google Search Console。官方后台，提供展示次数、点击次数、CTR、平均排名。**有官方 API**，本项目不抓网页。 |
@@ -62,7 +62,7 @@ SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 | **长尾词** | 搜索量低但意图明确的词（如 `paypal fee calculator for freelancers`）。33 个子站的流量几乎全靠长尾。 |
 | **slug** | URL 里的页面标识，如 `paypal-fee-for-freelancers`。本项目强校验 `^[a-z0-9][a-z0-9-]{2,60}$`，防路径穿越。 |
 | **JSON-LD** | 页面里的结构化数据脚本（`application/ld+json`）。本项目生成 `Article` + `FAQPage` 两段。 |
-| **OG 图** | 社交分享时显示的预览图。站群统一 1200×630，由 tool-proxy 动态生成。 |
+| **OG 图** | 社交分享时显示的预览图。站群统一 1200×630，由入口代理动态生成。 |
 | **engaged views** | YouTube 的"有效观看"指标（看过一定时长才算）。比播放数更能反映内容质量。 |
 | **养号** | 在新平台上用正常互动积累账号权重，避免新号直接发链接被判垃圾。本项目的 Reddit / HN 账号都处于这个阶段。 |
 

@@ -441,7 +441,7 @@ def deploy_page(site: SiteConfig, page: dict) -> dict:
 |---|---|---|
 | `gsc.py` | `google-api-python-client` + 服务账号；`searchanalytics.query` 读 28 天数据；`indexing.urlNotifications.publish` 提交 URL | Indexing API 配额 200 次/天；未配置服务账号时返回空，日报降级为"仅 D1 数据" |
 | `reddit.py` | `https://www.reddit.com/search.json?q=...` 公共只读接口 | 不登录、不发帖；被 429 时返回空列表，不影响其他渠道 |
-| `radar.py` | 读 `radar.toolara.dev/api/candidates`，Basic Auth | 只读 `verdict=做` 的候选词，不改雷达任何状态 |
+| `radar.py` | 读 radar 的 `/api/candidates`（地址默认 `https://radar.<FLEET_DOMAIN>`），Basic Auth | 只读 `verdict=做` 的候选词，不改雷达任何状态 |
 
 **GSC 服务账号必须先在 Search Console 里加为资源所有者**，否则 API 会返回 403。这一步容易漏，写在 runbook 的检查清单里。
 
@@ -471,7 +471,7 @@ flowchart TB
 - **已存在页面查重**：`sense` 里查 `SELECT site, slug, keyword FROM agent_pages WHERE status != 'failed'`，`parse` 时按 `(site, slug)` 去重。避免同一页重复生成。
 - **模板 token**：`lang` / `brand` / `host` / `slug` / `title` / `description` / `h1` / `intro` / `sections` / `faq` / `jsonld`。所有文本走 HTML 转义；`jsonld` 注入 `Article` + `FAQPage` 两段结构化数据。
 - **每日上限**：`MAX_PAGES_PER_RUN`（默认 5）。新站首月建议降到 3——内容突增是明显的算法信号。
-- **埋点不要手写**：页面里不写 `<script>`，tool-proxy 会自动注入 `/_ev.js`。手写会重复上报。
+- **埋点不要手写**：页面里不写 `<script>`，入口代理（gateway）会自动注入 `/_ev.js`。手写会重复上报。
 
 ### 7.2 daily-report：数据解读
 
@@ -489,7 +489,7 @@ flowchart TB
 关键实现：
 
 - **聚合口径**沿用站群既有写法：按天分组用 `CAST(ts/86400000 AS INTEGER)*86400000`，不要用 `date()` 函数（时区会错）。
-- **列名以 tool-proxy 实际 schema 为准**，代码里集中在 `tasks/daily_report.py` 的 `SQL_DAILY` 一处。这是唯一需要按实际环境校准的地方。
+- **列名以入口代理实际 schema 为准**，代码里集中在 `tasks/daily_report.py` 的 `SQL_DAILY` 一处。这是唯一需要按实际环境校准的地方。
 - **日报的建议只记录**（`risk=read`，`type="suggest"`），不自动触发下游任务。理由：数据解读的误判率高于内容生成，让它直接触发写操作风险太大。真正执行由人看着日报决定。
 - **GSC 表现回填**：按 URL 反查 `agent_pages` 的 `(site, slug)`，更新 `gsc_clicks` / `gsc_impressions` / `avg_position`，有点击的标记 `verified`。这一步把"页面产出了什么效果"闭环回台账。
 
@@ -624,7 +624,7 @@ CREATE TABLE IF NOT EXISTS agent_reports (
 | 实例重启丢状态 | checkpointer 落持久盘；`thread_id` 幂等，重启后 cron 自动续跑 | 架构 |
 | 新站内容突增被惩罚 | 新站首月 ≤3 页/天；发布节奏均匀 | 配置 |
 | slug 路径穿越 | `^[a-z0-9][a-z0-9-]{2,60}$` 强校验，不合法直接抛错 | 代码 |
-| Agent 改坏既有站点 | 只新增文件不删不改；不改 tool-proxy / radar / 各站现有页面 | 权限边界 |
+| Agent 改坏既有站点 | 只新增文件不删不改；不改入口代理 / radar / 各站现有页面 | 权限边界 |
 
 ---
 

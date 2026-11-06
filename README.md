@@ -5,7 +5,7 @@ SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 # site-agent
 
-**给 [toolara.dev](https://toolara.dev) 站群做自动化运营的 Agent。**
+**给多站点站群做自动化运营的 Agent。**
 
 Python · LangGraph · Cloudflare · Render · [PolyForm Noncommercial](LICENSE)
 
@@ -13,7 +13,9 @@ Python · LangGraph · Cloudflare · Render · [PolyForm Noncommercial](LICENSE)
 
 ## 这是什么
 
-[toolara.dev](https://toolara.dev) 是一个人维护的 **32 个免费英文在线工具站**（外加一个内部选题雷达）——每个子域一个产品，比如 `paypal.toolara.dev`（算 PayPal 手续费）、`sourdough.toolara.dev`（算酸种面包水合率）、`music.toolara.dev`（一句话生成一首歌）。全部跑在 Cloudflare Workers 上，流量几乎全靠 Google 自然搜索。
+site-agent 面向的是一类系统：**跑在 Cloudflare Workers 上的多站点站群**——一个入口代理（gateway）统一接流量、注入埋点、生成 robots/sitemap；每个子域一个独立 Worker、独立 git 仓库；背后是共享的 D1/KV 存储和一个内部数据服务（选题雷达）。
+
+**当前实例指向 [toolara.dev](https://toolara.dev)**：一个人维护的 **32 个免费英文在线工具站**（外加一个内部选题雷达）——每个子域一个产品，比如 `paypal.toolara.dev`（算 PayPal 手续费）、`sourdough.toolara.dev`（算酸种面包水合率）、`music.toolara.dev`（一句话生成一首歌），流量几乎全靠 Google 自然搜索。业务背景见 [`docs/01-background.md`](docs/01-background.md)。
 
 三十几个站意味着三十几份重复劳动：找选题、写页面、上线、提交收录、看数据、找外链、排推广。一个人做不完。
 
@@ -21,7 +23,7 @@ Python · LangGraph · Cloudflare · Render · [PolyForm Noncommercial](LICENSE)
 
 **它不是一个网站，也不是一个 SaaS。** 它是一台常驻后台的进程，没有对外端口，不承载任何用户流量。
 
-> 用别人的站群跑不起来：它强依赖 toolara.dev 的目录结构、D1 表、站点映射。但如果你在维护类似的多站点矩阵，[`docs/02-architecture.md`](docs/02-architecture.md) 里的分层与决策记录可以直接借鉴。
+> **换一个站群要做什么**：架构是通用的，站群绑定全部来自部署配置——主域 `FLEET_DOMAIN`、站点清单 `SITES`、各项凭据（`FLEET_DOMAIN` 的默认值是当前实例的 toolara.dev）。换站群 = 改这三样，代码零修改。如果你在维护类似的多站点矩阵，[`docs/02-architecture.md`](docs/02-architecture.md) 里的分层与决策记录可以直接借鉴。
 
 ---
 
@@ -116,7 +118,7 @@ uv sync                      # 首次会生成 uv.lock，请一并提交
 # 2. 配置
 cp .env.example .env         # 填 CF / GitHub / LLM / GSC / IMAP
 
-# 3. 建表（在 tool-proxy 的 D1 库执行）
+# 3. 建表（在入口代理写入埋点的那个 D1 库执行）
 #    migrations/0001_agent_tables.sql
 
 # 4. 单测（纯函数，不需要凭据）

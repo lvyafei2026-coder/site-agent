@@ -72,10 +72,12 @@ def sense(state: OpsState) -> list[dict[str, Any]]:
 
 
 def build_user_prompt(state: OpsState) -> str:
+    from ..config import FLEET_DOMAIN
+
     obs = state["observations"][0]
     return (
         "下面是可投放外链的机会（Reddit 讨论 + Dev.to 文章）。请评估哪些真的适合我们"
-        "（工具站 toolara.dev，免费 AI 工具），输出 JSON：opportunities 数组，每项含 "
+        f"（工具站 {FLEET_DOMAIN}，免费在线工具），输出 JSON：opportunities 数组，每项含 "
         "channel（devto|reddit）、target_url（我们被链接的页面）、source_url（机会所在页）、"
         "anchor_text、score（0-1）、reason、draft（可直接发布的文案，英文）。\n\n"
         + json.dumps(obs, ensure_ascii=False, indent=2)[:20000]
