@@ -139,7 +139,7 @@ SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 - 静态站：Workers 静态资源托管
 - 有状态功能：D1（SQLite）、KV（配置与缓存）、R2（封面图等文件）
-- AI 能力：MiniMax / Flux 等第三方 API；Cloudflare Workers AI 只用在小流量场景
+- AI 能力：MiniMax / Flux 等第三方 API；Workers AI 的账户级额度留给站群出图 / 雷达等小流量场景，本项目（agent）完全不用
 
 成本结构上，除了 AI 站按调用付费，其余站点的边际成本接近零。这让"养 33 个站观察哪些能长起来"成为一个人能承受的策略。
 

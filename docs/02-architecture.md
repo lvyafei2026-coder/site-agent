@@ -362,21 +362,21 @@ graph LR
 | 33 个子站 | 只新增 HTML 文件并 push | 不改现有页面、不改样式、不改 `wrangler.toml`；不删任何文件 |
 | D1 | 只 `INSERT` / 有限 `UPDATE`，只操作 `agent_*` 三张表 | 不 `DELETE`（客户端层直接拒绝）；不碰 `events` / `candidates` 的写 |
 | KV | 只写 `agent:` 前缀 | 不碰 `RADAR` / `autopilot:pause` / 各站业务键 |
-| Workers AI | 完全不用 | 账户级 10k neurons/天 留给出图站（figurine 12 张 + creative 8 张） |
+| Workers AI | 完全不用 | 账户级 10k neurons/天 留给出图站；其用量预警归 site-console，与本项目无关 |
 
 **为什么这么严**：站群是运行中的生产资产，有真实流量和收录记录。Agent 是新增的自动化，一旦出问题必须是"少做一件事"，而不是"弄坏一件已有的事"。所有权限都按这个原则收紧。
 
-### 7.1 radar 定时任务的归属
+### 7.1 radar 定时任务与账户监控的归属
 
-radar（选题雷达）自己挂着几条 Cloudflare cron。哪些移进 Agent、哪些留下，判据只有一条：**任务是否涉及决策、审批或跨系统编排**——这是 Agent 的价值所在，也是它相比裸 cron 多出来的东西（状态机、熔断、人审、台账）。纯采集和纯监控从这个判据里得不到任何收益，反而多一层依赖。
+radar（选题雷达）过去挂着几条 Cloudflare cron。归属判据有两条：**任务是否涉及决策、审批或跨系统编排**（这是 Agent 相比裸 cron 多出来的东西：状态机、熔断、人审、台账），以及**任务统计的对象是不是 Agent 自己**。纯采集、纯读 KV 的监控都不进 Agent——多一层依赖却拿不到收益。
 
 | radar cron | 性质 | 归属 | 理由 |
 |---|---|---|---|
 | `0 */6 * * *` 抓取（Trends / Suggest / SERP / 趋势 → KV） | 纯数据采集，无决策无审批 | **留在 radar** | radar 的定位就是"数据抓取的基础服务"，这条管道是它本体的一部分。CF cron 免费、稳定、不依赖 Render 存活；Agent 接管还得让 radar 暴露内部触发接口或复制抓取代码，两者都更差。Render 免费实例会休眠重启，把基础数据管道放上去是可靠性倒退 |
-| `0 */2 * * *` 账户额度预警巡检（读共享 KV → 汇总 → 发邮件） | 运维监控 + 告警 | **Agent 稳定运行后接管** | 它和 Agent 的熔断/通知体系天然重叠，长期看属于 Agent 的运维面。但它是当前活着的防线，而 Agent 还没上线——把活防线迁进未上线系统是风险倒挂。阶段 1 日报跑稳一个月后迁移，radar 删该条 cron |
-| （已停用的 autopilot：每小时 AI 分析一个词） | LLM 决策类任务 | **天生属于 Agent** | 唯一真正"决策类"的任务。恢复时不给 radar 加回 cron，由 Agent 的 `decide` 节点驱动：选词 → 分析 → 写 KV → radar 前端展示。radar 保持"执行者 + 数据源"，调度权交给 Agent |
+| `0 */2 * * *` 账户 Workers AI 额度预警巡检（读共享 KV → 汇总 → 发邮件） | 纯读 KV 的运维监控 + 通知 | **已迁 site-console（2026-11-06）** | 它统计的是 **Workers AI 账户级额度**（出图站 + radar 手动分析），而 Agent 的 LLM 走外部 API，两者额度池完全不同。归入界面层最顺：console 本来就绑这两份 KV、候选页本来就显示百分比，cron 与页面共用一份计算。Agent 不需要也不应该接管自己不消耗的额度 |
+| （已停用并删除的 autopilot：每小时 AI 分析一个词） | LLM 决策类任务 | **天生属于 Agent** | 唯一真正「决策类」的任务。2026-11-06 从 radar 删除，恢复时由 Agent 的 `decide` 节点驱动：选词 → 经 service binding 调 radar 分析 → 写 KV → console 页面展示。不给 radar 加回 cron |
 
-一句话：**采集留在源头，监控随 Agent 成熟迁移，决策任务从第一天起就归 Agent。** Agent 对 radar 的关系始终是"读它的数据"，不是"替它跑"。
+一句话：**采集留在源头，Workers AI 额度监控归界面层，决策任务从第一天起就归 Agent。** Agent 对 radar 的关系始终是「读它的数据」，不是「替它跑」，也不是替它看账户额度。
 
 ---
 

@@ -181,7 +181,7 @@ uv run python -c "from site_agent.main import run_task; print(run_task('daily-re
 
 - [ ] 日报 `actions` 一键转下游任务（当前是 `risk=read` 只记录）
 - [ ] radar 自生长：表现好的页面关键词回流 `seeds`
-- [ ] **接管 radar 的额度预警巡检**（radar 删 `0 */2 * * *` cron）：日报跑稳一个月后执行，迁移判据见 [`02-architecture.md` §7.1](02-architecture.md)
+- [x] 账户 Workers AI 额度预警归属已结案（2026-11-06）：**归 site-console**，radar 删 `0 */2 * * *` cron。该 cron 统计的是 Workers AI 账户额度，本项目 LLM 走外部 API、不消耗也不接管；判据见 [`02-architecture.md` §7.1](02-architecture.md)
 - [ ] 成本报表：tokens / 调用次数 / 单页成本
 - [ ] 简单心跳监控（超过 X 小时无任务完成 → 告警）
 - [ ] GSC 读更长周期（当前只读 28 天）
