@@ -58,6 +58,31 @@ google-auth
 2. **节点是纯函数**。所有 IO 在 `cf/` 与 `tasks/`，`nodes/` 只做编排与状态搬运。换框架时业务代码零改动。
 3. **锁版本**。`uv.lock` 进仓库，升级手动做并跑 `pytest`。LangGraph 迭代很快，不锁必炸。
 
+### 1.4 为什么调度不放在 LangGraph 里
+
+选型表里「调度 = APScheduler」容易被读成「LangGraph 跑不了长任务，所以外面挂个定时器」。正好相反：**LangGraph 擅长长任务，但开源库本身没有定时能力，这是两件正交的事。**
+
+| | 关心什么 | 谁来负责 |
+|---|---|---|
+| 长任务 | 一次运行能否暂停、跨天恢复、重启不丢 | LangGraph：`interrupt()` + checkpointer |
+| 定时任务 | 谁在 08:10 把这次运行**发起** | 调度器：cron / 平台触发器 |
+
+**长任务已经在本项目里用了**（见 [§5](#5-人审中断)）：`execute` 节点遇到 `risk=write` 就 `interrupt()` 挂起，状态由 `SqliteSaver` 写进 `/data/agent.sqlite`；人可能几小时后才回审批邮件，`Command(resume=...)` 从断点继续。挂起期间不占线程、进程可重启（前提是持久盘，见 §2 约束三）。普通脚本反而做不到这一点。
+
+**定时则不在开源库的能力范围**：`StateGraph` 是被调用的库，`app.invoke()` 返回即结束，它没有事件循环、没有常驻进程、也不解析 cron 表达式——连进程本身都是 `python -m site_agent.main` 起的。官方 FAQ 的能力对照里，LangGraph（开源）的 Scheduling 是 `None`，Cron 调度属于 **LangGraph Platform**（专有的托管/自托管服务，自带任务队列与触发器）。我们部署在 Render 的普通 Python 进程上，用不到那一层。
+
+选 APScheduler 的理由只有一个：**进程本来就必须常驻**。Render Background Worker 没有公网入站，`approvals.py` 收不到 HTTP 回调，只能每 5 分钟主动轮询 IMAP 邮箱；既然进程不关，进程内再挂 4 条 cron 就是零额外成本（选型表算的 ~40MB）。顺带拿到 `misfire_grace_time`（重启后补跑）、`coalesce`（多次错过只跑一次）、`max_instances`（串行，配合 512MB 内存约束）和时区语义，手写 `while True: sleep(60)` 得自己重造一遍。
+
+**APScheduler 不是架构依赖，是可替换的 L1 触发层**（见 [02 §2](02-architecture.md#2-分层架构)）：`main.py` 里调度相关代码约 20 行，只负责调用 `run_task(task_type)`，业务判断全在图里。换掉它的唯一契约是「到点调一次 `run_task`」：
+
+| 替代 | 代价 |
+|---|---|
+| Render Cron Jobs / 系统 cron 起一次性进程 | 给 `main.py` 加 `--once`；审批轮询失去常驻宿主，得改 webhook 或单挂一条 5 分钟 cron |
+| LangGraph Platform 的 cron jobs | 换部署形态（要 `langgraph.json` + Server）、付费或自托管 Lite |
+| 让 `END` 接回 `START` + sleep 节点自循环 | **不要**：撞 `recursion_limit`、checkpoint 无限膨胀、崩溃后无法自恢复；且 §5.1 的「resume 重跑整个节点」会让 sleep 语义错乱 |
+
+真正的解耦点在审批通道，不在调度器：把 IMAP 轮询换成 Resend inbound webhook（Cloudflare Worker 有公网入站），4 条业务任务就能改成一次性进程 + Neon Postgres checkpointer，连常驻 Worker 与 1GB 持久盘都不需要。这属于架构变更，按需评估，当前方案不动。
+
 ---
 
 ## 2. 资源预算
