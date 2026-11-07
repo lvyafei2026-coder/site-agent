@@ -19,6 +19,7 @@ SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 | [03-tech-design.md](03-tech-design.md) | 用了什么技术？关键部分怎么实现？有哪些坑？ | 要改代码的人 | 动手写代码前 |
 | [04-runbook.md](04-runbook.md) | 怎么部署？平时怎么操作？出问题怎么查？ | 要运行和维护它的人 | 部署 / 排障 |
 | [05-roadmap.md](05-roadmap.md) | 做到哪一步了？下一步做什么？怎么算做完？ | 项目推进者 | 规划下一步 |
+| [06-event-driven-resume.md](06-event-driven-resume.md) | 怎么把邮件审批改成事件驱动 resume + 控制台人审？（**待评审，未实施**） | 要评估这次改造的人 | 评审改造方案时 |
 | [glossary.md](glossary.md) | 这个词什么意思？ | 所有人 | 遇到不认识的名词 |
 
 ---
@@ -67,6 +68,7 @@ README.md  →  01-background.md §1-§2  →  02-architecture.md §1（系统�
 | 实现与坑 | `03-tech-design.md` | 回答"怎么做的"，含代码片段 |
 | 操作步骤 | `04-runbook.md` | 回答"怎么执行"，可照着做 |
 | 计划与进度 | `05-roadmap.md` | 回答"什么时候做、做到哪了" |
+| 待评审的改造方案 | `06-event-driven-resume.md` | 回答"这次要怎么改"；**评审通过并实施后，内容合并进 02/03/04，本文件删除**，避免同一主题两处留档 |
 | 名词 | `glossary.md` | 单词级解释 |
 
 **一条硬规则：同一主题只写一份，其他地方引用链接。** 发现两处都在讲同一件事，删掉一份——重复的内容一定会不同步，而不同步的文档比没有文档更糟。
@@ -116,4 +118,5 @@ README.md  →  01-background.md §1-§2  →  02-architecture.md §1（系统�
 | `03-tech-design.md` | 完整 | `SQL_DAILY` 的实际列名待校准；`collectors/radar.py` 的接口路径待实测 |
 | `04-runbook.md` | 完整 | 缺"如何迁移到 Neon Postgres"的分步说明（当前只给结论） |
 | `05-roadmap.md` | 完整 | 阶段 0 的待办随实际推进需勾选与补充 |
+| `06-event-driven-resume.md` | 待评审 | 未实施；P1（KV namespace 是否统一）等 5 项待拍板，见 §9 |
 | `glossary.md` | 完整 | 只收录本项目内出现的词，不是通用 SEO 辞典 |
