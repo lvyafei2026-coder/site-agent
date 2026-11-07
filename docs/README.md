@@ -20,6 +20,7 @@ SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 | [04-runbook.md](04-runbook.md) | 怎么部署？平时怎么操作？出问题怎么查？ | 要运行和维护它的人 | 部署 / 排障 |
 | [05-roadmap.md](05-roadmap.md) | 做到哪一步了？下一步做什么？怎么算做完？ | 项目推进者 | 规划下一步 |
 | [06-event-driven-resume.md](06-event-driven-resume.md) | 怎么把邮件审批改成事件驱动 resume + 控制台人审？（**待评审，未实施**） | 要评估这次改造的人 | 评审改造方案时 |
+| [07-graph-patterns.md](07-graph-patterns.md) | ReAct 之外哪些 LangGraph 模式适合这个项目？现有图有什么结构欠账？（**待评审，未实施**） | 要评估图结构改造的人 | 评审编排方式时 |
 | [glossary.md](glossary.md) | 这个词什么意思？ | 所有人 | 遇到不认识的名词 |
 
 ---
@@ -68,7 +69,7 @@ README.md  →  01-background.md §1-§2  →  02-architecture.md §1（系统�
 | 实现与坑 | `03-tech-design.md` | 回答"怎么做的"，含代码片段 |
 | 操作步骤 | `04-runbook.md` | 回答"怎么执行"，可照着做 |
 | 计划与进度 | `05-roadmap.md` | 回答"什么时候做、做到哪了" |
-| 待评审的改造方案 | `06-event-driven-resume.md` | 回答"这次要怎么改"；**评审通过并实施后，内容合并进 02/03/04，本文件删除**，避免同一主题两处留档 |
+| 待评审的改造方案 | `06-event-driven-resume.md`（触发与通信）、`07-graph-patterns.md`（图结构与模式） | 回答"这次要怎么改"；**评审通过并实施后，内容合并进 02/03/04，本文件删除**，避免同一主题两处留档 |
 | 名词 | `glossary.md` | 单词级解释 |
 
 **一条硬规则：同一主题只写一份，其他地方引用链接。** 发现两处都在讲同一件事，删掉一份——重复的内容一定会不同步，而不同步的文档比没有文档更糟。
@@ -119,4 +120,5 @@ README.md  →  01-background.md §1-§2  →  02-architecture.md §1（系统�
 | `04-runbook.md` | 完整 | 缺"如何迁移到 Neon Postgres"的分步说明（当前只给结论） |
 | `05-roadmap.md` | 完整 | 阶段 0 的待办随实际推进需勾选与补充 |
 | `06-event-driven-resume.md` | 待评审 | 未实施；P1（KV namespace 是否统一）等 5 项待拍板，见 §9 |
+| `07-graph-patterns.md` | 待评审 | 未实施；§5 的实测基于 langgraph 0.3.34，P1/P2 优先级待确认 |
 | `glossary.md` | 完整 | 只收录本项目内出现的词，不是通用 SEO 辞典 |
