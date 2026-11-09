@@ -41,6 +41,8 @@ services:
         sync: false
       - key: LLM_BASE_URL
         sync: false
+      - key: LLM_MODEL
+        sync: false        # GitHub Models 要求 publisher/model 全名，如 openai/gpt-4o-mini
       - key: RADAR_URL
         sync: false
       - key: RADAR_USER
