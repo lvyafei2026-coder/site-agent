@@ -81,12 +81,15 @@ checkpointer 的表由 `langgraph-checkpoint-sqlite` 自动创建，不要手工
 
 | 项 | 值 |
 |---|---|
-| 计划 | `starter`（免费实例文件系统临时，checkpoint 会丢） |
-| 磁盘 | `agent-data` 1GB 挂 `/data` |
+| 计划 | `free`（文件系统临时；单轮流水线无跨轮状态，重启无损失） |
 | 构建 | `pip install -e .` |
 | 启动 | `uvicorn src.app.api.routes:api --host 0.0.0.0 --port $PORT` |
 | 健康检查 | `/health` |
-| 关键 env | `MEMORY_BACKEND=sqlite`、`DATABASE_URL=sqlite:////data/agent.sqlite`、`AGENT_STATE_DIR=/data` |
+| 关键 env | `MEMORY_BACKEND=memory`、`FLEET_DOMAIN`、`GH_ORG` |
+
+要 checkpoint 持久化时升级：`plan: starter` + Disk（1GB 挂 `/data`），
+env 改 `MEMORY_BACKEND=sqlite`、`DATABASE_URL=sqlite:////data/agent.sqlite`、
+`AGENT_STATE_DIR=/data`（约 $7/月）。
 
 `sync: false` 的变量（Cloudflare / GitHub / LLM / radar 凭据）在 Render 控制台填。
 `langgraph.json` 指向 `src.app.main:run`，供 LangGraph CLI 使用；线上托管以

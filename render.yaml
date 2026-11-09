@@ -1,12 +1,14 @@
 # Render Blueprint — Web Service（FastAPI 单轮流水线）
-# 注意：免费实例的文件系统是临时的（重启即丢），而 checkpointer 用
-# MEMORY_BACKEND=sqlite 落 /data，因此用 Starter 计划 + 1GB 磁盘（$7/月）。
-# 调度在外部：进程不保存跨轮状态，重启只需重建 checkpointer。部署见 docs/04-runbook.md。
+# 免费档：Free 实例文件系统是临时的（重启即丢），checkpointer 用 memory 后端，
+# 单轮流水线不保存跨轮状态，重启无损失。以后要持久化再换 starter + /data 磁盘：
+#   plan: starter + disk(mountPath /data, 1GB)
+#   MEMORY_BACKEND=sqlite + DATABASE_URL=sqlite:////data/agent.sqlite
+# 调度在外部。部署见 docs/04-runbook.md。
 services:
   - type: web
     name: site-agent
     runtime: python
-    plan: starter
+    plan: free
     region: singapore
     buildCommand: pip install -e .
     startCommand: uvicorn src.app.api.routes:api --host 0.0.0.0 --port $PORT
@@ -17,8 +19,6 @@ services:
         value: 3.11.9
       - key: TZ
         value: Asia/Shanghai
-      - key: AGENT_STATE_DIR
-        value: /data
       - key: CF_ACCOUNT_ID
         sync: false
       - key: CF_API_TOKEN
@@ -56,10 +56,4 @@ services:
       - key: DEVTO_API_KEY
         sync: false
       - key: MEMORY_BACKEND
-        value: sqlite
-      - key: DATABASE_URL
-        value: sqlite:////data/agent.sqlite
-    disk:
-      name: agent-data
-      mountPath: /data
-      sizeGB: 1
+        value: memory
