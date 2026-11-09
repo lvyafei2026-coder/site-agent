@@ -64,6 +64,27 @@ curl -s -X POST localhost:10000/run \
 
 完整样例见 `.env.example`。
 
+### 2.1 参数从哪来（照抄值 / 找值位置）
+
+| 变量 | 值 | 来源 |
+|---|---|---|
+| `FLEET_DOMAIN` | `toolara.dev` | 站群主域；子站 host、radar 地址、邮箱全由它派生 |
+| `GH_ORG` | `lvyafei2026-coder` | GitHub 用户名（token 属于哪个账号就填哪个） |
+| `D1_DATABASE_ID` | `07a8858a-b269-4680-9059-b336ccf6fc4b` | tool-proxy / site-console 共用的那个 D1（CLICKS 库）；agent 的 7 张 `agent_*` 表也建在它上面 |
+| `KV_NAMESPACE_ID` | `3cb9c51a017748319ae9924b08ded64c` | 就是 RADAR_KV；agent 的键统一带 `agent:` 前缀，与 radar 共用同一个 namespace |
+| `RADAR_URL` | 留空 | 留空自动用 `https://radar.<FLEET_DOMAIN>`（即 `https://radar.toolara.dev`），不用填 |
+| `ADMIN_EMAIL` / `CONTACT_EMAIL` | `hello@toolara.dev` | 域名邮箱；`CONTACT_EMAIL` 缺省也是 `hello@<FLEET_DOMAIN>` |
+
+找值位置：
+
+- **D1 id**：Cloudflare Dashboard → Storage & Databases → D1 → `web-clicks-analytics` → Settings → Database ID
+- **KV id**：Cloudflare Dashboard → Storage & Databases → Workers KV → namespace `RADAR_KV`
+- **域名邮箱**：Cloudflare Email Routing 里配置的 `hello@toolara.dev`
+
+其余全是凭据，只进 Render 的 Environment，**不写进文档、不提交仓库**：
+`CF_ACCOUNT_ID` / `CF_API_TOKEN` / `GITHUB_TOKEN` / `RADAR_USER` / `RADAR_PASS` /
+`LLM_API_KEY` / `RESEND_API_KEY` / `DEVTO_API_KEY` / `GSC_SA_JSON`。
+
 ## 3. D1 建表
 
 ```bash
