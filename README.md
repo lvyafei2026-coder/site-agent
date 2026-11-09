@@ -35,7 +35,7 @@ pip install -e .
 cp .env.example .env
 python -m src.app.main                 # CLI 跑一轮
 uvicorn src.app.api.routes:api --reload --port 10000
-pytest -q                              # 47 passed
+pytest -q                              # 56 passed
 ```
 
 ```bash
@@ -72,6 +72,12 @@ templates/site-page.html     内容页模板（11 个占位符）
 migrations/0001_agent_tables.sql  D1 台账表
 ```
 
+**脚手架**：本项目由 [`langgraph-init-cli`](https://pypi.org/project/langgraph-init-cli/)
+**0.1.5** 的 `production` 模板生成（`langgraph-init site-agent --template production`）。
+生成后删掉了模板的 `storage/`、`evaluation/`、`versioning_service.py` 与 4 个 demo 工具，
+换成 D1/KV 持久化与 25 个业务工具。逐项差异和“别重复生成”的原因见
+[docs/10-structure.md §1](docs/10-structure.md#1-脚手架来源)。
+
 ## 关键约束
 
 1. 依赖单向：`api → graph → nodes → services → tools → adapters`；
@@ -92,7 +98,7 @@ migrations/0001_agent_tables.sql  D1 台账表
 | [03-tech-design](docs/03-tech-design.md) | 状态契约、图、节点、服务、工具、适配器、SQL、表结构 |
 | [04-runbook](docs/04-runbook.md) | 本地 / 测试 / D1 建表 / Render / 排障 / 安全 |
 | [05-tools](docs/05-tools.md) | 25 个工具速查、意图映射、站点清单、新增清单 |
-| [10-structure](docs/10-structure.md) | 结构唯一口径（文件级） |
+| [10-structure](docs/10-structure.md) | 结构唯一口径（脚手架来源、分包规则、文件级目录） |
 | [glossary](docs/glossary.md) | 术语表 |
 
 ## 协议

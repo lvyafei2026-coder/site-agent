@@ -1,9 +1,117 @@
 # 10 · 结构口径
 
-> 文件级结构的唯一口径：哪一层放什么、依赖只能怎么走、装配在哪、改代码前该守的硬约束。
-> 新增或移动文件时同步本文件，其它文档不重复描述目录。
+> 文件级结构的唯一口径：脚手架来源、分包规则、哪一层放什么、依赖只能怎么走、装配在哪、
+> 改代码前该守的硬约束。新增或移动文件时同步本文件，其它文档不重复描述目录。
 
-## 1. 目录树
+## 1. 脚手架来源
+
+项目不是手搭的，起点是 PyPI 包 **`langgraph-init-cli` 0.1.5** 的 `production` 模板，
+生成后按站群需求改造。模板本身只提供通用骨架，业务代码全部是后加的。
+
+| 项 | 值 |
+|---|---|
+| 脚手架 | `langgraph-init-cli` 0.1.5（PyPI，Development Status 4 - Beta） |
+| 安装 | `pip install langgraph-init-cli`（或 `pipx install langgraph-init-cli`） |
+| 生成命令 | `langgraph-init site-agent --template production` |
+| 模板档位 | `base` 最小图 / `advanced` 模块化 + 真实 LLM / `production` 全套 tooling + observability + evaluation |
+| 生成后自检 | `cd site-agent && cp .env.example .env && pip install -e . && python -m src.app.main` |
+| 本项目的两个入口 | CLI `python -m src.app.main`；HTTP `uvicorn src.app.api.routes:api`（`langgraph.json` 指向前者） |
+
+**不要重复生成**：CLI 没有 upgrade 子命令，在已有目录重跑会覆盖同名文件。要跟新版本只能
+另起临时目录生成一次再人工 diff，不要直接覆盖。
+
+模板原样结构（生成那一刻的 `src/app/`，13 个包 + 2 个模块 = 15 个代码单元）：
+
+```
+src/app/
+├── main.py            run()：样例 state + app.invoke
+├── config.py          Settings dataclass（.env 全量读口）
+├── api/               /run · /health
+├── graph/             builder · state · edges · constants · registry(Names/Nodes/Tags)
+├── nodes/             intent · processing · validation · output · error
+├── services/          llm · prompt · tool · evaluation · versioning
+├── tools/             BaseTool + registry + calculator / retriever / db_query / http
+├── prompts/versions/  intent/v1+v2 · extraction/v1 · validation/v1
+├── models/            ExtractionSchema · WorkflowResult
+├── storage/           workflow_store · prompt_store · cache（进程内单例）
+├── memory/            MemorySaver / SqliteSaver / PostgresSaver
+├── llm/provider.py    get_llm()：OpenAI / Anthropic / Google / WatsonX
+├── observability/     metrics 计数器 · @traceable 装饰器
+├── evaluation/        字段覆盖率评估器 + 置信度公式
+└── utils/logger.py    JSON 日志
+```
+
+### 1.1 与模板的差异
+
+| 模板项 | 本项目 | 原因 |
+|---|---|---|
+| `nodes/` 节点名 `intent` / `processing` / … | `classify_intent` / `run_processing` / `validate_result` / `build_output` / `handle_error` | LangGraph 0.3.x 节点名不能与 state 字段同名，否则 `ValueError: 'intent' is already being used as a state key`；统一动词前缀 |
+| `graph/registry.py`（`Names` / `Nodes` / `Tags` 三件套） | 删除；只留 `constants.py` 的 `Names` + `Tags`，节点函数在 `builder.py` 里直接 import | 一个节点一个文件已经够清楚，`Nodes` 层是多余间接 |
+| `services/versioning_service.py` | 删除 | 单轮流水线不保留跨轮版本状态；prompt 版本走请求 `prompt_versions` + `prompts/registry.py` |
+| `evaluation/`（独立包） | 合并成 `services/evaluation_service.py` | 只有一个评估器 + 一档阈值，独立包只让依赖图多一跳 |
+| `storage/`（进程内单例） | 删除 | 模板的 `workflow_store` / `cache` 重启即丢；本项目的持久化真源是 D1（`agent_*` 7 张表）+ KV（`agent:` 前缀），不能有两份“真相” |
+| `tools/` 四个 demo（calculator / retriever / db_query / http） | 换成 6 个业务域 `*_tools.py` + `adapters/`，25 个工具 | demo 没有业务含义；能力清单见 `05-tools.md` |
+| `observability/` 的 `@traceable` | 真 `langsmith.traceable` + `wrap_openai`，另加 `trace.py` | 模板装饰器只打日志不上报；图轨迹要随 `/run` 返回 |
+| `llm/provider.py` 四家 provider | 只留 OpenAI 兼容 + 无 key 确定性回退 | 站群只用一家兼容接口，node 里不做 SDK 分支 |
+| `prompts/versions/` | 保留 `intent/v1,v2`、`extraction/v1`；删 `validation/v1` | 校验是确定性代码，不需要 prompt |
+| `config.py` | 保留并扩展 `FLEET_DOMAIN` / `SITES` / `INTENTS` | 模板只有通用 Settings |
+| `models/` · `api/` · `main.py` · `memory/` · `utils/` | 保留，按需加字段 | — |
+
+模板没有、本项目新增（业务必需）：
+
+- `config/sites.json`（32 个站点清单）· `templates/site-page.html`（内容页模板，
+  11 个占位符）· `migrations/0001_agent_tables.sql`（D1 7 张表）
+- `render.yaml` · `langgraph.json` · `.env.example` 的站群字段
+- `test/test_architecture.py`：把“依赖只能向下”写成可执行断言的形式
+
+### 1.2 脚手架留下的工程文件
+
+| 文件 | 内容 | 本项目改动 |
+|---|---|---|
+| `pyproject.toml` | setuptools 构建；`packages.find include=["src*"]`；`[project.scripts] site-agent = "src.app.main:run"`；`requires-python >= 3.11`；`pytest` 的 `pythonpath=["src","."]` + `testpaths=["test"]` | 版本改 `0.2.0`；依赖加 `langsmith>=0.1.140,<1`；dev 组保留 `pytest` / `httpx` |
+| `.env.example` | 模板变量（`LOG_LEVEL`、`MEMORY_BACKEND`、`LLM_*`、`LANGSMITH_*`、`MAX_VALIDATION_RETRIES`…） | 扩到 46 行，补站群字段（`FLEET_DOMAIN`、`SITES_FILE`、`CF_*`、`GH_*`、`RADAR_*`、`GSC_*`、`DEVTO_*`、`RESEND_*`） |
+| `langgraph.json` | `{"dependencies": ["."], "graphs": {"site-agent": "src.app.main:run"}}` | 未改；只给 LangGraph CLI 用，线上仍走 Render + FastAPI |
+| `render.yaml` | Blueprint：`pip install -e .` + uvicorn + `/health`，`sync: false` 的变量在控制台填 | 新增（模板不带部署描述） |
+| `migrations/0001_agent_tables.sql` | D1 `agent_*` 7 张表 | 新增 |
+| `test/` | `conftest.py` + 8 个测试模块：api / graph / tools / sql / config / observability / trace / architecture | 按业务补齐；`test_architecture.py` 是新加的守卫 |
+
+依赖版本口径以 `pyproject.toml` 为准（`langgraph >=0.2.60,<0.4`），本文不重复列版本号。
+
+## 2. 分包规则
+
+1. **按技术职责切，不按业务域切**。`selection / measurement / distribution / ledger /
+   promotion / publishing` 六个域只体现为 `tools/` 下 6 个文件，不占顶层包。
+   顶层稳定为 **11 个包 + 2 个模块（`config.py`、`main.py`）= 13 个代码单元**，
+   加业务只加文件，不加包。
+2. **依赖只能向下**：`api → graph → nodes → services → tools → adapters`，
+   反向 import 由 `test/test_architecture.py` 拦住，不靠 code review。
+3. **新东西只有一个落点**：
+   - 新外部系统 → `tools/adapters/<域>/`，并在对应 `*_tools.py` 的 Ops 里接一层
+   - 新业务能力 → 对应 `*_tools.py` 加一个 `RuntimeTool` 子类 + `TOOL_CLASSES` 加一行
+   - 新图步骤 → `nodes/` 一个文件 + `constants.Names` + `builder.py` 一条边（名字带动词前缀）
+   - 新配置 → `config.py` 加字段；值来自 env 或 `config/sites.json`，模块里不写字面量
+
+各代码单元的职责边界：
+
+| 单元 | 一句话职责 | 只有它能做的事 | 与模板 |
+|---|---|---|---|
+| `api/routes.py` | HTTP 边界 | 解析请求体、拼 `initial_state`、返回 `{state, trace}` | 保留改造 |
+| `graph/` | 图装配 | 定义 state 形状、节点顺序、条件边、提供进程级单例 | 保留，去 registry |
+| `nodes/` | 单步逻辑 | 决定读/写 state 的哪些字段、失败怎么记进 `messages` | 保留改名 |
+| `services/` | 无 IO 的业务判断 | 意图分类、字段抽取、意图→工具集、覆盖率评分 | 保留 4 个 |
+| `tools/*_tools.py` | 25 个能力的实现 | Pydantic 参数校验、转调哪个 Ops 方法、`kind` 标注 | 全换 |
+| `tools/adapters/` | 唯一外部 IO 层 | HTTP / SQL / git / SMTP；超时、重试、错误归一成 `ok=false` | 新增 |
+| `tools/base.py` | 契约叶子 | `BaseTool` / `RuntimeTool` / `ToolOutput` / `stable_key`，不 import 任何 `src.app.*` | 保留 |
+| `tools/registry.py` | 装配 | `RuntimeService` 组合 6 个域 Ops + `ToolRegistry.bind()` | 保留 |
+| `models/` | 跨层数据契约 | `ExtractionSchema`、`WorkflowResult` | 保留 |
+| `prompts/` | prompt 文本与加载 | 版本解析、缺失回退 v1 | 保留 |
+| `llm/provider.py` | 模型客户端 | OpenAI 兼容构造、无 key 返回 `None`、`wrap_openai` | 改造 |
+| `memory/` | checkpointer | memory / sqlite 选择与连接参数 | 改造 |
+| `observability/` | 观测 | metrics、LangSmith 开关、图轨迹采集 | 保留 + 新增 |
+| `utils/logger.py` | 日志 | 单行 JSON、`extra={"span": ...}` | 保留 |
+| `config.py` | 配置唯一入口 | `Settings`、`INTENTS`、`FLEET_DOMAIN`、`SITES` | 扩展 |
+
+## 3. 目录树
 
 ```
 site-agent/
@@ -16,7 +124,7 @@ site-agent/
 │   │   ├── state.py             WorkflowState（输入 / 中间 / 输出三组）+ initial_state()
 │   │   ├── constants.py         Names（节点名）+ Tags（路由标签）
 │   │   └── edges.py             route_after_validation + EDGE_MAP
-│   ├── nodes/                   intent · processing · validation · output · error
+│   ├── nodes/                   classify_intent · run_processing · validate_result · build_output · handle_error
 │   ├── services/
 │   │   ├── llm_service.py       意图分类 + 字段抽取（含无 key 回退）
 │   │   ├── prompt_service.py    prompt 加载（版本可指定、缺失回退 v1）
@@ -45,13 +153,13 @@ site-agent/
 ├── config/sites.json            32 个站点（配置，不是代码）
 ├── templates/site-page.html     内容页模板（11 个占位符）
 ├── migrations/0001_agent_tables.sql  D1 台账表
-└── test/                        api · graph · tools · sql · config · architecture
+└── test/                        api · graph · tools · sql · config · observability · trace · architecture
 ```
 
 分包按**技术职责**（入口 / 编排 / 步骤 / 服务 / 工具 / 适配器），业务域只在
 `tools/*_tools.py` 内部体现。这样加一个能力只需要动一个域文件 + 一行注册。
 
-## 2. 依赖方向
+## 4. 依赖方向
 
 ```mermaid
 flowchart LR
@@ -76,7 +184,7 @@ flowchart LR
 2. 工具层没有函数内 `import`：顺序由模块层级保证（`registry → *_tools → base`）。
    `adapters/` 例外，那里允许为可选依赖做延迟导入。
 
-## 3. 装配与工具契约
+## 5. 装配与工具契约
 
 外部 IO 的门面是 `RuntimeService`（6 个域 Ops 的多继承组合，本身没有实现），
 装配与注入都在 `registry.py`：
@@ -111,7 +219,7 @@ class GetHotwordsTool(RuntimeTool):
 `fixed` 只在需要固定参数时写（如 `{"dimensions": ("page",)}`）；嵌套 `Input`
 本身就是类属性，不需要 `Input = Input`。
 
-## 4. 硬约束与已知坑
+## 6. 硬约束与已知坑
 
 1. **节点名不能与 state 字段同名**：LangGraph 0.3.x 的 `add_node("intent", ...)` 与
    `WorkflowState.intent` 冲突，抛 `ValueError: 'intent' is already being used as a
@@ -127,10 +235,10 @@ class GetHotwordsTool(RuntimeTool):
 5. **`ensure_repo` 会重置本地副本**：已存在的仓库执行 `fetch` + `reset --hard`，
    手工改动会丢，调试请另起目录。
 
-## 5. 自查
+## 7. 自查
 
 ```bash
-pytest -q                                        # 47 passed
+pytest -q                                        # 56 passed
 python -m pyflakes src test                      # 无输出
 python -m compileall -q src test
 python -m src.app.main                           # 无凭据也跑完：工具失败 → retry → error

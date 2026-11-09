@@ -4,6 +4,10 @@
 
 ## 1. 本地
 
+项目由 `langgraph-init-cli` 0.1.5 的 `production` 模板生成（来源与改造清单见
+[10-structure.md §1](10-structure.md)）。**不要在现有目录重跑 `langgraph-init`**——
+CLI 没有 upgrade，重跑会覆盖同名文件。
+
 ```bash
 cd site-agent
 python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
@@ -12,7 +16,7 @@ cp .env.example .env                              # 不填任何凭据也能跑
 ```
 
 ```bash
-pytest -q                                          # 47 passed
+pytest -q                                          # 56 passed
 python -m src.app.main                             # CLI 跑一轮
 uvicorn src.app.api.routes:api --reload --port 10000
 curl -s localhost:10000/health
@@ -167,7 +171,7 @@ Render 的 FastAPI 为准。
 
 ## 5. 验证清单
 
-1. `pytest -q` → **47 passed**（`FakeRuntime`，不碰任何外部服务）。
+1. `pytest -q` → **56 passed**（`FakeRuntime`，不碰任何外部服务）。
 2. `python -m compileall -q src test` 通过。
 3. `python -m pyflakes src test` 无输出。
 4. `/health` 返回 `{"status":"ok","metrics":{...}}`。
