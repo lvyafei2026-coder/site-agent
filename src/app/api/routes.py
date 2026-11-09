@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from src.app.config import settings
 from src.app.graph.builder import get_graph
 from src.app.graph.state import initial_state
+from src.app.observability.langsmith import public_config as langsmith_config
 from src.app.observability.metrics import metrics
 from src.app.observability.trace import run_traced
 
@@ -49,8 +50,8 @@ def invoke_workflow(payload: dict) -> dict:
                          "input_text": payload["input_text"][:200]},
         },
     )
-    # trace 是附加字段，不属于 WorkflowState：老前端忽略它也不受影响
-    return {**result, "trace": trace}
+    # trace / langsmith 都是附加字段，不属于 WorkflowState：老前端忽略也不受影响
+    return {**result, "trace": trace, "langsmith": langsmith_config()}
 
 
 api = FastAPI(title=settings.project_name)

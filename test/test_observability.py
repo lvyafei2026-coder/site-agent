@@ -69,6 +69,22 @@ def test_configure_writes_and_clears_env(tracing):
     assert "LANGSMITH_API_KEY" not in os.environ    # 关掉时摘掉 key，避免残留上报
 
 
+def test_public_config_never_leaks_key(tracing, monkeypatch):
+    """前端回链只带开关 / 项目名 / 项目地址，key 不能出现在响应里。"""
+    url = "https://smith.langchain.com/o/acme/projects/p/123"
+    monkeypatch.setattr(settings, "langsmith_project_url", url)
+    tracing(True)
+
+    cfg = ls.public_config()
+    assert cfg == {"enabled": True, "project": settings.langsmith_project, "url": url}
+    assert "lsv2_pt_test" not in str(cfg)          # key 不进 public_config
+
+    tracing(False)
+    monkeypatch.setattr(settings, "langsmith_project_url", "")
+    off = ls.public_config()
+    assert off["enabled"] is False and off["url"] == ""
+
+
 def test_llm_client_wrapped_only_when_enabled(tracing, monkeypatch):
     import types
 

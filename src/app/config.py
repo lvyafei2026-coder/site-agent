@@ -42,6 +42,8 @@ class Settings:
     langsmith_endpoint: str = os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
     langsmith_api_key: str = os.getenv("LANGSMITH_API_KEY", "")
     langsmith_project: str = os.getenv("LANGSMITH_PROJECT", "site-agent")
+    # 项目页地址（不是凭据）：填了之后 /run 会带回去，console 的结果卡上就有直达链接
+    langsmith_project_url: str = os.getenv("LANGSMITH_PROJECT_URL", "")
     default_prompt_versions: dict[str, str] | None = None
     max_validation_retries: int = int(env("MAX_VALIDATION_RETRIES", "2"))
 

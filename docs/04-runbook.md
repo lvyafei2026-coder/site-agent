@@ -51,6 +51,7 @@ curl -s -X POST localhost:10000/run \
 | `DATABASE_URL` | sqlite 时 | 生产用 `sqlite:////data/agent.sqlite` |
 | `MAX_VALIDATION_RETRIES` | 否 | 默认 2（最多 3 次取数） |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | 否 | 追踪开关，默认关闭；见 §2.2 |
+| `LANGSMITH_PROJECT_URL` | 否 | 项目页地址，只用于 console 的结果回链；不填会自动解析；见 §2.2 |
 | `LLM_API_KEY` | 否 | 留空走确定性回退 |
 | `LLM_BASE_URL` | 否 | 兼容任何 OpenAI 风格服务 |
 | `LLM_MODEL` | 否 | 默认 `gpt-4o-mini` |
@@ -137,6 +138,21 @@ curl -s -X POST localhost:10000/run \
 `observability/trace.py`），`path` 是一轮的节点序列、`nodes` 是每步耗时与
 写入字段、`route` 是 complete/error、`retried` 表示是否重试过。console 的
 「Agent入口」页把它渲染成芯片流程图 + 每步变化表，排查不用登 LangSmith。
+
+**结果页回链**：`/run` 同时带回 `langsmith{enabled, project, url}`，console 在
+**每轮结果标题右侧**和**历史行「追踪」列**渲染 `LangSmith ↗`，点开即进项目 Runs。
+
+| 情况 | 按钮 |
+|---|---|
+| 追踪开着 + 解析成功 | 显示，直达项目页（按 `thread_id` / 时间找这一轮） |
+| 追踪开着 + 解析失败 | 不显示（不产生死链） |
+| 追踪关闭 | 不显示 |
+
+地址优先取 `LANGSMITH_PROJECT_URL`；不填且追踪开着时，服务端自动向 LangSmith 解析
+一次（`observability/langsmith.py`：2s 超时、成功缓存 1 小时、失败缓存 5 分钟并
+静默降级，绝不影响 `/run`）。解析走的是 langsmith SDK 的 `read_project` +
+`_host_url` / `_get_tenant_id`，**升级 langsmith 大版本后若链接消失**，手填
+`LANGSMITH_PROJECT_URL` 即可兜底（smith 项目页 → 复制浏览器地址）。
 
 ## 3. D1 建表
 

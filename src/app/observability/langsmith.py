@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import functools
 import os
+import time
 from collections.abc import Callable
 
 from src.app.config import settings
@@ -31,6 +32,55 @@ logger = get_logger(__name__)
 def tracing_enabled() -> bool:
     """真开追踪的条件：开关为真 + 有 key。"""
     return bool(settings.langsmith_tracing and settings.langsmith_api_key)
+
+
+def _resolve_project_url() -> str:
+    """项目页地址：手填优先，没填就向 LangSmith 解析一次（成功缓存 1 小时）。
+
+    失败一律返回空串——回链是锦上添花，不能因为 LangSmith 抽风就让 /run 变慢或报错。
+    失败只缓存 5 分钟，避免每个请求都去试一次。
+    """
+    configured = settings.langsmith_project_url.strip()
+    if configured:
+        return configured
+    if not tracing_enabled():
+        return ""
+
+    global _URL_CACHE
+    url, at = _URL_CACHE
+    ttl = 3600 if url else 300
+    if time.monotonic() - at < ttl:
+        return url
+
+    url = ""
+    try:
+        from langsmith import Client
+
+        client = Client(timeout_ms=2000)
+        project = client.read_project(project_name=settings.langsmith_project)
+        # 与官方 get_run_url 同款格式：/o/<tenant>/projects/p/<project-id>
+        url = f"{client._host_url}/o/{client._get_tenant_id()}/projects/p/{project.id}"
+    except Exception as exc:                      # noqa: BLE001 - 回链失败不影响主流程
+        logger.warning("langsmith project url unavailable: %r", exc)
+    _URL_CACHE = (url, time.monotonic())
+    return url
+
+
+_URL_CACHE: tuple[str, float] = ("", 0.0)
+
+
+def public_config() -> dict:
+    """给前端的回链信息：只暴露开关、项目名、项目页地址，**不含任何凭据**。
+
+    地址优先取 `LANGSMITH_PROJECT_URL`；没填且追踪开着时自动解析项目页
+    （形如 `https://smith.langchain.com/o/<org>/projects/p/<project-id>`）。
+    拿不到就是空串，前端按“已开启但未配置链接”处理，不显示死链。
+    """
+    return {
+        "enabled": tracing_enabled(),
+        "project": settings.langsmith_project,
+        "url": _resolve_project_url(),
+    }
 
 
 def configure_langsmith() -> None:

@@ -51,6 +51,8 @@ services:
         sync: false        # smith.langchain.com → Settings → API Keys
       - key: LANGSMITH_PROJECT
         value: site-agent
+      - key: LANGSMITH_PROJECT_URL
+        sync: false        # 项目页地址（非凭据）：smith 项目页 → 复制浏览器地址
       - key: RADAR_URL
         sync: false
       - key: RADAR_USER
