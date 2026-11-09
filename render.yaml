@@ -1,16 +1,17 @@
-# Render Blueprint — Background Worker
-# 注意：免费实例的文件系统是临时的（重启即丢），而 LangGraph checkpointer 需要持久化，
-# 因此这里用 Starter 计划 + 1GB 磁盘（$7/月）。若想保持 $0，见 docs/03-tech-design.md §2
-# 的 Postgres checkpointer 方案（Neon 免费层）。部署步骤见 docs/04-runbook.md。
+# Render Blueprint — Web Service（FastAPI 单轮流水线）
+# 注意：免费实例的文件系统是临时的（重启即丢），而 checkpointer 用
+# MEMORY_BACKEND=sqlite 落 /data，因此用 Starter 计划 + 1GB 磁盘（$7/月）。
+# 调度在外部：进程不保存跨轮状态，重启只需重建 checkpointer。部署见 docs/04-runbook.md。
 services:
-  - type: worker
+  - type: web
     name: site-agent
     runtime: python
     plan: starter
     region: singapore
-    buildCommand: pip install uv && uv sync --frozen --no-dev
-    startCommand: uv run python -m site_agent.main
+    buildCommand: pip install -e .
+    startCommand: uvicorn src.app.api.routes:api --host 0.0.0.0 --port $PORT
     autoDeploy: true
+    healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
@@ -23,11 +24,11 @@ services:
       - key: CF_API_TOKEN
         sync: false
       - key: FLEET_DOMAIN
-        sync: false          # 站群主域，如 toolara.dev；子站 host / radar / GSC 都从这里派生
+        sync: false          # 站群主域；子站 / radar / GSC / 联系邮箱都从这里派生
       - key: D1_DATABASE_ID
         sync: false
       - key: KV_NAMESPACE_ID
-        sync: false
+        sync: false          # 与 radar / console 共用 RADAR_KV，键统一 agent: 前缀
       - key: GITHUB_TOKEN
         sync: false
       - key: GH_ORG
@@ -35,13 +36,13 @@ services:
       - key: GSC_SA_JSON
         sync: false
       - key: GSC_PROPERTY
-        sync: false          # 留空 = sc-domain:<FLEET_DOMAIN>
+        sync: false
       - key: LLM_API_KEY
         sync: false
       - key: LLM_BASE_URL
         sync: false
       - key: RADAR_URL
-        sync: false          # 留空 = https://radar.<FLEET_DOMAIN>
+        sync: false
       - key: RADAR_USER
         sync: false
       - key: RADAR_PASS
@@ -50,14 +51,14 @@ services:
         sync: false
       - key: ADMIN_EMAIL
         sync: false
-      - key: IMAP_HOST
-        sync: false
-      - key: IMAP_USER
-        sync: false
-      - key: IMAP_PASS
+      - key: CONTACT_EMAIL
         sync: false
       - key: DEVTO_API_KEY
         sync: false
+      - key: MEMORY_BACKEND
+        value: sqlite
+      - key: DATABASE_URL
+        value: sqlite:////data/agent.sqlite
     disk:
       name: agent-data
       mountPath: /data

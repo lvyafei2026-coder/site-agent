@@ -1,0 +1,6 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "site-agent": "src.app.main:run"
+  }
+}
