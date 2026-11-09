@@ -34,8 +34,19 @@ def invoke_workflow(payload: dict) -> dict:
         prompt_versions=payload.get("prompt_versions"),
     )
     thread_id = payload.get("thread_id") or f"run-{int(time.time() * 1000)}"
+    # run_name / tags / metadata 只在 LangSmith 开启时才有意义，关闭时被忽略：
+    # 有了 run_name，追踪列表里每条是 site-agent:select_pages 而不是 "LangGraph"。
     return get_graph().invoke(
-        state, config={"configurable": {"thread_id": thread_id}})
+        state,
+        config={
+            "configurable": {"thread_id": thread_id},
+            "run_name": f"site-agent:{payload.get('intent') or 'auto'}",
+            "tags": ["site-agent"],
+            "metadata": {"thread_id": thread_id,
+                         "intent": payload.get("intent") or "",
+                         "input_text": payload["input_text"][:200]},
+        },
+    )
 
 
 api = FastAPI(title=settings.project_name)

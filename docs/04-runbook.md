@@ -46,7 +46,7 @@ curl -s -X POST localhost:10000/run \
 | `MEMORY_BACKEND` | 否 | `memory`（默认）/ `sqlite` |
 | `DATABASE_URL` | sqlite 时 | 生产用 `sqlite:////data/agent.sqlite` |
 | `MAX_VALIDATION_RETRIES` | 否 | 默认 2（最多 3 次取数） |
-| `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | 否 | 追踪开关，默认关闭 |
+| `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | 否 | 追踪开关，默认关闭；见 §2.2 |
 | `LLM_API_KEY` | 否 | 留空走确定性回退 |
 | `LLM_BASE_URL` | 否 | 兼容任何 OpenAI 风格服务 |
 | `LLM_MODEL` | 否 | 默认 `gpt-4o-mini` |
@@ -84,6 +84,50 @@ curl -s -X POST localhost:10000/run \
 其余全是凭据，只进 Render 的 Environment，**不写进文档、不提交仓库**：
 `CF_ACCOUNT_ID` / `CF_API_TOKEN` / `GITHUB_TOKEN` / `RADAR_USER` / `RADAR_PASS` /
 `LLM_API_KEY` / `RESEND_API_KEY` / `DEVTO_API_KEY` / `GSC_SA_JSON`。
+
+### 2.2 LangSmith 追踪（怎么看每轮跑了什么）
+
+**它解决什么**：`/run` 返回的 JSON 只有最终 state，看不到「意图凭什么判成 select_pages」
+「哪个工具慢」「重试那一轮模型收到什么 prompt」。打开追踪后每一轮都是一棵可展开的
+调用树：图级 run → 各节点 → LLM 请求（含完整 messages、token 数、耗时）。
+
+**三步开启**
+
+1. 注册 https://smith.langchain.com（GitHub 账号登录即可，免费档 5k traces/月），
+   在 **Settings → API Keys → Create API Key** 生成 `lsv2_pt_...`，同时记下项目名
+   （默认 `default`，建议新建 `site-agent`）。
+2. 本地 `site-agent/.env`：
+
+   ```ini
+   LANGSMITH_TRACING=true
+   LANGSMITH_API_KEY=lsv2_pt_xxx
+   LANGSMITH_PROJECT=site-agent
+   # 只有欧盟区实例才需要改：https://eu.api.smith.langchain.com
+   LANGSMITH_ENDPOINT=https://api.smith.langchain.com
+   ```
+
+3. Render：Environment 里同样加这三项（`render.yaml` 已声明为 `sync: false`，
+   在 Dashboard 填值即可；手工加也行），保存后服务会自动重启生效。
+   **不要**把 key 写进仓库或 `render.yaml`。
+
+**开关判定**：`LANGSMITH_TRACING=true` 且 `LANGSMITH_API_KEY` 非空才上报（见
+`src/app/observability/langsmith.py`）。只有开关没有 key 时按关闭处理——否则每次
+调用都 401，日志会被刷满。关闭时 `traceable` 直接返回原函数，零开销。
+
+**打开后在哪看**：smith 项目页 → Runs 列表，每轮一条 `site-agent:<intent>`（未显式
+指定意图时是 `site-agent:auto`）。点进去看到：
+
+| 层级 | 内容 | 来源 |
+|---|---|---|
+| 图级 | 整轮输入输出、总耗时、thread_id、input_text | `routes.py` 的 `run_name` / `metadata` |
+| 节点级 | classify_intent / run_processing / validate_result / build_output | LangGraph 自动打点 |
+| LLM 级 | 实际发送的 messages、返回 JSON、token 数与延迟 | `llm/provider.py` 的 `wrap_openai` |
+
+**排障**：列表里一条都没有时，按顺序查 ① 两个环境变量是否都生效
+（`/health` 看不到，直接 `docker run` 或 Render Shell 里 `env | grep LANGSMITH`）；
+② key 是否属于当前 endpoint 所在的区（EU key 打 US 端点必然 401）；
+③ 日志里搜 `Failed to send` / `401`——上报失败只打 warning，不会让 `/run` 失败，
+所以**业务成功 ≠ 追踪成功**。
 
 ## 3. D1 建表
 

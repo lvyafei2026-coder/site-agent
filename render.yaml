@@ -43,6 +43,14 @@ services:
         sync: false
       - key: LLM_MODEL
         sync: false        # GitHub Models 要求 publisher/model 全名，如 openai/gpt-4o-mini
+      # LangSmith 追踪（可选）：TRACING=true 且 API_KEY 非空才真正上报，
+      # 任一缺失按关闭处理，不影响 /run 主流程（上报失败只打 warning）。
+      - key: LANGSMITH_TRACING
+        sync: false        # 填 true 开启
+      - key: LANGSMITH_API_KEY
+        sync: false        # smith.langchain.com → Settings → API Keys
+      - key: LANGSMITH_PROJECT
+        value: site-agent
       - key: RADAR_URL
         sync: false
       - key: RADAR_USER

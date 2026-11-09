@@ -21,7 +21,11 @@ DEFAULT_PROMPT = "查看站群近期热词、新页与点击数据，给出本�
 def run():
     result = get_graph().invoke(
         initial_state(DEFAULT_PROMPT),
-        config={"configurable": {"thread_id": f"cli-{int(time.time())}"}},
+        config={
+            "configurable": {"thread_id": f"cli-{int(time.time())}"},
+            "run_name": "site-agent:cli",
+            "tags": ["site-agent", "cli"],
+        },
     )
     logger.info("workflow_complete",
                 extra={"intent": result.get("intent"), "metrics": metrics.snapshot()})
