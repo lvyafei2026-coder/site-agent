@@ -117,25 +117,42 @@ sequenceDiagram
 
 ## 5. 部署拓扑
 
+站群全景（site-agent 与其它四层系统的关系）：
+
 ```mermaid
-flowchart TB
-  cron[外部 cron / 手动触发] -->|POST /run| R[Render Web Service<br/>uvicorn FastAPI]
-  R -->|状态落盘| disk[(/data/agent.sqlite<br/>checkpointer)]
-  R -->|HTTP| D1[(Cloudflare D1<br/>events + agent_*)]
-  R -->|HTTP| KV[(Workers KV<br/>agent: 前缀)]
-  R -->|HTTP| RADAR[radar 子域<br/>/api/candidates]
-  R -->|HTTP| GSC[Google Search Console API]
-  R -->|HTTP| GH[GitHub API<br/>check runs / contents]
-  R -->|git| REPO[(本地仓库副本<br/>/data/repos)]
-  R -->|HTTP| DEVTO[Dev.to API]
-  R -->|HTTP| MAIL[Resend]
-  R -->|HTTP| LLM[OpenAI 兼容 API]
+flowchart LR
+  visitor(["访客 / 浏览器"]) -->|"HTTPS"| proxy["tool-proxy（通用网关）<br/>热点采集 /_ev.js 埋点 · Google 轻登录 /_auth<br/>代理转发 · 共享资源池 · 301 轮询生成<br/>robots / sitemap 生成"]
+
+  proxy -->|"埋点 / 登录写入"| d1[("D1 · web-clicks-analytics<br/>events · auth_users · agent_* 台账")]
+  proxy -->|"service binding 转发"| sub["cloudflare Worker 子域函数<br/>总站互链流量计数 · 各站点互 rel 链<br/>新增站点接入（DOMAIN_MAP）"]
+  sub -->|"页面产物"| gh[("github<br/>32 个子站仓库")]
+
+  console["site-console（运营工作台）<br/>站点数据 tabs（只读 D1）<br/>AI 手动分析额度 5/天 · 工作台 + CSV"]
+  console -->|"只读"| d1
+  console <-->|"读写"| kv[("KV<br/>QuotaKV · RadarKV")]
+
+  src["Google Trends 热词<br/>Suggest / DDG SERP 探子池"] --> radar["google-trend-radar（抓取器）<br/>抓取 · 打分 · 候选 · 编辑器<br/>SERP 竞争度 · 30 天趋势曲线"]
+  radar -->|"抓取结果落盘"| kv
+  radar -->|"候选入库"| d1
+
+  agent["site-agent（LangGraph）<br/>单轮多步编排<br/>sense → decide → execute → verify"]
+  agent -->|"读 /api/candidates"| radar
+  agent -->|"读台账 · 写任务/状态"| d1
+  agent -->|"调 CF API"| cf["cloudflare<br/>CF API · Workers 部署"]
+  agent -->|"改代码 → push"| gh
+  ext["GSC · Reddit · Dev.to"] -->|"sense 数据源"| agent
+  agent -->|"通知 / 容错邮件"| mail["Resend（如配邮件）"]
+  agent -->|"decide"| llm["OpenAI 兼容 LLM"]
 ```
 
 `render.yaml` 是完整定义：`plan: starter` + 1GB 磁盘挂 `/data`，
 `buildCommand: pip install -e .`，`startCommand: uvicorn src.app.api.routes:api`，
 健康检查 `/health`。生产用 `MEMORY_BACKEND=sqlite` +
-`DATABASE_URL=sqlite:////data/agent.sqlite`。
+`DATABASE_URL=sqlite:////data/agent.sqlite`（checkpointer 落盘 `/data/agent.sqlite`，
+git 仓库副本在 `/data/repos`）。
+
+触发方式：外部 cron 或手动 `POST /run`（console 的「Agent入口」页透传，
+cron 心跳保活由 site-console 的 `*/10 1-15 * * *`（UTC）负责）。
 
 为什么不用 Workers：没有长驻进程，也没有可持久化的图状态；Workers AI 是账户级
 额度，出图站已经占了大部分。
