@@ -11,6 +11,7 @@ import time
 from src.app.graph.builder import get_graph
 from src.app.graph.state import initial_state
 from src.app.observability.metrics import metrics
+from src.app.observability.trace import run_traced
 from src.app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -19,7 +20,8 @@ DEFAULT_PROMPT = "查看站群近期热词、新页与点击数据，给出本�
 
 
 def run():
-    result = get_graph().invoke(
+    result, trace = run_traced(
+        get_graph(),
         initial_state(DEFAULT_PROMPT),
         config={
             "configurable": {"thread_id": f"cli-{int(time.time())}"},
@@ -28,7 +30,8 @@ def run():
         },
     )
     logger.info("workflow_complete",
-                extra={"intent": result.get("intent"), "metrics": metrics.snapshot()})
+                extra={"intent": result.get("intent"), "path": trace["path"],
+                       "totalMs": trace["totalMs"], "metrics": metrics.snapshot()})
     return result
 
 

@@ -129,6 +129,11 @@ curl -s -X POST localhost:10000/run \
 ③ 日志里搜 `Failed to send` / `401`——上报失败只打 warning，不会让 `/run` 失败，
 所以**业务成功 ≠ 追踪成功**。
 
+**不接 LangSmith 也能看轨迹**：`/run` 的返回体自带 `trace` 字段（见
+`observability/trace.py`），`path` 是一轮的节点序列、`nodes` 是每步耗时与
+写入字段、`route` 是 complete/error、`retried` 表示是否重试过。console 的
+「Agent入口」页把它渲染成芯片流程图 + 每步变化表，排查不用登 LangSmith。
+
 ## 3. D1 建表
 
 ```bash

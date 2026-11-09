@@ -65,7 +65,7 @@ src/app/
 ├── prompts/versions/        <task>/vN.txt（intent 有 v1/v2，extraction 有 v1）
 ├── memory/checkpointer.py   memory / sqlite
 ├── llm/provider.py          OpenAI 兼容客户端
-├── observability/           metrics · langsmith
+├── observability/           metrics · langsmith · trace（图轨迹）
 └── utils/                   logger（单行 JSON）
 config/sites.json            32 个站点的清单（配置，不是代码）
 templates/site-page.html     内容页模板（11 个占位符）

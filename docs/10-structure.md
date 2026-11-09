@@ -40,7 +40,7 @@ site-agent/
 │   ├── prompts/                 registry.py + versions/<task>/vN.txt
 │   ├── memory/checkpointer.py   memory / sqlite
 │   ├── llm/provider.py          OpenAI 兼容客户端
-│   ├── observability/           metrics · langsmith(@traceable)
+│   ├── observability/           metrics · langsmith(@traceable) · trace(图轨迹)
 │   └── utils/logger.py          单行 JSON 日志
 ├── config/sites.json            32 个站点（配置，不是代码）
 ├── templates/site-page.html     内容页模板（11 个占位符）

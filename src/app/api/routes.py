@@ -15,6 +15,7 @@ from src.app.config import settings
 from src.app.graph.builder import get_graph
 from src.app.graph.state import initial_state
 from src.app.observability.metrics import metrics
+from src.app.observability.trace import run_traced
 
 
 class WorkflowRequest(BaseModel):
@@ -36,7 +37,8 @@ def invoke_workflow(payload: dict) -> dict:
     thread_id = payload.get("thread_id") or f"run-{int(time.time() * 1000)}"
     # run_name / tags / metadata 只在 LangSmith 开启时才有意义，关闭时被忽略：
     # 有了 run_name，追踪列表里每条是 site-agent:select_pages 而不是 "LangGraph"。
-    return get_graph().invoke(
+    result, trace = run_traced(
+        get_graph(),
         state,
         config={
             "configurable": {"thread_id": thread_id},
@@ -47,6 +49,8 @@ def invoke_workflow(payload: dict) -> dict:
                          "input_text": payload["input_text"][:200]},
         },
     )
+    # trace 是附加字段，不属于 WorkflowState：老前端忽略它也不受影响
+    return {**result, "trace": trace}
 
 
 api = FastAPI(title=settings.project_name)
