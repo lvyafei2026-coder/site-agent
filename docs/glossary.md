@@ -5,75 +5,66 @@ SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 # 术语表
 
-> 按三个领域分组。查不到的词可以直接搜代码，或提 issue。
+> 三类：站群 / 编排 / 数据。查不到的词就搜代码，术语在代码注释里第一次出现时都有解释。
 
----
-
-## 一、Cloudflare 与部署
+## 一、站群与部署
 
 | 术语 | 解释 |
 |---|---|
-| **Worker** | Cloudflare 的边缘计算单元。一段 JS 代码跑在全球节点上，无服务器。本项目 33 个子站各是一个 Worker。 |
-| **service binding** | Worker 之间互相调用的内部通道。入口代理靠它把请求转给子站，不经过公网。binding 缺失时直接 503 并打日志。 |
-| **D1** | Cloudflare 的 SQLite 托管数据库。本项目用它存埋点 `events`、选题 `candidates`、Agent 台账 `agent_*`。 |
-| **KV** | Cloudflare 的键值存储，全球缓存、最终一致。本项目用它存熔断标记与审批去重键。 |
-| **R2** | Cloudflare 的对象存储（兼容 S3）。本项目用它存 `music` 站的封面图。 |
-| **Workers AI** | Cloudflare 的边缘推理服务。**账户级配额 10,000 neurons/天，所有 Worker 共用**，本项目完全不使用（留给绘图站）。 |
-| **check run** | GitHub 上 CI 一次运行的结果记录。Cloudflare 部署 Worker 时会产生名为 `Workers Builds: <服务名>` 的 check run。**判断有没有上线，先看它**。 |
-| **`?v=<随机数>`** | 穿透 CDN 缓存的惯用手法。请求时带一个变化的 query，强制回源。本项目用它验证"线上页面真的是新版"。 |
-| **canonical** | 页面的规范 URL（`<link rel="canonical">`）。用于告诉搜索引擎"同一内容以这个地址为准"。 |
+| **子站（site）** | 一个关键词一个站，独立仓库 + 独立 Cloudflare Worker。清单在 `config/sites.json`，`name` 就是子域名。 |
+| **资产目录（`asset_dir`）** | 静态文件所在目录，默认 `public`，必须与仓库 `wrangler.toml` 的 `assets.directory` 一致，否则渲染出来的页面不会被部署。 |
+| **Worker** | Cloudflare 的边缘计算单元。本站群每个子站一个 Worker，托管静态资产。 |
+| **入口代理（`tool-proxy`）** | 站群统一入口 Worker，按 Host 转发、注入埋点、生成 robots/sitemap。它往 D1 写 `events`，本站只读。 |
+| **radar** | 选题雷达（`radar.<主域>`），扫 Google Suggest / Trends / SERP 并给候选词打分。本站只读 `/api/candidates`。 |
+| **`site-console`** | 站群控制台（页面与统计）。本站不提供 UI，两者共享 D1 / KV。 |
+| **check run** | GitHub 上一次 CI 的结果。Cloudflare 部署 Worker 时会产生 `Workers Builds: <服务名>`，**判断有没有上线先看它**。 |
+| **`?v=<随机数>`** | 穿透 CDN 缓存的手法。`check_live_page` 用它确认线上真的是新版本。 |
+| **slug** | URL 里的页面标识，如 `paypal-fee-for-freelancers`。渲染前强校验 `^[a-z0-9][a-z0-9-]{2,60}$`，防路径穿越。 |
+| **canonical** | 页面规范 URL，告诉搜索引擎同一内容以哪个地址为准。 |
+| **JSON-LD** | 页面里的结构化数据（`application/ld+json`）。模板生成 `Article` + `FAQPage` 两段。 |
+| **sitemap.xml** | 站点地图。`render_files` 往已有的 sitemap 里插 `<url>`；文件不存在则跳过。 |
 
----
-
-## 二、Agent 编排（LangGraph）
-
-| 术语 | 解释 |
-|---|---|
-| **StateGraph** | LangGraph 的核心抽象：一张有向图，节点是函数，边是流转。本项目用它表达 `sense → decide → execute → verify → learn`。 |
-| **node（节点）** | 图上的一个处理步骤。本项目有 5 个，都是纯函数（只做编排，不做 IO）。 |
-| **checkpointer** | 状态持久化器。每执行完一个节点就把图状态落盘，进程重启后能从断点继续。本项目用 SQLite 实现。 |
-| **`thread_id`** | 一条执行线程的标识。本项目用业务主键（`gen-page:2026-11-05`）代替随机 UUID，因此重复触发会续跑同一条线程而不是新建。 |
-| **`interrupt()`** | 在节点内部主动挂起执行，等人给输入。本项目用它实现"写操作等人批准"。 |
-| **resume** | 恢复被挂起的执行。**注意：恢复时整个节点函数会从头重跑**，只是这次 `interrupt()` 直接返回人的输入——所以节点内的副作用必须幂等。 |
-| **`Command(resume=...)`** | 触发 resume 的调用形式。 |
-| **幂等（idempotent）** | 同一次操作执行多次，结果与执行一次相同。本项目的 `execute_action` 必须满足这条，否则 resume 会重复建页。 |
-| **熔断（breaker）** | 连续失败 N 次后暂停该类型任务 M 分钟，防止持续烧钱或刷屏。状态存 KV，键为 `agent:pause:<scope>`。 |
-| **fail-open** | 保护装置自身故障时放行，而不是阻断。本项目的熔断器读 KV 失败时视为"未熔断"。 |
-
----
-
-## 三、业务与 SEO
+## 二、Agent 编排
 
 | 术语 | 解释 |
 |---|---|
-| **入口代理（gateway）** | 站群的统一入口 Worker。所有子域都绑定在它上面，由它分发、生成 robots/sitemap、注入埋点、处理 Google 登录。这是**架构角色**，不绑定具体实现——当前站群里这个 Worker 的名字是 `tool-proxy`。 |
-| **radar** | 站群内部的选题雷达（部署在 `radar.<主域>`）。扫 Google Suggest / Trends / X 热榜，算 SERP 竞争度与 30 天趋势，给候选词打分。**不对外**。 |
-| **candidates** | radar 的候选词表（D1）。每条记录含关键词、搜索量、竞争度、趋势、`verdict`。 |
-| **verdict** | radar 对候选词的结论：`做` / `不做` / `parked`（暂时搁置）。本 Agent 只取 `做` 的。 |
-| **DEAD_RULES** | 判死规则：真人姓名、他人作品名、纯资讯类词一律不做。radar 有一份，本 Agent 的 `DEAD_PATTERNS` 是第二道闸。 |
-| **`events`** | 入口代理的埋点表（D1）。记录页面访问与点击事件，是本项目"数据解读"的原料。 |
-| **PV / UV** | 页面浏览量 / 独立访客数。 |
-| **跳出率（bounce）** | 只访问一页就离开的比例。工具站天然偏高，看趋势不看绝对值。 |
-| **GSC** | Google Search Console。官方后台，提供展示次数、点击次数、CTR、平均排名。**有官方 API**，本项目不抓网页。 |
-| **展示 / 点击 / CTR** | 搜索结果里出现次数 / 被点击数 / 点击率。`CTR 低 + 展示高` 通常意味着标题或描述需要重写。 |
-| **Indexing API** | GSC 的 URL 提交接口，配额 **200 次/天**。提交不等于收录，只是"通知 Google 来看看"。 |
-| **sitemap.xml** | 站点地图。本项目在新增页面后往目标子站的 sitemap 里插一条 `<url>`。 |
-| **收录（indexed）** | Google 已把页面存进索引、可以出现在搜索结果里。**收录 ≠ 有排名**。 |
-| **长尾词** | 搜索量低但意图明确的词（如 `paypal fee calculator for freelancers`）。33 个子站的流量几乎全靠长尾。 |
-| **slug** | URL 里的页面标识，如 `paypal-fee-for-freelancers`。本项目强校验 `^[a-z0-9][a-z0-9-]{2,60}$`，防路径穿越。 |
-| **JSON-LD** | 页面里的结构化数据脚本（`application/ld+json`）。本项目生成 `Article` + `FAQPage` 两段。 |
-| **OG 图** | 社交分享时显示的预览图。站群统一 1200×630，由入口代理动态生成。 |
-| **engaged views** | YouTube 的"有效观看"指标（看过一定时长才算）。比播放数更能反映内容质量。 |
-| **养号** | 在新平台上用正常互动积累账号权重，避免新号直接发链接被判垃圾。本项目的 Reddit / HN 账号都处于这个阶段。 |
+| **一轮（run）** | 一次 `POST /run` 的完整执行，结果是一份报告 + 可选的台账写入。没有跨轮状态。 |
+| **意图（intent）** | 五选一的分类结果，决定默认调哪些工具。枚举在 `config.INTENTS`。 |
+| **抽取（extraction）** | 从请求文本里抽出 `ExtractionSchema` 的六个字段，供校验与工具参数使用。 |
+| **校验（validation）** | 字段覆盖率与置信度打分；不通过就重试，重试耗尽走 error 分支。 |
+| **重试（retry）** | 整段 `run_processing` 重跑，`retry_count` 上限由 `MAX_VALIDATION_RETRIES` 控制（默认 2）。 |
+| **覆盖率（field_coverage）** | 六个契约字段里有值的比例。数的是**原始**抽取结果，不先过 Pydantic 补默认值。 |
+| **综合分（confidence_score）** | `coverage * 0.6 + confidence * 0.4`，与覆盖率同时 >= 0.5 才算通过。 |
+| **checkpointer** | 图状态持久化。`memory`（本地/测试）或 `sqlite`（生产，落 `/data`）。只存「跑到哪」，不是业务数据库。 |
+| **`thread_id`** | 一次执行的会话标识，决定状态落哪个会话；不参与业务判断。 |
+| **工具（tool）** | 25 个之一，`BaseTool` 子类，配 Pydantic `Input`，返回 `ToolOutput`。 |
+| **`kind`** | 工具的副作用分类：`read`（只读）、`ledger`（可重复的台账/文件写）、`write`（不可逆发布）。 |
+| **门面（ops）** | `RuntimeService`：6 个域 `Ops` 的多继承组合，工具通过它访问外部 IO。装配在 `tools/registry.py`。 |
+| **域（domain）** | 一组相关工具的归口文件，如 `ledger_tools.py` 里的 `LedgerOps` + 9 个工具类。 |
+| **`ToolOutput`** | 统一返回体 `{tool, ok, result, error}`。工具异常一律转成 `ok=false`，不抛出。 |
 
----
+## 三、数据
 
-## 四、几个容易混淆的词
+| 术语 | 解释 |
+|---|---|
+| **D1** | Cloudflare 的托管 SQLite。本站读写埋点 `events` 与台账 `agent_*`。 |
+| **KV** | Cloudflare 键值存储。本站只用 `agent:` 前缀，与 radar / console 共用一个命名空间。 |
+| **台账（ledger）** | 业务状态的唯一真相源：`agent_pages` / `agent_reports` / `agent_backlinks` / `agent_events` / `agent_reflections` / `agent_tool_calls` / `agent_idempotency`。 |
+| **白名单契约（`LedgerSpec`）** | 每张台账表允许写哪些列、唯一键是什么、冲突怎么处理。调用方多传的键会被丢掉。 |
+| **upsert / ignore / lookup** | 三种写入策略：冲突即覆盖 / 冲突即丢弃（事件不重复改回 pending）/ 先查再决定更新或插入（`agent_backlinks`）。 |
+| **幂等键（`event_key`）** | 跨进程稳定的哈希（`stable_key`），保证同一动作重复执行只留一条。 |
+| **`events`** | 入口代理写入的埋点表：`ts`(ms) / `site` / `event` / `path` / `sid`。本站只读。 |
+| **PV / UV** | 浏览量 / 独立访客数（`COUNT(DISTINCT sid)`）。 |
+| **GSC** | Google Search Console，官方 API 提供展示、点击、CTR、平均排名。 |
+| **收录（indexed）** | Google 已把页面放进索引。**收录 ≠ 有排名**。 |
+| **长尾词** | 搜索量低但意图明确的词，站群流量几乎全靠它。 |
+
+## 四、容易混淆
 
 | 容易混淆 | 区别 |
 |---|---|
-| `thread_id` vs `Action.key` | 前者标识"一次任务"，后者标识"一个动作"。一个线程里可能有多个动作。 |
-| checkpointer vs D1 | 前者只存"图跑到哪一步"，后者是业务数据的唯一真相源。**不要拿 checkpointer 做业务查询。** |
-| 熔断 vs 报错 | 报错是单次失败，熔断是"连续失败后主动暂停"。有熔断不代表代码有 bug，可能只是外部服务临时挂了。 |
-| 上线 vs 收录 | 上线 = 页面能访问（200）；收录 = Google 已索引。中间可能隔几天到几周。 |
-| 展示 vs 访问 | 展示 = 在搜索结果里被看到；访问 = 用户真的点进来。`展示高 + 访问低` 是标题问题，不是内容问题。 |
+| checkpointer vs D1 | 前者只记「图跑到哪」，后者是业务数据；不要拿 checkpointer 做业务查询。 |
+| `read` vs `ledger` vs `write` | 只读 / 可重复写 / 不可逆发布；只有 `write` 需要请求显式声明。 |
+| 上线 vs 收录 | 上线 = 页面 200；收录 = 已进索引，中间可能隔几天到几周。 |
+| 展示 vs 访问 | 展示是在搜索结果里被看到，访问是点进来。展示高 + 访问低通常是标题问题。 |
+| 站点 `name` vs `repo` | `name` 是子域名与工具入参，`repo` 是 GitHub 仓库名，缺省相同但不必然相同。 |

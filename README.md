@@ -1,190 +1,100 @@
-<!--
-Copyright (c) 2026 lvyafei · https://toolara.dev
-SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
--->
-
 # site-agent
 
-**给多站点站群做自动化运营的 Agent。**
+toolara.dev 站群的运营 Agent：一句运营请求跑完一轮
+**判意图 → 抽字段 → 调工具取事实 → 校验 → 出报告**，需要时把结论写进 D1 台账。
 
-Python · LangGraph · Cloudflare · Render · [PolyForm Noncommercial](LICENSE)
+Python 3.11+ / LangGraph / FastAPI，部署在 Render，外部系统只有 Cloudflare D1/KV、
+GitHub、radar、GSC、Reddit / Dev.to、Resend 与一个 OpenAI 兼容 LLM。
 
----
+## 当前形态
 
-## 这是什么
+单轮流水线，五个节点：
 
-site-agent 面向的是一类系统：**跑在 Cloudflare Workers 上的多站点站群**——一个入口代理（gateway）统一接流量、注入埋点、生成 robots/sitemap；每个子域一个独立 Worker、独立 git 仓库；背后是共享的 D1/KV 存储和一个内部数据服务（选题雷达）。
-
-**当前实例指向 [toolara.dev](https://toolara.dev)**：一个人维护的 **32 个免费英文在线工具站**（外加一个内部选题雷达）——每个子域一个产品，比如 `paypal.toolara.dev`（算 PayPal 手续费）、`sourdough.toolara.dev`（算酸种面包水合率）、`music.toolara.dev`（一句话生成一首歌），流量几乎全靠 Google 自然搜索。业务背景见 [`docs/01-background.md`](docs/01-background.md)。
-
-三十几个站意味着三十几份重复劳动：找选题、写页面、上线、提交收录、看数据、找外链、排推广。一个人做不完。
-
-`site-agent` 就是来接手这些活的：它读站群自己的数据（埋点、选题雷达、Search Console），用 LLM 做判断，通过 `git push` 和 Cloudflare API 把决定落地，然后把结果回写成台账——形成一个能自己转的循环。
-
-**它不是一个网站，也不是一个 SaaS。** 它是一台常驻后台的进程，没有对外端口，不承载任何用户流量。
-
-> **换一个站群要做什么**：架构是通用的，站群绑定全部来自部署配置——主域 `FLEET_DOMAIN`、站点清单 `SITES`、各项凭据（`FLEET_DOMAIN` 的默认值是当前实例的 toolara.dev）。换站群 = 改这三样，代码零修改。如果你在维护类似的多站点矩阵，[`docs/02-architecture.md`](docs/02-architecture.md) 里的分层与决策记录可以直接借鉴。
-
----
-
-## 解决什么问题
-
-| 现状痛点 | Agent 怎么做 |
-|---|---|
-| 选题雷达能扫出值得做的词，但"值得做"到"页面上线"中间有 5 个手工步骤，词堆着没人动 | 读候选词 → 生成页面 → 推送上线 → 提交收录 → 7 天后回读效果 |
-| 埋点天天在写 D1，没人每天看；信号弱、维度多，人肉看只会得出"大概还行" | 每天聚合 + LLM 结构化解读 → 日报邮件 + 可执行建议 |
-| 外链机会靠手动刷 Reddit / Dev.to，看到合适的记下来就忘了 | 自动发现 → 打分 → 生成草稿 → 推给人审 |
-| 推广没有排期，想到才发；平台红线靠记性 | 每周生成排期，红线由**代码校验器**把关而不是靠自觉 |
-
----
-
-## 四个任务
-
-| 任务 | 频率 | 自动化程度 | 做什么 |
-|---|---|---|---|
-| `gen-page` | 每天 08:10 | 写操作需人审 | 热词 → 内容页 → 上线 → GSC 提交 → 效果回流 |
-| `daily-report` | 每天 09:00 | 全自动（纯读） | D1 + GSC → 解读 → 日报邮件 |
-| `backlink` | 一/三/五 10:00 | 半自动 | 机会发现 + 评分 + 草稿；仅 Dev.to 走官方 API 自动发布 |
-| `promo` | 周日 20:00 | 半自动 | 周排期 + 素材草稿，红线校验器拦违规 |
-
-另有每 5 分钟一次的审批轮询（收邮件回复，续跑被挂起的任务）。
-
----
-
-## 四条红线
-
-写进代码，不写进 prompt。prompt 是概率性的，校验器是确定性的。
-
-- **不向 Reddit / Hacker News / X 直接发帖**，只产出草稿等人发（账号是养号资产，一次批量操作就可能全废）
-- **不做外链群发**（搜索引擎对批量外链的判定非常成熟，收益远小于风险）
-- **不删数据**（D1 客户端在代码层拒绝 `DELETE`；对既有系统只新增，不改存量）
-- **不消耗 Workers AI 额度**（账户级 10k neurons/天 留给绘图站，LLM 全走外部 API）
-
----
-
-## 设计原则
-
-1. **只有 `decide` 节点调 LLM。** 其余节点是纯函数，IO 全在 `tasks/` 与 `cf/`。换掉 LangGraph 时，业务代码零改动。
-2. **checkpointer 只存图状态，D1 是唯一真相源。** 两套数据各管各的，不互相校验。
-3. **不可逆的动作必须过人。** `interrupt()` 挂起 → 邮件审批 → 回复续跑。唯一的例外是有官方 API 的 Dev.to。
-
----
-
-## 架构
-
-```mermaid
-graph LR
-    CRON["APScheduler<br/>4 cron + 审批轮询"] --> G["LangGraph StateGraph<br/>sense → decide → execute<br/>→ verify → learn"]
-    G <--> CP[("checkpointer<br/>SQLite @ /data")]
-    G -->|"读 events / 候选词<br/>写台账"| CF["Cloudflare<br/>D1 · KV"]
-    G -->|"git push"| GH["子站仓库"] --> BUILD["CF 自动构建"] --> LIVE["线上页面"]
-    G -->|"只读 / 提交"| EXT["GSC · radar<br/>Reddit · Resend"]
-    G -.->|"写操作"| HUMAN["邮件审批<br/>回复 yes / no"]
-    HUMAN -.-> G
+```
+POST /run → classify_intent → run_processing → validate_result
+                                        ↑            │
+                                        └── retry ───┤
+                                                     ├─ 通过 → build_output
+                                                     └─ 重试耗尽 → handle_error
 ```
 
-三句话读完：
+25 个工具全部是 `BaseTool` 子类，配 Pydantic `Input`，统一返回 `ToolOutput`：
+13 个 `read`、10 个 `ledger`、2 个 `write`。所有外部 IO 只发生在 `tools/adapters/`。
 
-- **感知**读站群自己的数据（埋点、候选词、GSC），**决策**只在 `decide` 节点发生，**执行**只有两条路径——写内容（`git push`）和写台账（D1）。
-- 状态全部落持久盘与 D1，**进程随时可被杀**，重启后从断点续跑。
-- 写操作会挂起等人，**背景进程没有公网入口**，所以审批走邮件回复而不是点链接。
-
-完整结构、数据流、六条架构决策（含代价）见 [`docs/02-architecture.md`](docs/02-architecture.md)。
-
----
-
-## 当前状态
-
-**实验阶段。** 文档与代码骨架已完成，单测通过；**尚未接入真实凭据，未部署**。
-
-| 项 | 状态 |
+| 记住这一条 | 含义 |
 |---|---|
-| 文档（7 份） | 完成 |
-| 代码骨架（图 + 5 节点 + 4 任务 + IO 层） | 完成 |
-| 单测（红线校验器 + slug 安全） | 7/7 通过 |
-| 真实环境联调 | 未开始（阶段 0） |
-| 部署 | 未开始 |
-
-进度与验收标准见 [`docs/05-roadmap.md`](docs/05-roadmap.md)。
-
----
+| **只读默认** | 默认编排只调 `read` 工具；`write`（`git_push`、`publish_devto_article`）必须由请求 `tools` 显式列出 |
+| **写动作靠显式声明** | 不保存待审状态；`write` 工具必须由请求 `tools` 列出，调度交给外部 cron |
+| **无 LLM 也能跑** | 没有 `LLM_API_KEY` 时意图回退 `general`、抽取走本地正则，图照样跑完 |
+| **工具失败不抛异常** | 单个数据源挂了只记 `ok=false`，由校验环节决定重试还是报错 |
 
 ## 快速开始
 
 ```bash
-# 1. 依赖（白名单写在 pyproject.toml，多一个都不加）
-uv sync                      # 首次会生成 uv.lock，请一并提交
-
-# 2. 配置
-cp .env.example .env         # 填 CF / GitHub / LLM / GSC / IMAP
-
-# 3. 建表（在入口代理写入埋点的那个 D1 库执行）
-#    migrations/0001_agent_tables.sql
-
-# 4. 单测（纯函数，不需要凭据）
-uv run pytest -q test        # 应显示 7 passed
-
-# 5. 启动调度器
-uv run python -m site_agent.main
+pip install -e .
+cp .env.example .env
+python -m src.app.main                 # CLI 跑一轮
+uvicorn src.app.api.routes:api --reload --port 10000
+pytest -q                              # 47 passed
 ```
-
-手动触发一次任务（不依赖 cron）：
 
 ```bash
-uv run python -c "from site_agent.main import run_task; print(run_task('daily-report'))"
+curl -s -X POST localhost:10000/run -H 'Content-Type: application/json' \
+  -d '{"input_text":"复盘近期点击","intent":"review_metrics"}'
 ```
 
-**建议先只跑 `daily-report`**——它纯读，零风险，且能验证 D1 / GSC / 邮件三条链路是否通。
+`intent` 可选 `select_pages` / `plan_promo` / `find_backlinks` / `review_metrics` / `general`；
+不传则由 LLM 分类。请求还能传 `tools`（覆盖默认工具集）、`prompt_versions`
+（如 `{"intent":"v2"}`）、`thread_id`。
 
-部署与凭据清单见 [`docs/04-runbook.md`](docs/04-runbook.md)。有一个必须注意的点：**必须用 Render Starter + 1GB 持久盘**（$7/月），免费的临时磁盘会导致 checkpointer 丢失、人审流程静默失效。
+## 目录
 
----
+```
+src/app/
+├── main.py / config.py      CLI 入口 / Settings 单例 + 站群清单 + 意图枚举
+├── api/routes.py            FastAPI /run /health
+├── graph/                   builder · state · constants(Names/Tags) · edges
+├── nodes/                   intent · processing · validation · output · error
+├── services/                llm · prompt · tool · evaluation
+├── tools/
+│   ├── base.py              契约（BaseTool / RuntimeTool / ToolOutput）
+│   ├── registry.py          门面装配（RuntimeService）+ 25 个工具注册
+│   ├── *_tools.py           6 个业务域：<Domain>Ops 实现 + 工具类
+│   └── adapters/            cloudflare · sources · hosting · publishing
+├── models/                  ExtractionSchema · WorkflowResult
+├── prompts/versions/        <task>/vN.txt（intent 有 v1/v2，extraction 有 v1）
+├── memory/checkpointer.py   memory / sqlite
+├── llm/provider.py          OpenAI 兼容客户端
+├── observability/           metrics · langsmith
+└── utils/                   logger（单行 JSON）
+config/sites.json            32 个站点的清单（配置，不是代码）
+templates/site-page.html     内容页模板（11 个占位符）
+migrations/0001_agent_tables.sql  D1 台账表
+```
+
+## 关键约束
+
+1. 依赖单向：`api → graph → nodes → services → tools → adapters`；
+   **tools 不依赖 services**，`tools/base.py` 只依赖标准库与 pydantic，
+   工具层没有函数内 import。三条都由 `test/test_architecture.py` 守着。
+2. 门面靠构造注入：`RuntimeService` 在 `registry.py` 组装后注入 25 个工具，
+   测试用 `tool_registry.bind(FakeRuntime())` 整体替换。
+3. 站点信息只在 `config/sites.json`；域名只在 `FLEET_DOMAIN`。
+4. SQL 只在 `tools/adapters/cloudflare/sql.py`；表名列名只来自白名单契约。
+5. `/run` 没有鉴权，上线前必须在网关层加访问控制。
 
 ## 文档
 
-| 文档 | 回答什么 |
+| 文档 | 内容 |
 |---|---|
-| [docs/01-background.md](docs/01-background.md) | toolara.dev 是什么？为什么需要这个 Agent？ |
-| [docs/02-architecture.md](docs/02-architecture.md) | 系统怎么组成、怎么连、为什么这么连 |
-| [docs/03-tech-design.md](docs/03-tech-design.md) | 技术栈、实现细节、四个任务的流程、踩过的坑 |
-| [docs/04-runbook.md](docs/04-runbook.md) | 部署、日常操作、故障排查 |
-| [docs/05-roadmap.md](docs/05-roadmap.md) | 分阶段计划与验收标准 |
-| [docs/glossary.md](docs/glossary.md) | 名词解释 |
-| [docs/README.md](docs/README.md) | 文档索引与编写约定 |
+| [01-overview](docs/01-overview.md) | 服务对象、一轮做什么、不做什么、风险 |
+| [02-architecture](docs/02-architecture.md) | 分层与依赖、装配、运行时序、部署拓扑、边界、扩展点 |
+| [03-tech-design](docs/03-tech-design.md) | 状态契约、图、节点、服务、工具、适配器、SQL、表结构 |
+| [04-runbook](docs/04-runbook.md) | 本地 / 测试 / D1 建表 / Render / 排障 / 安全 |
+| [05-tools](docs/05-tools.md) | 25 个工具速查、意图映射、站点清单、新增清单 |
+| [10-structure](docs/10-structure.md) | 结构唯一口径（文件级） |
+| [glossary](docs/glossary.md) | 术语表 |
 
----
+## 协议
 
-## 代码结构
-
-```
-src/site_agent/
-├── main.py         调度入口（APScheduler）
-├── graph.py        StateGraph 组装
-├── state.py        OpsState / Action
-├── approvals.py    IMAP 审批轮询
-├── resume.py       Command(resume) + CLI
-├── nodes/          sense · decide · execute · verify · learn
-├── tasks/          gen_page · daily_report · backlink · promo
-├── cf/             d1 · kv · deploy（会改变外部世界的只有这里）
-├── llm/            gateway · breaker · prompts/
-├── collectors/     gsc · reddit · radar
-└── notify/         Resend
-```
-
-新增一类任务只改三处：`tasks/<name>.py`（实现 9 个约定符号）、`tasks/__init__.py`（注册）、`main.py`（挂 cron）。节点层与图完全不动。
-
----
-
-## 成本
-
-**约 $10-15/月**：Render Starter $7 + LLM $3-8。Cloudflare / GSC / Resend / Dev.to 均在免费额度内。一页内容的 LLM 成本不到 3 美分。
-
----
-
-## 许可
-
-**PolyForm Noncommercial License 1.0.0** —— 可自由用于学习、研究、修改、非商业项目；**禁止商业使用**，商用需书面授权（hello@toolara.dev）。
-
-分发（含修改版）时需保留 `LICENSE` 与源码头部的 `Required Notice` 行。全文见 [LICENSE](LICENSE)。
-
-Copyright (c) 2026 lvyafei · <https://toolara.dev>
+PolyForm-Noncommercial-1.0.0，署名 lvyafei。可学习、研究、修改与非商业使用，禁止商业使用。
