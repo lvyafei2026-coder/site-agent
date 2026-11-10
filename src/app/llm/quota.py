@@ -16,19 +16,8 @@ from urllib.parse import urlparse
 
 from src.app.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 
-# 只透传这些头，避免把上游全部响应头（含内部信息）暴露给页面
-_QUOTA_HEADERS = (
-    "x-ratelimit-limit-requests",
-    "x-ratelimit-limit-tokens",
-    "x-ratelimit-remaining-requests",
-    "x-ratelimit-remaining-tokens",
-    "x-ratelimit-used-requests",
-    "x-ratelimit-used-tokens",
-    "x-ratelimit-reset-requests",
-    "x-ratelimit-reset-tokens",
-    "x-ratelimit-resource",
-    "retry-after",
-)
+# 只透传与限额相关的头（按子串匹配，避免把上游全部响应头暴露给页面）
+_QUOTA_HINTS = ("ratelimit", "retry-after")
 
 
 def check_quota() -> dict:
@@ -50,12 +39,15 @@ def check_quota() -> dict:
         return {"ok": False, "reason": f"额度查询请求失败：{exc}"}
 
     headers = {k.lower(): v for k, v in raw.headers.items()}
-    quota = {k: headers[k] for k in _QUOTA_HEADERS if k in headers}
+    quota = {k: v for k, v in headers.items()
+             if any(h in k for h in _QUOTA_HINTS)}
     host = urlparse(LLM_BASE_URL).netloc if LLM_BASE_URL else "api.openai.com"
     return {
         "ok": True,
         "model": LLM_MODEL,
         "endpoint": host,
         "quota": quota,
+        # 诊断用：只回响应头名不回值。上游不带限额头时页面上能看到"确实没有"
+        "header_names": sorted(headers),
         "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
