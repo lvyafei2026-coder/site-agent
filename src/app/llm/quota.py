@@ -62,8 +62,10 @@ def check_quota() -> dict:
         return {"ok": False,
                 "reason": f"额度查询返回 HTTP {resp.status_code}：{detail or '无详情'}"}
 
+    # 实测 models.github.ai 的 200 响应不带 x-ratelimit-* 头（只在 429 时带
+    # retry-after / x-ratelimit-type），所以正常时 quota 为空属预期
     return {"ok": True, "model": LLM_MODEL, "endpoint": urlparse(base).netloc,
-            "quota": quota, "checked_at": _now()}
+            "quota": quota, "available": True, "checked_at": _now()}
 
 
 def _now() -> str:

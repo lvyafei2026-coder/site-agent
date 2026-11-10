@@ -140,10 +140,13 @@ curl -s -X POST localhost:10000/run \
 写入字段、`route` 是 complete/error、`retried` 表示是否重试过。console 的
 「Agent入口」页把它渲染成芯片流程图 + 每步变化表，排查不用登 LangSmith。
 
-**LLM 额度**：GitHub Models 没有余额面板，剩余配额只在每次推理响应的
-`x-ratelimit-*` 头里。agent 提供 `GET /llm-quota`：发一次 `max_tokens=1`
-的 ping 把头带回来（消耗 1 次请求额度，Low 档日配额 150 次里的 1 次），
-console「Agent入口」页的额度卡点击「查询额度」即读；官方额度规则见
+**LLM 额度**：GitHub Models 没有余额面板，也没有可查剩余量的 API——实测
+models.github.ai 的 **200 正常响应不带 `x-ratelimit-*` 头**，只有被限流
+（429）时头里才带 `retry-after` 与 `x-ratelimit-type`（如
+`UserByModelByDay` = 该模型当日配额用尽）。agent 提供 `GET /llm-quota`：
+发一次 `max_tokens=1` 的 ping 探测可用性，200 → 「可用」，429 → 读出
+`retry-after` 等待秒数；console「Agent入口」页额度卡点击「查询额度」即查
+（每次消耗 1 次请求额度）。精确配额按订阅档 × 模型档位查官方文档：
 <https://docs.github.com/en/github-models/use-github-models/prototyping-with-ai-models>。
 
 **结果页回链**：`/run` 同时带回 `langsmith{enabled, project, url}`，console 在
