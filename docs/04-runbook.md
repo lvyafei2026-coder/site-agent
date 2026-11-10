@@ -55,7 +55,7 @@ curl -s -X POST localhost:10000/run \
 | `LANGSMITH_PROJECT_URL` | 否 | 项目页地址，只用于 console 的结果回链；不填会自动解析；见 §2.2 |
 | `LLM_API_KEY` | 否 | 留空走确定性回退 |
 | `LLM_BASE_URL` | 否 | 兼容任何 OpenAI 风格服务 |
-| `LLM_MODEL` | 否 | 默认 `gpt-4o-mini` |
+| `LLM_MODEL` | 否 | 默认 `gpt-4o-mini`；生产用 `openai/gpt-4o-mini`（见下方「换模型」） |
 | `FLEET_DOMAIN` | 否 | 站群主域，默认 `toolara.dev`；子站 host / radar / 邮箱都从它派生 |
 | `SITES_FILE` | 否 | 站点清单路径，默认 `config/sites.json` |
 | `AGENT_STATE_DIR` | 否 | 本地仓库副本根目录，默认 `data/`；生产 `/data` |
@@ -67,6 +67,13 @@ curl -s -X POST localhost:10000/run \
 | `DEVTO_API_KEY` | 否 | 无则发布工具返回 `blocked` |
 | `RESEND_API_KEY` / `ADMIN_EMAIL` / `MAIL_FROM` | 否 | 通知邮件；缺任一则跳过发送 |
 | `CONTACT_EMAIL` | 否 | 默认 `hello@<FLEET_DOMAIN>`，作发件人兜底 |
+
+**换模型**：候选模型看 <https://github.com/marketplace?type=models>（GitHub Models 目录，
+匿名可打开；单模型详情页如 `/marketplace/models/azure-openai/gpt-4o-mini` 需登录）。
+注意两套写法不同：目录 20 个模型的详情页路径是 `azure-openai/gpt-4o-mini`，而推理
+API 的 `LLM_MODEL` 要写 **`openai/gpt-4o-mini`**（vendor/model）——以模型详情页里
+代码示例的 `model` 字段为准，别照抄页面路径。改完在 Render 环境变量里更新
+`LLM_MODEL` 触发重建即可，`/llm-quota` 会显示当前实际生效的模型名。
 
 完整样例见 `.env.example`。
 
