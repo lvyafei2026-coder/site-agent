@@ -6,7 +6,11 @@
 
 GitHub Models（以及多数 OpenAI 兼容网关）没有"余额"面板，剩余额度只在
 每次推理响应的头部里。这里用 max_tokens=1 的 ping 把头部带回来，成本是
-1 次请求额度（Low 档日配额 150 次里的 1 次），只在页面上手动点击时触发。
+1 次请求额度，只在页面上手动点击时触发。
+
+不走 openai SDK 的 with_raw_response：实测 models.github.ai 的 200 响应
+头被网关裁得只剩 connection/content-type，直接 httpx 请求拿全量头；
+429 时头里带 retry-after 与剩余量，同样有价值，一并返回。
 """
 
 from __future__ import annotations
@@ -14,10 +18,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
+import httpx
+
 from src.app.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 
-# 只透传与限额相关的头（按子串匹配，避免把上游全部响应头暴露给页面）
-_QUOTA_HINTS = ("ratelimit", "retry-after")
+_DEFAULT_BASE = "https://api.openai.com/v1"
 
 
 def check_quota() -> dict:
@@ -25,29 +30,41 @@ def check_quota() -> dict:
     if not LLM_API_KEY:
         return {"ok": False, "reason": "LLM_API_KEY 未配置，无法查询额度"}
 
-    from openai import OpenAI
-
-    client = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL or None,
-                    max_retries=0, timeout=20.0)
+    base = (LLM_BASE_URL or _DEFAULT_BASE).rstrip("/")
+    url = base + "/chat/completions"
     try:
-        raw = client.chat.completions.with_raw_response.create(
-            model=LLM_MODEL,
-            messages=[{"role": "user", "content": "ping"}],
-            max_tokens=1,
+        resp = httpx.post(
+            url,
+            headers={"Authorization": f"Bearer {LLM_API_KEY}",
+                     "Content-Type": "application/json"},
+            json={"model": LLM_MODEL,
+                  "messages": [{"role": "user", "content": "ping"}],
+                  "max_tokens": 1},
+            timeout=20.0,
         )
-    except Exception as exc:  # 网络 / 429 / 模型名错都归为查询失败，不抛出
+    except Exception as exc:  # 网络 / DNS 归为查询失败，不抛出
         return {"ok": False, "reason": f"额度查询请求失败：{exc}"}
 
-    headers = {k.lower(): v for k, v in raw.headers.items()}
+    headers = {k.lower(): v for k, v in resp.headers.items()}
     quota = {k: v for k, v in headers.items()
-             if any(h in k for h in _QUOTA_HINTS)}
-    host = urlparse(LLM_BASE_URL).netloc if LLM_BASE_URL else "api.openai.com"
-    return {
-        "ok": True,
-        "model": LLM_MODEL,
-        "endpoint": host,
-        "quota": quota,
-        # 诊断用：只回响应头名不回值。上游不带限额头时页面上能看到"确实没有"
-        "header_names": sorted(headers),
-        "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-    }
+             if "ratelimit" in k or k == "retry-after"}
+
+    if resp.status_code == 429:          # 被限流：头里正好带着剩余量与等待秒数
+        return {"ok": True, "model": LLM_MODEL, "endpoint": urlparse(base).netloc,
+                "quota": quota, "limited": True, "checked_at": _now()}
+    if resp.status_code >= 400:          # 其它错误（key 无效 / 模型名错等）
+        detail = ""
+        try:
+            body = resp.json()
+            detail = str(body.get("error", {}).get("message", ""))[:200]
+        except (ValueError, AttributeError):
+            detail = resp.text[:200]
+        return {"ok": False,
+                "reason": f"额度查询返回 HTTP {resp.status_code}：{detail or '无详情'}"}
+
+    return {"ok": True, "model": LLM_MODEL, "endpoint": urlparse(base).netloc,
+            "quota": quota, "checked_at": _now()}
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
