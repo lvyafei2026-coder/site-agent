@@ -44,3 +44,21 @@ def test_http_run_and_health(fake):
 def test_http_validation_error():
     client = TestClient(api)
     assert client.post("/run", json={}).status_code == 422
+
+
+def test_llm_quota_endpoint(monkeypatch):
+    """/llm-quota 透传 check_quota 结果；未配 key 时 ok=False 且不抛异常。"""
+    import src.app.llm.quota as quota_mod
+
+    client = TestClient(api)
+
+    monkeypatch.setattr(quota_mod, "LLM_API_KEY", "")   # 不依赖本机 .env
+    r = client.get("/llm-quota").json()
+    assert r["ok"] is False
+    assert "LLM_API_KEY" in r["reason"]
+
+    import src.app.api.routes as routes
+    fake = {"ok": True, "model": "gpt-4o-mini", "endpoint": "models.github.ai",
+            "quota": {"x-ratelimit-remaining-requests": "149"}, "checked_at": "t"}
+    monkeypatch.setattr(routes, "check_quota", lambda: fake)
+    assert client.get("/llm-quota").json() == fake

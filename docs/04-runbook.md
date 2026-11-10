@@ -20,6 +20,7 @@ pytest -q                                          # 56 passed
 python -m src.app.main                             # CLI 跑一轮
 uvicorn src.app.api.routes:api --reload --port 10000
 curl -s localhost:10000/health
+curl -s localhost:10000/llm-quota                  # LLM 剩余额度（每次消耗 1 次请求额度）
 curl -s -X POST localhost:10000/run \
   -H 'Content-Type: application/json' \
   -d '{"input_text":"复盘近期点击","intent":"review_metrics"}'
@@ -138,6 +139,12 @@ curl -s -X POST localhost:10000/run \
 `observability/trace.py`），`path` 是一轮的节点序列、`nodes` 是每步耗时与
 写入字段、`route` 是 complete/error、`retried` 表示是否重试过。console 的
 「Agent入口」页把它渲染成芯片流程图 + 每步变化表，排查不用登 LangSmith。
+
+**LLM 额度**：GitHub Models 没有余额面板，剩余配额只在每次推理响应的
+`x-ratelimit-*` 头里。agent 提供 `GET /llm-quota`：发一次 `max_tokens=1`
+的 ping 把头带回来（消耗 1 次请求额度，Low 档日配额 150 次里的 1 次），
+console「Agent入口」页的额度卡点击「查询额度」即读；官方额度规则见
+<https://docs.github.com/en/github-models/use-github-models/prototyping-with-ai-models>。
 
 **结果页回链**：`/run` 同时带回 `langsmith{enabled, project, url}`，console 在
 **每轮结果标题右侧**和**历史行「追踪」列**渲染 `LangSmith ↗`，点开即进项目 Runs。

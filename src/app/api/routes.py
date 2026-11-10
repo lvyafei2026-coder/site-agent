@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from src.app.config import settings
 from src.app.graph.builder import get_graph
 from src.app.graph.state import initial_state
+from src.app.llm.quota import check_quota
 from src.app.observability.langsmith import public_config as langsmith_config
 from src.app.observability.metrics import metrics
 from src.app.observability.trace import run_traced
@@ -65,3 +66,9 @@ def run(request: WorkflowRequest) -> dict:
 @api.get("/health")
 def health() -> dict:
     return {"status": "ok", "metrics": metrics.snapshot()}
+
+
+@api.get("/llm-quota")
+def llm_quota() -> dict:
+    """LLM 剩余额度（读推理响应头）；页面上手动点击才查，每次消耗 1 次请求额度。"""
+    return check_quota()
