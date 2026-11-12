@@ -35,6 +35,7 @@ from .kv import (
     SAVED_KEY, REJECTED_KEY, TAGS_KEY, COMPETITION_KEY, INTERESTS_KEY, HINTS_KEY,
 )
 from . import scrape_serp, scrape_trend
+from .errors import SourceUnavailable
 from .curation import upsert_saved, upsert_rejected, set_hint_override
 
 log = logging.getLogger(__name__)
@@ -72,9 +73,16 @@ WORK_TITLE_RX = __import__("re").compile(
 
 MAX_TOKENS = 900
 BATCH_WORKERS = 4           # 20 条逐条分析，并发压住外部 LLM 超时
+LLM_FAIL_STREAK = 2         # LLM 连续失败到这个数就判定模型侧不可用，中止整批
 SERP_GAP_SEC = 1.5          # DDG 连查会回 202 挑战页，全局串行 + 最小间隔
 SERP_TTL = 604800           # serp:v1: 缓存 7 天
 TREND_TTL = 259200          # trend:v1: 缓存 3 天
+
+# SERP 源不可用时怎么办：
+#   True （默认，2026-11-12 用户定）→ 立即中止整批，剩余词留待下次重试。
+#   False → 本批禁用 SERP 继续分析（AI 少了辨形线索，结论质量下降，会在 notice 里标明）。
+# ★当前 DuckDuckGo 已对无 JS 请求一律回 202 挑战页，改 False 只是让分析能跑，SERP 仍是缺的。
+ABORT_ON_SERP_DOWN = True
 
 _serp_lock = threading.Lock()
 _last_serp_at = 0.0
@@ -202,7 +210,11 @@ def _llm(messages: list[dict[str, str]]) -> tuple[str, str]:
 
 
 def _throttled_serp(term: str, kv: CloudflareKV) -> tuple[dict[str, Any] | None, str]:
-    """KV 已有 serp:v1: 直接读；缺失则现抓并写回。全局串行避免 4 并发同时打 DDG。"""
+    """KV 已有 serp:v1: 直接读；缺失则现抓并写回。全局串行避免并发同时打 DDG。
+
+    ★源级不可用（连不上 / 被挑战页占满）会原样抛 SourceUnavailable，由 run_batch 中止整批；
+      其它异常降级为「无 SERP」，不拦 AI。
+    """
     key = term_key(term)
     cached = kv.get_json(SERP_PREFIX + key)
     if cached:
@@ -215,7 +227,9 @@ def _throttled_serp(term: str, kv: CloudflareKV) -> tuple[dict[str, Any] | None,
         _last_serp_at = time.monotonic()
     try:
         s = scrape_serp.fetch_serp(term)
-    except Exception as exc:  # noqa: BLE001 - 竞争度失败不拦 AI
+    except SourceUnavailable:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 单词级问题（解析等）不拦 AI
         log.warning("SERP 失败 %s: %s", term, exc)
         return None, str(exc)[:120]
     comp = scrape_serp.score_competition(s["items"], term)
@@ -228,14 +242,20 @@ def _throttled_serp(term: str, kv: CloudflareKV) -> tuple[dict[str, Any] | None,
 
 
 def _trend(term: str, kv: CloudflareKV) -> tuple[bool, str]:
-    """KV 已有 trend:v1: 直接读；缺失则现抓并写回 + 更新 interests 摘要表。"""
+    """KV 已有 trend:v1: 直接读；缺失则现抓并写回 + 更新 interests 摘要表。
+
+    ★源级不可用会抛 SourceUnavailable，由 run_batch 把「本批禁用趋势」置位——趋势只是辅助
+      证据，不该因为它连不上就让整批分析白跑，但也不该每个词都去撞一遍超时。
+    """
     key = term_key(term)
     cached = kv.get_json(TREND_PREFIX + key)
     if cached:
         return True, ""
     try:
         t = scrape_trend.fetch_interest(term)
-    except Exception as exc:  # noqa: BLE001 - 趋势失败不影响结论
+    except SourceUnavailable:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 单词解析问题不影响结论
         log.warning("TREND 失败 %s: %s", term, exc)
         return False, str(exc)[:120]
     payload = {"points": t["points"], "summary": t["summary"], "at": int(time.time() * 1000)}
@@ -318,26 +338,115 @@ def _select_pending(kv: CloudflareKV, limit: int) -> list[dict[str, Any]]:
     return items
 
 
-def _analyze_one(item: dict[str, Any], kv: CloudflareKV) -> dict[str, Any]:
+class _BatchAbort:
+    """批次中止信号（线程安全）。
+
+    为什么需要：SERP 源不可用时，20 个词 × 4 发 × 连接超时 ≈ 半小时全打在超时上，还把
+    DDG 的封禁越撞越重。正确做法是**遇到源级异常立刻退出**，没分析到的词保持未跟进，
+    等下次触发再重试（`ai:v3:` 没写入的词自然还在候选池里）。
+
+      ・SERP 源不可用      → 立即中止整批
+      ・LLM 连续失败 N 条   → 中止（模型侧整体不可用，再跑也只是白等）
+      ・Trends 源不可用     → 本批禁用趋势，继续分析（趋势只是辅助证据）
+    """
+
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.reason = ""
+        self.trends_off = False
+        self.serp_off = False
+        self._lock = threading.Lock()
+        self._llm_streak = 0
+
+    def trip(self, reason: str) -> None:
+        with self._lock:
+            if not self.event.is_set():
+                self.reason = reason
+                self.event.set()
+
+    def disable_trends(self) -> bool:
+        """首次调用返回 True（用于只打一条日志）；之后恒 False。"""
+        with self._lock:
+            first = not self.trends_off
+            self.trends_off = True
+            return first
+
+    def disable_serp(self) -> bool:
+        """降级模式用：本批不再尝试 SERP（只在 ABORT_ON_SERP_DOWN=False 时走到）。"""
+        with self._lock:
+            first = not self.serp_off
+            self.serp_off = True
+            return first
+
+    def llm_failed(self) -> bool:
+        """记一次 LLM 失败；返回是否已达连续失败阈值。"""
+        with self._lock:
+            self._llm_streak += 1
+            return self._llm_streak >= LLM_FAIL_STREAK
+
+    def llm_ok(self) -> None:
+        with self._lock:
+            self._llm_streak = 0
+
+
+def _analyze_one(item: dict[str, Any], kv: CloudflareKV,
+                 abort: Optional["_BatchAbort"] = None) -> dict[str, Any]:
     term = str(item.get("term") or "").strip()
     out: dict[str, Any] = {"term": term, "verdict": "", "status": "", "model": "",
                            "serp": False, "trend": False, "error": ""}
+    if abort is not None and abort.event.is_set():
+        out["skipped"] = True  # 已中止，本条没跑（不算失败）
+        return out
     if not term:
         out["error"] = "空词"
         return out
 
-    serp_data, serp_err = _throttled_serp(term, kv)
+    # SERP：源级不可用 → 默认立即中止整批；ABORT_ON_SERP_DOWN=False 时本批跳过 SERP 继续
+    serp_err = ""
+    if abort is not None and abort.serp_off:
+        serp_data, serp_err = None, "本批已跳过 SERP（源不可用）"
+    else:
+        try:
+            serp_data, serp_err = _throttled_serp(term, kv)
+        except SourceUnavailable as exc:
+            log.warning("SERP 源不可用：%s", exc.brief())
+            if ABORT_ON_SERP_DOWN:
+                out["error"] = exc.brief()
+                out["abort"] = "serp"
+                if abort is not None:
+                    abort.trip("serp")
+                return out
+            serp_data, serp_err = None, exc.brief()
+            if abort is not None and abort.disable_serp():
+                log.warning("本批跳过 SERP，继续分析（结论缺少辨形线索）")
     out["serp"] = serp_data is not None
-    trend_ok, trend_err = _trend(term, kv)
+
+    # Trends：源级不可用 → 本批禁用趋势，不中止
+    trend_ok, trend_err = False, ""
+    if abort is not None and abort.trends_off:
+        trend_err = "本批已禁用趋势（源不可用）"
+    else:
+        try:
+            trend_ok, trend_err = _trend(term, kv)
+        except SourceUnavailable as exc:
+            trend_err = exc.brief()
+            if abort is not None and abort.disable_trends():
+                log.warning("本批禁用趋势：%s", exc.brief())
     out["trend"] = trend_ok
 
     brief = serp_brief(serp_data)
     signal = work_signal(brief)
     try:
         text, model = _llm(build_messages(dict(item, serp=brief)))
-    except Exception as exc:  # noqa: BLE001 - 单条失败不拖垮整批
+    except Exception as exc:  # noqa: BLE001
         out["error"] = "LLM 调用失败：" + str(exc)[:160]
+        if abort is not None and abort.llm_failed():
+            log.warning("中止本批：LLM 连续 %d 条失败", LLM_FAIL_STREAK)
+            abort.trip("llm")
+            out["abort"] = "llm"
         return out
+    if abort is not None:
+        abort.llm_ok()
     if not text:
         out["error"] = "LLM 无正文（LLM_API_KEY 未配置或返回为空）"
         return out
@@ -365,14 +474,24 @@ def _analyze_one(item: dict[str, Any], kv: CloudflareKV) -> dict[str, Any]:
         out["status"] = "todo"
     # 「观望」与解析不出结论：只留正文和标签，状态保持未跟进
 
-    if serp_err or trend_err:
-        out["error"] = ("SERP 未取到：" + serp_err if serp_err else "") + (
-            "；趋势未取到：" + trend_err if trend_err else "")
+    # 补数据缺一块不等于这条分析失败（AI 已经给出结论了），只记 notice 供前端提示。
+    # 原来塞进 error 会让「趋势连不上」把整批算成 failed，掩盖真实的成功数。
+    notes = []
+    if serp_err:
+        notes.append("SERP 未取到：" + serp_err)
+    if trend_err:
+        notes.append("趋势未取到：" + trend_err)
+    if notes:
+        out["notice"] = "；".join(notes)
     return out
 
 
 def run_batch(limit: int = 20, kv: Optional[CloudflareKV] = None) -> dict[str, Any]:
-    """读 KV 候选池 → 并发逐条分析 → 汇总。KV 不可达时整批失败，不写任何状态。"""
+    """读 KV 候选池 → 并发逐条分析 → 汇总。KV 不可达时整批失败，不写任何状态。
+
+    ★遇到源级异常立刻停手（见 _BatchAbort）：没跑到的词不写任何状态，仍是「未跟进」，
+      下次触发自然重跑。返回里带 aborted / abortReason / remaining 供上层提示。
+    """
     kv = kv or get_kv()
     limit = max(1, min(int(limit or 20), 50))
     try:
@@ -386,15 +505,24 @@ def run_batch(limit: int = 20, kv: Optional[CloudflareKV] = None) -> dict[str, A
         return {"ok": True, "items": [], "fetched": 0, "analyzed": 0,
                 "failed": 0, "counts": {}, "note": "没有未跟进且未分析过的候选词"}
 
+    abort = _BatchAbort()
+    results: list[dict[str, Any]] = []
+    # 按 chunk 提交：一次最多 BATCH_WORKERS 条在飞，chunk 之间检查中止，
+    # 否则 20 条会瞬间全排进队列，abort 只能等它们全部跑完才生效。
     with ThreadPoolExecutor(max_workers=BATCH_WORKERS) as pool:
-        results = list(pool.map(lambda it: _analyze_one(it, kv), items))
+        for i in range(0, len(items), BATCH_WORKERS):
+            chunk = items[i:i + BATCH_WORKERS]
+            results.extend(pool.map(lambda it: _analyze_one(it, kv, abort), chunk))
+            if abort.event.is_set():
+                break
 
+    results = [r for r in results if not r.get("skipped")]
     counts: dict[str, int] = {}
     for r in results:
         key = r["verdict"] or "未定"
         counts[key] = counts.get(key, 0) + 1
     ok = sum(1 for r in results if not r["error"])
-    return {
+    out = {
         "ok": ok > 0,
         "fetched": len(items),
         "analyzed": ok,
@@ -402,3 +530,10 @@ def run_batch(limit: int = 20, kv: Optional[CloudflareKV] = None) -> dict[str, A
         "counts": counts,
         "items": results,
     }
+    if abort.event.is_set():
+        out["aborted"] = True
+        out["abortReason"] = abort.reason
+        out["remaining"] = max(0, len(items) - len(results))
+        out["note"] = ("已中止（" + ("SERP 源不可用" if abort.reason == "serp" else "LLM 连续失败")
+                       + "）：剩余 " + str(out["remaining"]) + " 条留待下次重试")
+    return out

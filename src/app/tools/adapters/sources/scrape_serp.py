@@ -20,6 +20,8 @@ from typing import Any, Optional
 
 import requests
 
+from .errors import SourceUnavailable
+
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
 BASE_HEADERS = {
@@ -270,7 +272,13 @@ def score_competition(items: list[dict], term: str = "") -> dict[str, Any]:
 def fetch_serp(term: str, session: Optional[Any] = None, limit: int = 10) -> dict[str, Any]:
     """抓真实 SERP 前 10，带 4 发退避（202 挑战页）。session 可注入（测试用）。
 
-    返回 {engine, items, attempts}；失败抛异常（带 attempts）。
+    返回 {engine, items, attempts}；失败抛 SourceUnavailable（源级不可用，调用方应在
+    整批里立刻停手，等下次触发重试），异常里带 attempts 便于诊断。
+
+    ★2026-11-12 实测：DDG 的 html / lite 两个端点对无 JS 请求一律回 202 挑战页（本地）
+      或直接连接超时（Render 出口）。Bing 也被试过但会返回**结构合法、内容无关**的假结果页，
+      比失败更危险（竞争度算错、AI 拿错辨形线索还会静默写进 KV），故不留兜底源。
+      要恢复 SERP 能力需换正规接口（如 Brave Search API 免费额度），不是加爬虫能解决的。
     """
     import urllib.parse as up
     q = up.quote(str(term or "").strip())
@@ -281,7 +289,8 @@ def fetch_serp(term: str, session: Optional[Any] = None, limit: int = 10) -> dic
         if step["wait"]:
             time.sleep(step["wait"] / 1000.0)
         try:
-            resp = sess.get(step["ep"](q), headers=BASE_HEADERS, timeout=20)
+            # connect 超时单独压到 8 秒：连不上时没必要每个端点干等 20 秒（4 发就是 80 秒）
+            resp = sess.get(step["ep"](q), headers=BASE_HEADERS, timeout=(8, 20))
             status = resp.status_code
             text = resp.text
         except Exception as exc:
@@ -295,6 +304,12 @@ def fetch_serp(term: str, session: Optional[Any] = None, limit: int = 10) -> dic
         if v["ok"]:
             return {"engine": step["engine"], "items": v["items"], "attempts": attempts}
         last_note = v["note"]
-    err = Exception((last_note or "SERP 抓取失败") + f"（已自动重试 {len(attempts)} 次，过几分钟再试）")
-    err.attempts = attempts  # type: ignore[attr-defined]
-    raise err
+
+    # 4 发全没拿到真结果：连不上（status 全 0）或被挑战页占满。这跟具体词无关，
+    # 换下一个词照样失败，所以按「源级不可用」上报，让上层中止整批。
+    connected = sum(1 for a in attempts if a.get("status"))
+    if connected == 0:
+        note = "连不上 DuckDuckGo（4 发全部连接失败）" + (f"：{last_note}" if last_note else "")
+    else:
+        note = f"DuckDuckGo 连续 {len(attempts)} 发未返回可用结果（最后一次：{last_note}）"
+    raise SourceUnavailable("duckduckgo", note + "，过几分钟再试", attempts)

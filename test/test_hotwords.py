@@ -156,6 +156,121 @@ def test_run_batch_writes_kv(fake_kv, monkeypatch):
     assert fake_kv.get_json("interests")
 
 
+def test_run_batch_aborts_when_serp_source_down(fake_kv, monkeypatch):
+    """★SERP 源不可用要立刻退出整批，不能把 20 个词全撞一遍超时。
+
+    没跑到的词不写任何状态（仍是未跟进），下次触发自然重跑。
+    """
+    monkeypatch.setattr(hw, "SERP_GAP_SEC", 0)
+    fake_kv.put_json("candidates", [{"term": f"term {i}"} for i in range(12)])
+    monkeypatch.setattr(hw.scrape_trend, "fetch_interest",
+                        lambda term, session=None, geo="": {
+                            "points": [{"d": "2026-01-01", "v": 50}],
+                            "summary": {"avg": 50}, "attempts": []})
+
+    calls = {"n": 0}
+
+    def boom(term, session=None, limit=10):
+        calls["n"] += 1
+        raise hw.scrape_serp.SourceUnavailable("duckduckgo", "连不上 DuckDuckGo", [])
+
+    monkeypatch.setattr(hw.scrape_serp, "fetch_serp", boom)
+    monkeypatch.setattr(hw, "_llm", lambda m: ("7) 结论：观望", "fake"))
+
+    out = hw.run_batch(limit=20, kv=fake_kv)
+
+    assert out["aborted"] is True and out["abortReason"] == "serp"
+    assert out["remaining"] > 0
+    # 最多第一批并发（BATCH_WORKERS）会发出请求，绝不能是 12
+    assert calls["n"] <= hw.BATCH_WORKERS
+    assert out["analyzed"] == 0
+    assert fake_kv.get_json("saved", []) == []
+    assert fake_kv.get_json("rejected", []) == []
+    # 没有任何 ai:v3: 正文落库 → 这些词下次仍是待分析
+    assert fake_kv.list_keys(hw.AI_CACHE_PREFIX) == []
+
+
+def test_run_batch_degrade_mode_skips_serp_without_aborting(fake_kv, monkeypatch):
+    """ABORT_ON_SERP_DOWN=False 时：本批跳过 SERP 继续分析，且只撞一次就关掉。
+
+    注意这不是「SERP 可用」，只是让分析跑得下去（结论缺辨形线索，notice 里会标明）。
+    """
+    monkeypatch.setattr(hw, "ABORT_ON_SERP_DOWN", False)
+    monkeypatch.setattr(hw, "SERP_GAP_SEC", 0)
+    fake_kv.put_json("candidates", [{"term": f"term {i}"} for i in range(5)])
+    monkeypatch.setattr(hw.scrape_trend, "fetch_interest",
+                        lambda term, session=None, geo="": {
+                            "points": [{"d": "2026-01-01", "v": 50}],
+                            "summary": {"avg": 50}, "attempts": []})
+    calls = {"n": 0}
+
+    def boom(term, session=None, limit=10):
+        calls["n"] += 1
+        raise hw.scrape_serp.SourceUnavailable("duckduckgo", "被挑战页占满", [])
+
+    monkeypatch.setattr(hw.scrape_serp, "fetch_serp", boom)
+    monkeypatch.setattr(hw, "_llm", lambda m: ("7) 结论：观望", "fake"))
+
+    out = hw.run_batch(limit=20, kv=fake_kv)
+
+    assert not out.get("aborted")
+    assert out["analyzed"] == 5
+    assert calls["n"] <= hw.BATCH_WORKERS     # 撞一次就本批跳过，不是 5 个词各撞一次
+    assert all(r["serp"] is False for r in out["items"])
+    assert any("SERP 未取到" in (r.get("notice") or "") for r in out["items"])
+
+
+def test_run_batch_keeps_going_when_trends_down(fake_kv, monkeypatch):
+    """趋势只是辅助证据：源不可用时本批禁用，但分析继续（不能因它整批白跑）。"""
+    monkeypatch.setattr(hw, "SERP_GAP_SEC", 0)
+    fake_kv.put_json("candidates", [{"term": f"term {i}"} for i in range(5)])
+    monkeypatch.setattr(hw.scrape_serp, "fetch_serp",
+                        lambda term, session=None, limit=10: {
+                            "engine": "duckduckgo", "items": [], "attempts": []})
+
+    trend_calls = {"n": 0}
+
+    def trends_down(term, session=None, geo=""):
+        trend_calls["n"] += 1
+        raise hw.scrape_trend.SourceUnavailable("google-trends", "连不上 Google Trends", [])
+
+    monkeypatch.setattr(hw.scrape_trend, "fetch_interest", trends_down)
+    monkeypatch.setattr(hw, "_llm", lambda m: ("7) 结论：观望", "fake"))
+
+    out = hw.run_batch(limit=20, kv=fake_kv)
+
+    assert not out.get("aborted")
+    assert out["fetched"] == 5
+    assert out["analyzed"] == 5
+    # 只撞一次超时就把趋势关掉，不是 5 个词各撞一次
+    assert trend_calls["n"] <= hw.BATCH_WORKERS
+    assert len(fake_kv.list_keys(hw.AI_CACHE_PREFIX)) == 5
+
+
+def test_run_batch_aborts_after_consecutive_llm_failures(fake_kv, monkeypatch):
+    """LLM 连续失败说明模型侧整体不可用，中止而不是把 20 条全等一遍超时。"""
+    monkeypatch.setattr(hw, "SERP_GAP_SEC", 0)
+    fake_kv.put_json("candidates", [{"term": f"term {i}"} for i in range(12)])
+    monkeypatch.setattr(hw.scrape_serp, "fetch_serp",
+                        lambda term, session=None, limit=10: {
+                            "engine": "duckduckgo", "items": [], "attempts": []})
+    monkeypatch.setattr(hw.scrape_trend, "fetch_interest",
+                        lambda term, session=None, geo="": {
+                            "points": [{"d": "2026-01-01", "v": 50}],
+                            "summary": {"avg": 50}, "attempts": []})
+
+    def llm_boom(messages):
+        raise RuntimeError("LLM 连接超时")
+
+    monkeypatch.setattr(hw, "_llm", llm_boom)
+
+    out = hw.run_batch(limit=20, kv=fake_kv)
+
+    assert out["aborted"] is True and out["abortReason"] == "llm"
+    assert out["failed"] <= hw.BATCH_WORKERS * 2
+    assert fake_kv.list_keys(hw.AI_CACHE_PREFIX) == []
+
+
 def test_run_batch_no_candidates(fake_kv):
     out = hw.run_batch(limit=20, kv=fake_kv)
     assert out["ok"] is True and out["fetched"] == 0

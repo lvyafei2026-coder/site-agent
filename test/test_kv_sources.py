@@ -10,11 +10,14 @@
 
 import json
 
+import pytest
+
 from src.app.tools.adapters.sources import kv as kvmod
 from src.app.tools.adapters.sources import scrape_serp as ss
 from src.app.tools.adapters.sources import scrape_trend as st
 from src.app.tools.adapters.sources import curation as cur
 from src.app.tools.adapters.sources import candidates as cand
+from src.app.tools.adapters.sources.errors import SourceUnavailable
 
 
 # ---------------------------------------------------------------------------
@@ -342,3 +345,55 @@ def test_snapshot_status_filter_keeps_default_doing(fake_kv):
     snap = cand.snapshot(status="doing", kv=fake_kv)
     terms = {i["term"] for i in snap["items"]}
     assert terms == {"a", "c"}  # 默认 doing；b(live) 被过滤，但 c 无字段不丢
+
+
+# ---------------------------------------------------------------------------
+# 源级不可用：连不上 / 被挑战页占满 → 抛 SourceUnavailable，上层才能中止整批
+# ---------------------------------------------------------------------------
+class _DownSession:
+    """模拟 Render 出口连不上 DDG / Trends：一律 ConnectTimeout。"""
+
+    def get(self, *a, **k):
+        import requests
+        raise requests.exceptions.ConnectTimeout("Connection to duckduckgo.com timed out")
+
+
+class _ChallengeSession:
+    """能连上，但每次都回 202 挑战页。"""
+
+    class _R:
+        status_code = 202
+        text = "<html><head><title>DuckDuckGo</title></head><body></body></html>"
+        ok = True
+
+    def get(self, *a, **k):
+        return self._R()
+
+
+def test_fetch_serp_raises_source_unavailable_on_connect_failure(monkeypatch):
+    """连不上 DDG（Render 出口实测）→ 源级不可用，上层中止整批。"""
+    monkeypatch.setattr(ss.time, "sleep", lambda s: None)
+    with pytest.raises(SourceUnavailable) as ei:
+        ss.fetch_serp("cba housing market downturn outlook", session=_DownSession())
+    assert ei.value.source == "duckduckgo"
+    assert "连不上" in str(ei.value)
+    assert len(ei.value.attempts) == 4          # 4 发都记了账
+    assert all(a["status"] == 0 for a in ei.value.attempts)
+
+
+def test_fetch_serp_raises_source_unavailable_on_challenge_pages(monkeypatch):
+    """DDG 现在对无 JS 请求一律 202 挑战页 → 也是源级不可用，不能当「无结果」。"""
+    monkeypatch.setattr(ss.time, "sleep", lambda s: None)
+    with pytest.raises(SourceUnavailable) as ei:
+        ss.fetch_serp("some term", session=_ChallengeSession())
+    assert ei.value.source == "duckduckgo"
+    assert "未返回可用结果" in str(ei.value)
+    assert all(a["status"] == 202 for a in ei.value.attempts)
+
+
+def test_fetch_interest_raises_source_unavailable(monkeypatch):
+    monkeypatch.setattr(st.time, "sleep", lambda s: None)
+    with pytest.raises(SourceUnavailable) as ei:
+        st.fetch_interest("some term", session=_DownSession())
+    assert ei.value.source == "google-trends"
+    assert "连不上" in str(ei.value)

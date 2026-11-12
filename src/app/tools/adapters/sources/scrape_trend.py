@@ -22,6 +22,8 @@ from typing import Any, Optional
 
 import requests
 
+from .errors import SourceUnavailable
+
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 BASE_HEADERS = {
@@ -99,7 +101,7 @@ def fetch_interest(term: str, session: Optional[Any] = None, geo: str = "") -> d
     # 拿 NID cookie（失败不拦，有些节点不种也能直调）；Session 自动带后续请求
     try:
         page = sess.get("https://trends.google.com/trends/explore?geo=US",
-                        headers={"User-Agent": UA, "Accept": "text/html"}, timeout=20)
+                        headers={"User-Agent": UA, "Accept": "text/html"}, timeout=(8, 20))
         attempts.append({"step": "cookie", "status": page.status_code,
                          "note": "NID" if "NID" in (sess.cookies.get("NID") or "") else "无 cookie"})
     except Exception:
@@ -117,7 +119,7 @@ def fetch_interest(term: str, session: Optional[Any] = None, geo: str = "") -> d
         try:
             resp = sess.get(
                 "https://trends.google.com/trends/api/explore?hl=en-US&tz=0&req=" + up.quote(req_json),
-                headers=headers, timeout=20)
+                headers=headers, timeout=(8, 20))
         except Exception as exc:
             attempts.append({"step": "explore", "status": 0, "note": "连接失败"})
             last_note = str(exc)
@@ -138,7 +140,7 @@ def fetch_interest(term: str, session: Optional[Any] = None, geo: str = "") -> d
             csv_resp = sess.get(
                 "https://trends.google.com/trends/api/widgetdata/multiline/csv?hl=en-US&tz=0&req="
                 + up.quote(json.dumps(widget["request"])) + "&token=" + up.quote(str(widget["token"])),
-                headers=headers, timeout=20)
+                headers=headers, timeout=(8, 20))
         except Exception as exc:
             attempts.append({"step": "csv", "status": 0, "note": "连接失败"})
             last_note = str(exc)
@@ -154,6 +156,11 @@ def fetch_interest(term: str, session: Optional[Any] = None, geo: str = "") -> d
             continue
         return {"points": points, "summary": summarize_interest(points), "attempts": attempts}
 
-    err = Exception((last_note or "Google Trends 抓取失败") + f"（已自动重试 {len(attempts)} 次，过几分钟再试）")
-    err.attempts = attempts  # type: ignore[attr-defined]
-    raise err
+    # 3 发全失败：区分「连不上 / 全 429」和「单词解析问题」，都按源级不可用上报——
+    # 但上层对趋势的处理是「本批禁用趋势、继续分析」，不像 SERP 那样直接中止整批。
+    responded = sum(1 for a in attempts if a.get("step") != "cookie" and a.get("status"))
+    if responded == 0:
+        note = "连不上 Google Trends（3 发全部连接失败）" + (f"：{last_note}" if last_note else "")
+    else:
+        note = f"Google Trends 连续 3 发失败（最后一次：{last_note}）"
+    raise SourceUnavailable("google-trends", note + "，过几分钟再试", attempts)
