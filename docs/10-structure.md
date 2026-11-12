@@ -50,7 +50,7 @@ src/app/
 | `services/versioning_service.py` | 删除 | 单轮流水线不保留跨轮版本状态；prompt 版本走请求 `prompt_versions` + `prompts/registry.py` |
 | `evaluation/`（独立包） | 合并成 `services/evaluation_service.py` | 只有一个评估器 + 一档阈值，独立包只让依赖图多一跳 |
 | `storage/`（进程内单例） | 删除 | 模板的 `workflow_store` / `cache` 重启即丢；本项目的持久化真源是 D1（`agent_*` 7 张表）+ KV（`agent:` 前缀），不能有两份“真相” |
-| `tools/` 四个 demo（calculator / retriever / db_query / http） | 换成 6 个业务域 `*_tools.py` + `adapters/`，25 个工具 | demo 没有业务含义；能力清单见 `05-tools.md` |
+| `tools/` 四个 demo（calculator / retriever / db_query / http） | 换成 6 个业务域 `*_tools.py` + `adapters/`，26 个工具 | demo 没有业务含义；能力清单见 `05-tools.md` |
 | `observability/` 的 `@traceable` | 真 `langsmith.traceable` + `wrap_openai`，另加 `trace.py` | 模板装饰器只打日志不上报；图轨迹要随 `/run` 返回 |
 | `llm/provider.py` 四家 provider | 只留 OpenAI 兼容 + 无 key 确定性回退 | 站群只用一家兼容接口，node 里不做 SDK 分支 |
 | `prompts/versions/` | 保留 `intent/v1,v2`、`extraction/v1`；删 `validation/v1` | 校验是确定性代码，不需要 prompt |
@@ -99,7 +99,7 @@ src/app/
 | `graph/` | 图装配 | 定义 state 形状、节点顺序、条件边、提供进程级单例 | 保留，去 registry |
 | `nodes/` | 单步逻辑 | 决定读/写 state 的哪些字段、失败怎么记进 `messages` | 保留改名 |
 | `services/` | 无 IO 的业务判断 | 意图分类、字段抽取、意图→工具集、覆盖率评分 | 保留 4 个 |
-| `tools/*_tools.py` | 25 个能力的实现 | Pydantic 参数校验、转调哪个 Ops 方法、`kind` 标注 | 全换 |
+| `tools/*_tools.py` | 26 个能力的实现 | Pydantic 参数校验、转调哪个 Ops 方法、`kind` 标注 | 全换 |
 | `tools/adapters/` | 唯一外部 IO 层 | HTTP / SQL / git / SMTP；超时、重试、错误归一成 `ok=false` | 新增 |
 | `tools/base.py` | 契约叶子 | `BaseTool` / `RuntimeTool` / `ToolOutput` / `stable_key`，不 import 任何 `src.app.*` | 保留 |
 | `tools/registry.py` | 装配 | `RuntimeService` 组合 6 个域 Ops + `ToolRegistry.bind()` | 保留 |
@@ -202,7 +202,7 @@ class ToolRegistry:
 tool_registry = ToolRegistry()
 ```
 
-工具类的固定写法（25 个一致）：
+工具类的固定写法（26 个一致）：
 
 ```python
 class GetHotwordsTool(RuntimeTool):

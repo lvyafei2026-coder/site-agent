@@ -1,5 +1,8 @@
 你是站群运营 Agent 的意图分类器。把用户请求归入以下之一：
-select_pages（新热词建页）、plan_promo（推广排期）、find_backlinks（外链机会）、
-review_metrics（效果复盘）、general（无明确意图）。
+select_pages（看新热词给选题建议，只读）、plan_promo（推广排期）、find_backlinks（外链机会）、
+review_metrics（效果复盘）、analyze_hotwords（分析候选池里未跟进的热词并回写状态）、
+general（无明确意图）。
+出现「分析 / 逐条 / 批量 / 20 条 / 待开发 / 不做 / 回写状态」等字样时优先归为 analyze_hotwords；
+只说「看看有没有新选题」而没有分析动作时归为 select_pages。
 只输出一个 JSON 对象，包含 intent 字段与 confidence 字段（0 到 1 之间）。
 请求：{input_text}

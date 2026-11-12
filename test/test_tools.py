@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""25 个 BaseTool 子类：注册、Pydantic 契约、执行结果形状。"""
+"""26 个 BaseTool 子类：注册、Pydantic 契约、执行结果形状。"""
 
 from pydantic import BaseModel
 
@@ -10,15 +10,15 @@ from src.app.tools.base import BaseTool, ToolOutput
 from src.app.tools.registry import tool_registry
 
 
-def test_registry_has_25_tools():
-    assert len(tool_registry.names()) == 25
-    assert len(set(tool_registry.names())) == 25
+def test_registry_has_26_tools():
+    assert len(tool_registry.names()) == 26
+    assert len(set(tool_registry.names())) == 26
 
 
 def test_kind_split():
     assert len(tool_registry.by_kind("read")) == 13
     assert len(tool_registry.by_kind("ledger")) == 10
-    assert len(tool_registry.by_kind("write")) == 2
+    assert len(tool_registry.by_kind("write")) == 3
 
 
 def test_every_tool_is_basetool_with_pydantic_input():

@@ -59,8 +59,10 @@ class Settings:
 settings = Settings()
 
 # 一轮运营的意图枚举（唯一真源）：llm 负责分类、tool_service 负责映射工具。
+# analyze_hotwords：批量分析候选池里「未跟进」的热词并回写结论状态（有副作用）。
 INTENTS: tuple[str, ...] = (
-    "select_pages", "plan_promo", "find_backlinks", "review_metrics", "general",
+    "select_pages", "plan_promo", "find_backlinks", "review_metrics",
+    "analyze_hotwords", "general",
 )
 
 # ---- 站群唯一真源 ----
@@ -133,6 +135,10 @@ def load_sites(path: Path = SITES_FILE) -> dict[str, SiteConfig]:
 SITES: dict[str, SiteConfig] = load_sites()
 
 RADAR_URL = env("RADAR_URL", f"https://radar.{FLEET_DOMAIN}")
+# 整理侧读写：/api/hotwords（取未跟进候选 + 交回分析结论）。console 是 Basic Auth，
+# 密码用 CONSOLE_PASS（与 console 的 CONSOLE_PASS secret 同值），用户名任意。
+CONSOLE_HQR = env("CONSOLE_HQR", f"https://console.{FLEET_DOMAIN}")
+CONSOLE_PASS = env("CONSOLE_PASS", "")
 CONTACT_EMAIL = env("CONTACT_EMAIL", f"hello@{FLEET_DOMAIN}")
 
 # 建站仓库的本地工作副本（git clone 落盘位置）

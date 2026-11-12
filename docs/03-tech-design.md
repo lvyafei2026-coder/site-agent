@@ -162,7 +162,7 @@ class GetHotwordsTool(RuntimeTool):
 | `publishing_tools.py` | `PublishingOps`（页面台账、渲染、push、验活） | 7 |
 
 装配在 `registry.py`：`RuntimeService(6 个 Ops)` 是唯一门面，`ToolRegistry.bind(ops)`
-把门面注入 25 个工具。跨域复用写成 `self.<method>`（如 `PublishingOps.queue_indexing`
+把门面注入 26 个工具。跨域复用写成 `self.<method>`（如 `PublishingOps.queue_indexing`
 里调 `self.ledger_upsert`），门面组合后自然可见，不额外 import 其它域的 Ops。
 
 ## 6. 适配器

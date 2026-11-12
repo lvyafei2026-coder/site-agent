@@ -35,6 +35,17 @@ class FakeRuntime:
         return {"items": self.hotwords_items[:limit],
                 "meta": self.hotwords_meta, "interests": {}}
 
+    def analyze_hotwords(self, limit=20):
+        self.counts["analyze_hotwords"] += 1
+        return {"ok": True, "fetched": 2, "analyzed": 2, "failed": 0,
+                "counts": {"做": 1, "不做": 1},
+                "items": [
+                    {"term": "free invoice calculator", "verdict": "做",
+                     "status": "todo", "serp": True, "trend": True},
+                    {"term": "Taylor Swift net worth", "verdict": "不做",
+                     "status": "rejected", "serp": True, "trend": True},
+                ]}
+
     def click_stats(self, days=7):
         return {"daily": [{"site": "music.example", "day": 1, "pv": 20, "uv": 8}],
                 "top_pages": [{"site": "music.example", "path": "/", "pv": 20, "uv": 8}]}

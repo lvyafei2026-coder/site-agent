@@ -22,8 +22,9 @@ def test_settings_contract():
 
 
 def test_intents_are_the_single_source():
-    assert len(INTENTS) == len(set(INTENTS)) == 5
+    assert len(INTENTS) == len(set(INTENTS)) == 6
     assert "general" in INTENTS
+    assert "analyze_hotwords" in INTENTS
 
 
 def test_fleet_domain_is_single_source():

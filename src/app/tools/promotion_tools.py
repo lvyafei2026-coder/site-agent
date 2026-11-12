@@ -50,7 +50,7 @@ class WritePromoSlotTool(RuntimeTool):
         item: dict[str, Any] = Field(..., description="排期条目")
 
     def run(self, **kwargs: Any) -> dict[str, Any]:
-        # 25 个工具里唯一带业务分支的（先读后判重再写），所以覆盖 run()。
+        # 26 个工具里唯一带业务分支的（先读后判重再写），所以覆盖 run()。
         try:
             item = self.Input(**kwargs).item
             current = self.ops.latest_plan() or []

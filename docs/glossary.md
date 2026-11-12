@@ -37,7 +37,7 @@ SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 | **综合分（confidence_score）** | `coverage * 0.6 + confidence * 0.4`，与覆盖率同时 >= 0.5 才算通过。 |
 | **checkpointer** | 图状态持久化。`memory`（本地/测试）或 `sqlite`（生产，落 `/data`）。只存「跑到哪」，不是业务数据库。 |
 | **`thread_id`** | 一次执行的会话标识，决定状态落哪个会话；不参与业务判断。 |
-| **工具（tool）** | 25 个之一，`BaseTool` 子类，配 Pydantic `Input`，返回 `ToolOutput`。 |
+| **工具（tool）** | 26 个之一，`BaseTool` 子类，配 Pydantic `Input`，返回 `ToolOutput`。 |
 | **`kind`** | 工具的副作用分类：`read`（只读）、`ledger`（可重复的台账/文件写）、`write`（不可逆发布）。 |
 | **门面（ops）** | `RuntimeService`：6 个域 `Ops` 的多继承组合，工具通过它访问外部 IO。装配在 `tools/registry.py`。 |
 | **域（domain）** | 一组相关工具的归口文件，如 `ledger_tools.py` 里的 `LedgerOps` + 9 个工具类。 |

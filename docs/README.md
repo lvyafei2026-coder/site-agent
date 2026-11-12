@@ -9,7 +9,7 @@
 | [02-architecture.md](02-architecture.md) | 分几层、依赖为什么单向、谁负责装配、一次请求怎么走、和站群其它系统怎么划界 |
 | [03-tech-design.md](03-tech-design.md) | 状态契约、图与节点、四个服务、工具契约、适配器、SQL、D1 表、checkpointer、可观测性 |
 | [04-runbook.md](04-runbook.md) | 本地跑、环境变量、D1 建表、Render 部署、验证清单、排障、安全 |
-| [05-tools.md](05-tools.md) | 25 个工具速查、意图到工具集、站点清单字段、新增能力检查清单 |
+| [05-tools.md](05-tools.md) | 26 个工具速查、意图到工具集、站点清单字段、新增能力检查清单 |
 | [10-structure.md](10-structure.md) | 结构唯一口径：脚手架来源与逐项差异、分包规则、文件级目录树、依赖方向、硬约束、自查清单 |
 | [glossary.md](glossary.md) | 站群、编排、数据三类术语 |
 

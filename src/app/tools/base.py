@@ -4,7 +4,7 @@
 
 """工具契约。
 
-25 个工具各自是 BaseTool 的子类，子类只声明 tool_name / method / Input，
+26 个工具各自是 BaseTool 的子类，子类只声明 tool_name / method / Input，
 作用说明写在类 docstring 里（description 直接取 docstring），实现在同一个
 *_tools.py 的 <Domain>Ops 类里，外部 IO 只发生在 tools/adapters/ 内。
 

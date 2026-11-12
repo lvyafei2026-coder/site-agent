@@ -4,7 +4,7 @@
 
 """工具装配 + 注册。
 
-全包唯一同时认识「全部实现（6 个域 Ops）」和「全部工具（25 个类）」的模块，
+全包唯一同时认识「全部实现（6 个域 Ops）」和「全部工具（26 个类）」的模块，
 所以装配放在这里：RuntimeService 把 6 个域拼成一个门面，再逐个注入给工具。
 依赖方向固定为 registry → *_tools → base →（标准库 / pydantic），全程静态 import，
 不需要任何延迟导入；base 不反过来认识任何域，工具也不自己去取门面。
@@ -54,12 +54,12 @@ from src.app.tools.publishing_tools import (
     RenderFilesTool,
     WaitBuildTool,
 )
-from src.app.tools.selection_tools import GetHotwordsTool, SelectionOps
+from src.app.tools.selection_tools import AnalyzeHotwordsTool, GetHotwordsTool, SelectionOps
 
 
 class RuntimeService(SelectionOps, DistributionOps, LedgerOps,
                      MeasurementOps, PromotionOps, PublishingOps):
-    """25 个工具的唯一门面：实现见各域 Ops 类，这里只有组合。"""
+    """26 个工具的唯一门面：实现见各域 Ops 类，这里只有组合。"""
 
 
 TOOL_CLASSES = (
@@ -88,6 +88,7 @@ TOOL_CLASSES = (
     GetLatestPlanTool,
     WritePromoSlotTool,
     GetHotwordsTool,
+    AnalyzeHotwordsTool,
 )
 
 

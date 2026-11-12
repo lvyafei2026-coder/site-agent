@@ -28,7 +28,7 @@
 | `graph` | 图组装、状态契约、路由条件 | nodes、memory |
 | `nodes` | 单个步骤的逻辑，读 state 写 state | services、models |
 | `services` | 跨节点复用的能力（LLM、prompt、工具分发、评分） | tools、prompts、llm、observability |
-| `tools` | 25 个工具的定义与实现、外部 IO 适配器 | adapters（+ 包内 base） |
+| `tools` | 26 个工具的定义与实现、外部 IO 适配器 | adapters（+ 包内 base） |
 | `adapters` | 真实外部系统（D1 / KV / GitHub / radar / GSC / Reddit / Dev.to / Resend） | 标准库、requests、config |
 | `memory` `llm` `prompts` `observability` `utils` | 基础设施 | config |
 
@@ -54,7 +54,7 @@
 | 配置 | `config.py:settings` | 唯一读 `.env` 的地方；其余模块只 import 常量 |
 | 站群清单 | `config.py:SITES` ← `config/sites.json` | 站点信息是数据不是代码，重名直接抛错 |
 | 实现门面 | `tools/registry.py:RuntimeService` | 6 个域 Ops 的多继承组合，本身没有实现 |
-| 工具实例 | `tools/registry.py:tool_registry` | 把门面注入 25 个工具，一次构造 |
+| 工具实例 | `tools/registry.py:tool_registry` | 把门面注入 26 个工具，一次构造 |
 | 图 | `graph/builder.py:get_graph()` | `lru_cache(1)`，checkpointer 连接跟着复用 |
 
 工具拿实现的唯一途径是构造注入：
@@ -68,7 +68,7 @@ class RuntimeTool(BaseTool):
 ```
 
 好处是「换实现只换一处」：生产是模块级 `tool_registry`，测试是
-`tool_registry.bind(FakeRuntime())`，25 个工具同时切换，没有全局单例要找。
+`tool_registry.bind(FakeRuntime())`，26 个工具同时切换，没有全局单例要找。
 
 ## 4. 运行时：一次 `/run`
 
@@ -189,4 +189,4 @@ cron 心跳保活由 site-console 的 `*/10 1-15 * * *`（UTC）负责）。
 | checkpointer 用 SQLite（memory 仅本地） | 单进程、单写入者，SQLite 够用；D1 留给业务台账 |
 | 写动作靠 `tools` 显式声明 | 闸门放在请求体而不是代码分支，进程不用保存「等谁批」的状态 |
 | SQL 集中在 `adapters/cloudflare/sql.py` | 表名与列名只来自白名单契约，值一律占位符，热路径不拼字符串 |
-| 工具实现用构造注入 | 装配在一个文件里看得见，测试一次性替换 25 个工具 |
+| 工具实现用构造注入 | 装配在一个文件里看得见，测试一次性替换 26 个工具 |

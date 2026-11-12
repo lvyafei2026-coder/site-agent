@@ -1,18 +1,19 @@
 # 05 · 工具与配置速查
 
-> 25 个工具一张表；意图到工具集的映射；站点清单字段；新增工具的检查清单。
+> 26 个工具一张表；意图到工具集的映射；站点清单字段；新增工具的检查清单。
 > 契约与实现细节见 `03-tech-design.md §5`。
 
-## 1. 全量工具（25）
+## 1. 全量工具（26）
 
 `kind` 说明：`read` 只读；`ledger` 写台账 / KV / 本地文件，可重复执行；
 `write` 不可逆的外部发布。
 
-### 1.1 selection（1）
+### 1.1 selection（2）
 
 | name | kind | method | 参数 | 用途 |
 |---|---|---|---|---|
 | `get_hotwords` | read | `hotwords` | `status=doing`、`limit=40` | 读 radar 候选词，返回 `items` + `meta`（`updatedMs` / `geosOk` / `raw`）。**判断有没有新数据要看 meta** |
+| `analyze_hotwords` | **write** | `analyze_hotwords` | `limit=20` | 热词分析（2026-11-12 从 site-console「开始分析」迁入）：经 console `/api/hotwords` 取 20 条「未跟进」词，逐条调 radar `/api/serp` + `/api/trend` 补数据、外部 LLM 出 8 小节站点方案，再写回正文 / 信号 / 「不做」或「待开发」。★`analyze_hotwords` 意图的默认集就是它本身，分类到该意图即执行；也可显式传 `tools` 触发 |
 
 ### 1.2 measurement（2）
 
@@ -71,10 +72,11 @@
 | `plan_promo` | `get_latest_plan` + `get_page_inventory` + `get_pending_events` |
 | `find_backlinks` | `get_backlink_ledger` + `search_reddit` + `list_devto_articles` |
 | `review_metrics` | `get_click_stats` + `get_search_analytics` + `get_page_inventory` |
+| **`analyze_hotwords`** | **`analyze_hotwords`**（★唯一的默认集里带 write 工具的意图：这个意图的业务本身就是「分析并改状态」，LLM 分类到它即会执行，无需显式传 `tools`） |
 | `general` | `get_pending_events` + `get_reflections` |
 
-默认集**只含 read 工具**。`TOOL_ARGS`（`services/tool_service.py`）给几个工具预置参数：
-热词取 20 条、页面台账取 `mode=new` 10 条、Reddit 搜索词取请求文本前 80 字等。
+默认集一般只含 read 工具，唯一例外是 `analyze_hotwords`：它的产出就是状态变更。
+`TOOL_ARGS`（`services/tool_service.py`）给几个工具预置参数：热词取 20 条、分析批次 20 条、页面台账取 `mode=new` 10 条、Reddit 搜索词取请求文本前 80 字等。
 
 请求里传 `tools` 会完全覆盖默认集，包含写工具也一样——这是触发不可逆动作的
 唯一开关：
