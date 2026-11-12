@@ -43,7 +43,7 @@ def test_cloudflarekv_transport_url_includes_params():
 
     def transport(method, url, headers, body):
         calls.append((method, url, body))
-        return 200, '{"result":{"keys":[]}}'
+        return 200, '{"result":[],"result_info":{"count":0}}'
 
     client = kvmod.CloudflareKV("acct", "ns", "tok", transport=transport)
     assert client.configured is True
@@ -51,6 +51,130 @@ def test_cloudflarekv_transport_url_includes_params():
     assert keys == []
     # list 走 /keys?prefix=...，transport 收到带 query 的 URL
     assert calls and "prefix=ai%3Av3%3A" in calls[-1][1]
+
+
+def test_list_keys_real_cloudflare_shape():
+    """★真实 Cloudflare 格式：result 是数组、游标在 result_info.cursor。
+
+    曾经按 {"result":{"keys":[...]}} 解析，线上报 "'list' object has no attribute 'get'"。
+    """
+    def transport(method, url, headers, body):
+        return 200, json.dumps({
+            "result": [{"name": "ai:v3:foo"}, {"name": "ai:v3:bar"}],
+            "success": True,
+            "result_info": {"count": 2, "cursor": ""},
+        })
+
+    client = kvmod.CloudflareKV("acct", "ns", "tok", transport=transport)
+    assert client.list_keys("ai:v3:") == ["ai:v3:foo", "ai:v3:bar"]
+
+
+def test_list_keys_follows_cursor_in_result_info():
+    """游标在 result_info 里，必须跟着翻页，否则只拿到第一页 1000 条。"""
+    pages = [
+        {"result": [{"name": "a1"}], "result_info": {"cursor": "c1"}},
+        {"result": [{"name": "a2"}], "result_info": {"cursor": "c2"}},
+        {"result": [{"name": "a3"}], "result_info": {"count": 1}},
+    ]
+    seen = []
+
+    def transport(method, url, headers, body):
+        seen.append(url)
+        return 200, json.dumps(pages[len(seen) - 1])
+
+    client = kvmod.CloudflareKV("acct", "ns", "tok", transport=transport)
+    assert client.list_keys("a") == ["a1", "a2", "a3"]
+    assert len(seen) == 3
+    assert "cursor=c1" in seen[1] and "cursor=c2" in seen[2]
+
+
+def test_list_keys_tolerates_legacy_dict_shape():
+    """兜底：老式 {"result":{"keys":[...],"cursor":"x"}} 也能解析。"""
+    def transport(method, url, headers, body):
+        return 200, '{"result":{"keys":[{"name":"k1"}],"cursor":"x"}}'
+
+    client = kvmod.CloudflareKV("acct", "ns", "tok", transport=transport)
+    assert client.list_keys("k")[:1] == ["k1"]
+
+
+def test_list_keys_handles_error_and_garbage():
+    """非 200、非 JSON、result 类型异常都不能抛，返回已拿到的部分。"""
+    for body in ('', '不是 JSON', '{"result":null}', '[1,2,3]'):
+        client = kvmod.CloudflareKV("acct", "ns", "tok", transport=lambda *a, _b=body: (200, _b))
+        assert client.list_keys("x") == []
+
+    client = kvmod.CloudflareKV("acct", "ns", "tok", transport=lambda *a: (500, 'oops'))
+    assert client.list_keys("x") == []
+
+
+def test_production_path_builds_correct_request(monkeypatch):
+    """★线上走 requests 分支（transport=None），必须编码键名、snake_case TTL、不发 __list__。"""
+    seen = []
+
+    class FakeResp:
+        status_code = 200
+        text = '{"success":true,"result":[],"result_info":{}}'
+
+    def fake_request(method, url, params=None, headers=None, data=None, timeout=None):
+        seen.append(("request", method, url, params, data))
+        return FakeResp()
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        seen.append(("get", url, params))
+        return FakeResp()
+
+    monkeypatch.setattr(kvmod.requests, "request", fake_request)
+    monkeypatch.setattr(kvmod.requests, "get", fake_get)
+
+    client = kvmod.CloudflareKV("acct", "ns", "tok")  # 无 transport → 生产分支
+    client.put_text("serp:v1:a b", "{}", ttl=604800)
+    kind, method, url, params, data = seen[-1]
+    assert kind == "request" and method == "PUT"
+    assert url.endswith("/values/serp%3Av1%3Aa%20b")
+    assert params == {"expiration_ttl": 604800}
+    assert data == "{}"
+
+    client.list_keys("ai:v3:")
+    kind, url, params = seen[-1]
+    assert kind == "get" and url.endswith("/keys")
+    assert params["prefix"] == "ai:v3:" and "__list__" not in params
+
+
+def test_kv_key_is_percent_encoded():
+    """★键名含冒号/空格/# 时必须编码，否则 URL 被截断（词是自然语言短语）。"""
+    urls = []
+
+    def transport(method, url, headers, body):
+        urls.append(url)
+        return 200, '{"success":true,"result":{}}'
+
+    client = kvmod.CloudflareKV("acct", "ns", "tok", transport=transport)
+    key = "ai:v3:" + kvmod.term_key("Free Invoice #Calculator?")
+    client.put_text(key, "x")
+    assert "/values/ai%3Av3%3Afree%20invoice%20%23calculator%3F" in urls[-1]
+    assert " " not in urls[-1] and "#" not in urls[-1] and "?" not in urls[-1]
+
+
+def test_put_text_uses_snake_case_expiration_ttl():
+    """★REST 写 KV 的 TTL 参数是 expiration_ttl（snake_case），不是 expirationTtl。"""
+    calls = []
+
+    def transport(method, url, headers, body):
+        calls.append((method, url, body))
+        return 200, '{"success":true,"result":{}}'
+
+    client = kvmod.CloudflareKV("acct", "ns", "tok", transport=transport)
+    assert client.put_text("serp:v1:foo", "{}", ttl=604800) is True
+    assert "expiration_ttl=604800" in calls[-1][1]
+    assert "expirationTtl" not in calls[-1][1]
+
+    # 不传 ttl 就不带任何过期参数（无 TTL = 永不过期）
+    assert client.put_text("ai:v3:foo", "x") is True
+    assert "expiration" not in calls[-1][1]
+
+    # 小于 60 秒会被 Cloudflare 拒绝，这里抬到下限
+    assert client.put_text("k", "v", ttl=5) is True
+    assert "expiration_ttl=60" in calls[-1][1]
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +322,15 @@ def test_snapshot_reads_kv(fake_kv):
             raise RuntimeError("boom")
     failed = cand.snapshot(kv=BoomKV())
     assert failed["items"] == [] and "error" in failed
+
+
+def test_snapshot_survives_shape_drift(fake_kv):
+    """★candidates / meta / interests 形状漂移时按空处理，不让工具调用整体失败。"""
+    fake_kv.put_json("candidates", {"a": {"term": "a"}})   # 期望数组
+    fake_kv.put_json("meta", ["x"])                         # 期望对象
+    fake_kv.put_json("interests", "垃圾")                   # 期望对象
+    snap = cand.snapshot(kv=fake_kv)
+    assert snap["items"] == [] and snap["meta"] == {} and snap["interests"] == {}
 
 
 def test_snapshot_status_filter_keeps_default_doing(fake_kv):

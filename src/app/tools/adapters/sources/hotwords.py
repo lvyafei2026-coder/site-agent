@@ -252,18 +252,43 @@ def _trend(term: str, kv: CloudflareKV) -> tuple[bool, str]:
 # ---------------------------------------------------------------------------
 # 编排：一次 20 条，逐条走完「补数据 → 分析 → 回写状态」；全部读写共享 KV
 # ---------------------------------------------------------------------------
+def _kv_list(kv: CloudflareKV, key: str) -> list:
+    """读一个「应该是数组」的 KV 键；形状不对当空并 warn，不抛。"""
+    val = kv.get_json(key, [])
+    if isinstance(val, list):
+        return val
+    if val is not None and val != []:
+        log.warning("KV 键 %s 期望数组，实际 %s，按空处理", key, type(val).__name__)
+    return []
+
+
+def _kv_dict(kv: CloudflareKV, key: str) -> dict:
+    """读一个「应该是对象」的 KV 键；形状不对当空并 warn，不抛。"""
+    val = kv.get_json(key, {})
+    if isinstance(val, dict):
+        return val
+    if val is not None and val != {}:
+        log.warning("KV 键 %s 期望对象，实际 %s，按空处理", key, type(val).__name__)
+    return {}
+
+
 def _select_pending(kv: CloudflareKV, limit: int) -> list[dict[str, Any]]:
-    """读 KV 候选池，剔除已跟进/打标签/已分析的词，返回前 limit 条未跟进候选。"""
-    candidates = kv.get_json("candidates", []) or []
-    saved = kv.get_json(SAVED_KEY, []) or []
-    rejected = kv.get_json(REJECTED_KEY, []) or []
-    tags = kv.get_json(TAGS_KEY, {}) or {}
+    """读 KV 候选池，剔除已跟进/打标签/已分析的词，返回前 limit 条未跟进候选。
+
+    ★形状兜底：KV 里这几张表是 console/radar 写的，字段形状一旦漂移（比如 tags 变成数组、
+    candidates 变成对象），按原样 .items() / 迭代 会整批失败。这里统一按「期望类型不符就
+    当空」处理并 warn，让漂移可见但不阻断分析。
+    """
+    candidates = _kv_list(kv, "candidates")
+    saved = _kv_list(kv, SAVED_KEY)
+    rejected = _kv_list(kv, REJECTED_KEY)
+    tags = _kv_dict(kv, TAGS_KEY)
 
     curated = set()
-    for x in (list(saved) + list(rejected)):
+    for x in (saved + rejected):
         if isinstance(x, dict) and x.get("key"):
             curated.add(term_key(x["key"]))
-    for k, v in (tags or {}).items():
+    for k, v in tags.items():
         if v:
             curated.add(term_key(k))
 
@@ -326,15 +351,15 @@ def _analyze_one(item: dict[str, Any], kv: CloudflareKV) -> dict[str, Any]:
     key = term_key(term)
     kv.put_text(AI_CACHE_PREFIX + key, text)
     if hints is not None:
-        hints_map = kv.get_json(HINTS_KEY, {}) or {}
+        hints_map = _kv_dict(kv, HINTS_KEY)
         kv.put_json(HINTS_KEY, set_hint_override(hints_map, term, hints))
 
     if verdict == "不做":
-        before = kv.get_json(REJECTED_KEY, []) or []
+        before = _kv_list(kv, REJECTED_KEY)
         kv.put_json(REJECTED_KEY, upsert_rejected(before, {"term": term, "reason": reason or "AI 判定不做", "source": "ai"}))
         out["status"] = "rejected"
     elif verdict == "做":
-        before = kv.get_json(SAVED_KEY, []) or []
+        before = _kv_list(kv, SAVED_KEY)
         cand = {k: item.get(k) for k in ("term", "related", "hints", "geos", "geoCount", "traffic", "count", "score")}
         kv.put_json(SAVED_KEY, upsert_saved(before, {**cand, "term": term, "status": "todo", "verdict": "做"}))
         out["status"] = "todo"

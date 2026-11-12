@@ -180,6 +180,19 @@ def test_select_pending_limit_and_order(fake_kv):
     assert [p["term"] for p in pending] == ["t0", "t1", "t2"]
 
 
+def test_select_pending_survives_shape_drift(fake_kv):
+    """★KV 表形状漂移不能整批失败（线上踩过 'list' object has no attribute 'get'）。"""
+    fake_kv.put_json("candidates", [{"term": "a"}, {"term": "b"}])
+    fake_kv.put_json("tags", ["不是对象而是数组"])          # 期望 dict，实际 list
+    fake_kv.put_json("saved", {"a": {"status": "saved"}})   # 期望 list，实际 dict
+    fake_kv.put_json("rejected", "垃圾")
+    pending = hw._select_pending(fake_kv, 20)  # 不抛
+    assert [p["term"] for p in pending] == ["a", "b"]  # 形状坏的当空，不误剔除
+
+    fake_kv.put_json("candidates", {"a": 1})  # 期望 list，实际 dict
+    assert hw._select_pending(fake_kv, 20) == []
+
+
 def test_analyze_one_skips_blank(fake_kv):
     out = hw._analyze_one({"term": ""}, fake_kv)
     assert out["error"] == "空词"

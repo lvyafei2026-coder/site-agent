@@ -19,12 +19,15 @@ transport 可注入：生产走 requests 打 Cloudflare；测试注入内存实�
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import urllib.parse
 from typing import Any, Callable, Optional
 
 import requests
+
+log = logging.getLogger(__name__)
 
 # ---- 键前缀 / 键名：与 console/src/store.js、radar/src/store.js 严格对齐 ----
 AI_CACHE_PREFIX = "ai:v3:"          # AI 站点方案正文（无 TTL）
@@ -86,31 +89,30 @@ class CloudflareKV:
 
     # ---- 底层请求 ----
     def _request(self, method: str, key: Optional[str], *, params=None, body=None) -> tuple[int, str]:
-        if self.transport is not None:
-            url = _api_base(self.account_id, self.namespace_id)
-            if key is not None:
-                url += "/values/" + key
-            else:
-                url += "/keys"
-            q = {k: v for k, v in (params or {}).items() if k != "__list__"}
-            if q:
-                url += "?" + urllib.parse.urlencode(q)
-            headers = {"Authorization": "Bearer " + self.api_token}
-            return self.transport(method, url, headers, body)
-        # 生产路径：真实打 Cloudflare
-        base = _api_base(self.account_id, self.namespace_id)
+        # ★键名必须百分号编码：我们的键是 "ai:v3:free invoice calculator" 这种含冒号/空格/可能含
+        #   # ? % 的自然语言词组，裸拼进路径会被 URL 解析截断或改写（Cloudflare 文档明确要求编码）。
         if key is not None:
-            url = base + "/values/" + key
+            url = _api_base(self.account_id, self.namespace_id) + "/values/" + urllib.parse.quote(key, safe="")
         else:
-            url = base + "/keys"
+            url = _api_base(self.account_id, self.namespace_id) + "/keys"
+
+        # __list__ 是内部标记（区分 /keys 与 /values），绝不能发给 Cloudflare
+        q = {k: v for k, v in (params or {}).items() if k != "__list__"} or None
+
+        if self.transport is not None:
+            full = url + ("?" + urllib.parse.urlencode(q) if q else "")
+            headers = {"Authorization": "Bearer " + self.api_token}
+            return self.transport(method, full, headers, body)
+
+        # 生产路径：真实打 Cloudflare
         headers = {"Authorization": "Bearer " + self.api_token}
         if body is not None:
             headers["Content-Type"] = "text/plain; charset=utf-8"
         try:
             if key is not None:
-                resp = requests.request(method, url, params=params, headers=headers, data=body, timeout=30)
+                resp = requests.request(method, url, params=q, headers=headers, data=body, timeout=30)
             else:
-                resp = requests.get(url, params=params, headers=headers, timeout=30)
+                resp = requests.get(url, params=q, headers=headers, timeout=30)
         except requests.RequestException as exc:  # 网络层失败：fail-open
             return 502, str(exc)
         return resp.status_code, resp.text
@@ -120,6 +122,10 @@ class CloudflareKV:
         status, text = self._request("GET", key)
         if status == 200 and text != "":
             return text
+        # 404 = 键不存在，正常；其余（401 凭据错、403 权限、5xx）必须留痕，
+        # 否则「读不到」会伪装成「数据是空的」，排查时完全看不出方向。
+        if status not in (200, 404):
+            log.warning("KV 读取异常 %s: status=%s %s", key, status, str(text)[:120])
         return default
 
     def get_json(self, key: str, default: Any = None) -> Any:
@@ -133,9 +139,14 @@ class CloudflareKV:
 
     # ---- 写 ----
     def put_text(self, key: str, text: str, ttl: Optional[int] = None) -> bool:
+        """ttl 单位秒。★REST 的查询参数名是 `expiration_ttl`（snake_case，最小 60），
+        不是 Workers binding 的 `expirationTtl`——发错名字会被忽略或报 400，
+        结果要么键永不过期、要么写入直接失败。"""
         if not self.configured:
             return False
-        params = {"expirationTtl": ttl} if ttl else None
+        params = None
+        if ttl:
+            params = {"expiration_ttl": max(60, int(ttl))}
         status, _ = self._request("PUT", key, params=params, body=text)
         return status in (200, 201)
 
@@ -148,7 +159,13 @@ class CloudflareKV:
 
     # ---- 列举 ----
     def list_keys(self, prefix: str) -> list[str]:
-        """返回所有以 prefix 开头的完整键名（含前缀）。未配置或失败返回空列表。"""
+        """返回所有以 prefix 开头的完整键名（含前缀）。未配置或失败返回空列表。
+
+        ★Cloudflare KV REST 的真实响应是：
+            {"result": [{"name": "..."}], "result_info": {"count": 1, "cursor": "..."}}
+        即 result 是**数组**、游标在 result_info 里（早期版本曾按 {"result":{"keys":[...]}}
+        写，结果线上直接 "'list' object has no attribute 'get'"）。两种都兼容。
+        """
         if not self.configured and self.transport is None:
             return []
         out: list[str] = []
@@ -164,11 +181,22 @@ class CloudflareKV:
                 data = json.loads(text)
             except (ValueError, TypeError):
                 break
-            for k in (data.get("result", {}) or {}).get("keys", []):
-                name = k.get("name")
+            if not isinstance(data, dict):
+                break
+            result = data.get("result")
+            if isinstance(result, dict):          # 兜底：老式 {"result": {"keys": [...]}}
+                keys = result.get("keys") or []
+                cursor = result.get("cursor") or None
+            elif isinstance(result, list):        # 真实 Cloudflare 格式
+                keys = result
+                info = data.get("result_info")
+                cursor = (info or {}).get("cursor") if isinstance(info, dict) else None
+            else:
+                break
+            for k in keys:
+                name = k.get("name") if isinstance(k, dict) else k
                 if name:
-                    out.append(name)
-            cursor = (data.get("result", {}) or {}).get("cursor")
+                    out.append(str(name))
             if not cursor:
                 break
         return out

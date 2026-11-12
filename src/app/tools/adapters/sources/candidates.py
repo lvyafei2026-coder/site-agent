@@ -15,15 +15,23 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from .kv import CloudflareKV, get_kv
+from .kv import CANDIDATES_KEY, INTERESTS_KEY, CloudflareKV, get_kv
 
 log = logging.getLogger(__name__)
 
 
 def _read(kv: CloudflareKV, status: str, limit: int, light: bool) -> dict[str, Any]:
-    candidates = kv.get_json("candidates", []) or []
-    meta = kv.get_json("meta", {}) or {}
-    interests = kv.get_json("interests", {}) or {} if not light else {}
+    # ★形状兜底：这三张表由 radar / console 写，形状漂移时不能让整个工具调用失败
+    candidates = kv.get_json(CANDIDATES_KEY, [])
+    if not isinstance(candidates, list):
+        log.warning("KV 键 %s 期望数组，实际 %s，按空处理", CANDIDATES_KEY, type(candidates).__name__)
+        candidates = []
+    meta = kv.get_json("meta", {})
+    if not isinstance(meta, dict):
+        meta = {}
+    interests = {} if light else kv.get_json(INTERESTS_KEY, {})
+    if not isinstance(interests, dict):
+        interests = {}
 
     items = candidates if not limit else candidates[:limit]
     # 候选条目一般不带 status 字段（status 在 saved/rejected/tags 里），按原 radar.py 语义
