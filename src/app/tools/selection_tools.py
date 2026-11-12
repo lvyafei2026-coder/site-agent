@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from src.app.tools.adapters.sources import hotwords, radar
+from src.app.tools.adapters.sources import hotwords, candidates
 from src.app.tools.base import RuntimeTool
 
 
@@ -16,7 +16,7 @@ class SelectionOps:
     """selection 域的实现：只碰 sources 适配器。"""
 
     def hotwords(self, status="doing", limit=40):
-        return radar.snapshot(status=status, limit=limit)
+        return candidates.snapshot(status=status, limit=limit)
 
     def analyze_hotwords(self, limit=20):
         return hotwords.run_batch(limit=limit)

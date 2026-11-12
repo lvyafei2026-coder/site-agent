@@ -60,9 +60,8 @@ curl -s -X POST localhost:10000/run \
 | `SITES_FILE` | 否 | 站点清单路径，默认 `config/sites.json` |
 | `AGENT_STATE_DIR` | 否 | 本地仓库副本根目录，默认 `data/`；生产 `/data` |
 | `CF_ACCOUNT_ID` / `CF_API_TOKEN` / `D1_DATABASE_ID` | 是 | D1 读写 |
-| `KV_NAMESPACE_ID` | 是 | Workers KV（键 `agent:` 前缀） |
+| `KV_NAMESPACE_ID` | 是 | Workers KV（★热词分析必须）：与 radar / console 共用同一个 RADAR_KV 命名空间，键与 console/radar 对齐（`ai:v3:` / `serp:v1:` / `trend:v1:` / `saved` / `rejected` 等），agent 经 Cloudflare KV REST API 直读直写，不调它们的 App 接口 |
 | `GITHUB_TOKEN` / `GH_ORG` | 是 | 仓库 clone / push / check run |
-| `RADAR_URL` / `RADAR_USER` / `RADAR_PASS` | 是 | radar 候选词（Basic Auth） |
 | `GSC_SA_JSON` / `GSC_PROPERTY` | 否 | 有则读 GSC，无则返回空列表 |
 | `DEVTO_API_KEY` | 否 | 无则发布工具返回 `blocked` |
 | `RESEND_API_KEY` / `ADMIN_EMAIL` / `MAIL_FROM` | 否 | 通知邮件；缺任一则跳过发送 |
@@ -84,8 +83,7 @@ API 的 `LLM_MODEL` 要写 **`openai/gpt-4o-mini`**（vendor/model）——以�
 | `FLEET_DOMAIN` | `toolara.dev` | 站群主域；子站 host、radar 地址、邮箱全由它派生 |
 | `GH_ORG` | `lvyafei2026-coder` | GitHub 用户名（token 属于哪个账号就填哪个） |
 | `D1_DATABASE_ID` | `07a8858a-b269-4680-9059-b336ccf6fc4b` | tool-proxy / site-console 共用的那个 D1（CLICKS 库）；agent 的 7 张 `agent_*` 表也建在它上面 |
-| `KV_NAMESPACE_ID` | `3cb9c51a017748319ae9924b08ded64c` | 就是 RADAR_KV；agent 的键统一带 `agent:` 前缀，与 radar 共用同一个 namespace |
-| `RADAR_URL` | 留空 | 留空自动用 `https://radar.<FLEET_DOMAIN>`（即 `https://radar.toolara.dev`），不用填 |
+| `KV_NAMESPACE_ID` | `3cb9c51a017748319ae9924b08ded64c` | 就是 RADAR_KV；agent 与 radar / console 共用同一个 namespace，键也对齐（`ai:v3:` / `serp:v1:` / `trend:v1:` / `saved` / `rejected` 等），agent 经 Cloudflare KV REST API 直读直写 |
 | `ADMIN_EMAIL` / `CONTACT_EMAIL` | `hello@toolara.dev` | 域名邮箱；`CONTACT_EMAIL` 缺省也是 `hello@<FLEET_DOMAIN>` |
 
 找值位置：
@@ -95,8 +93,10 @@ API 的 `LLM_MODEL` 要写 **`openai/gpt-4o-mini`**（vendor/model）——以�
 - **域名邮箱**：Cloudflare Email Routing 里配置的 `hello@toolara.dev`
 
 其余全是凭据，只进 Render 的 Environment，**不写进文档、不提交仓库**：
-`CF_ACCOUNT_ID` / `CF_API_TOKEN` / `GITHUB_TOKEN` / `RADAR_USER` / `RADAR_PASS` /
+`CF_ACCOUNT_ID` / `CF_API_TOKEN` / `KV_NAMESPACE_ID` / `GITHUB_TOKEN` /
 `LLM_API_KEY` / `RESEND_API_KEY` / `DEVTO_API_KEY` / `GSC_SA_JSON`。
+（`RADAR_USER` / `RADAR_PASS` / `CONSOLE_PASS` / `CONSOLE_HQR` 已随去接口化删除——
+本服务不再调 radar / console 的任何接口，只直读直写共享 KV。）
 
 ### 2.2 LangSmith 追踪（怎么看每轮跑了什么）
 

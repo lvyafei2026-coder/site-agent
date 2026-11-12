@@ -2,38 +2,40 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""热词分析：批量取「未跟进」候选 → 补竞争度/趋势 → LLM 出站点方案 → 回写状态。
+"""热词分析：批量取「未跟进」候选 → 补竞争度/趋势 → LLM 出站点方案 → 直写共享 KV。
 
-2026-11-12 从 site-console 的「开始分析」链路整体迁入（radar 的 /api/analyze 与
-src/ai.js 同时下线）。提示词、8 小节结构、结论/红线/信号标签判据逐字对齐原实现，
-保证 Agent 分析完落在同一批 KV 键上，页面看到的东西和原来点「开始分析」一致：
+2026-11-12 去接口化改造：本模块**不再调用** site-console 的 /api/hotwords 与
+google-trend-radar 的 /api/serp、/api/trend、/api/candidates。它直接读写三方共用的共享 KV
+（Cloudflare KV REST API，见 kv.py），数据链路只有「存储介质依赖」，没有「服务接口依赖」：
 
-  /api/serp   → serp:v1:* + competition（竞争度分档、前 10 站点）
-  /api/trend  → trend:v1:* + interests（30 天曲线、行内迷你图）
-  LLM 正文     → /api/hotwords POST → ai:v3:<词> + aihints
-  结论「不做」 → rejected（source=ai，人工标记优先）
-  结论「做」   → saved.status=todo（待开发，本轮新增状态）
-  结论「观望」 → 只留正文与标签，状态仍为未跟进
+  候选池    → 读 KV `candidates`
+  未跟进判定 → 读 KV `saved` / `rejected` / `tags` + 列举 `ai:v3:` 前缀
+  竞争度/趋势 → 读 KV `serp:v1:<词>` / `trend:v1:<词>`（缺失时由本模块用 scrape 模块
+              现抓并写回 KV，同时更新 `competition` / `interests` 摘要表）
+  LLM 正文  → 直写 KV `ai:v3:<词>`
+  信号标签  → 直写 KV `aihints`
+  结论「不做」→ 直写 KV `rejected`（source=ai，人工标记优先）
+  结论「做」  → 直写 KV `saved`（status=todo，待开发）
+  结论「观望」→ 只留正文与标签，状态仍为未跟进
 
-「趋势图 / 竞争度」的抓取仍走 radar：那两个接口是采集能力的唯一实现，且写的是
-共享 KV，console 的候选页、收藏看板都会自动读到，不需要在 Python 里重写一遍。
+提示词、8 小节结构、结论/红线/信号标签判据逐字对齐 radar 原 src/ai.js（那边已删除，此处唯一真源）。
 """
 
 from __future__ import annotations
 
 import logging
-import os
-import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, Optional
 
-import requests
-
-from src.app.config import (
-    CONSOLE_HQR, CONSOLE_PASS, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, RADAR_URL,
+from .kv import (
+    CloudflareKV, get_kv, term_key,
+    AI_CACHE_PREFIX, SERP_PREFIX, TREND_PREFIX,
+    SAVED_KEY, REJECTED_KEY, TAGS_KEY, COMPETITION_KEY, INTERESTS_KEY, HINTS_KEY,
 )
+from . import scrape_serp, scrape_trend
+from .curation import upsert_saved, upsert_rejected, set_hint_override
 
 log = logging.getLogger(__name__)
 
@@ -61,16 +63,19 @@ AI_SYSTEM = """你是给独立开发者做 SEO 工具站的顾问。用户给出
 
 HINT_NAMES = ("工具查询", "价格规格", "日程日期", "资格政策", "用法教程", "对比评测")
 
-WORK_TITLE_RX = re.compile(
+WORK_TITLE_RX = __import__("re").compile(
     r"(\(\s*(19|20)\d{2}\s*(film|movie|tv series|web series|series|album|song|novel|book|game)\s*\)"
     r"|\b(imdb|letterboxd|rottentomatoes|rotten tomatoes|fandom)\b"
     r"|\b(film|movie|web series|tv series|box office|trailer|soundtrack|full movie)\b)",
-    re.I,
+    __import__("re").I,
 )
 
 MAX_TOKENS = 900
-BATCH_WORKERS = 4           # 20 条逐条分析，并发压住 /api/agent/run 的代理超时
+BATCH_WORKERS = 4           # 20 条逐条分析，并发压住外部 LLM 超时
 SERP_GAP_SEC = 1.5          # DDG 连查会回 202 挑战页，全局串行 + 最小间隔
+SERP_TTL = 604800           # serp:v1: 缓存 7 天
+TREND_TTL = 259200          # trend:v1: 缓存 3 天
+
 _serp_lock = threading.Lock()
 _last_serp_at = 0.0
 
@@ -93,7 +98,7 @@ def build_messages(body: dict[str, Any]) -> list[dict[str, str]]:
             lines.append("· " + item)
             continue
         domain = str(item.get("domain") or "")
-        title = re.sub(r"\s+", " ", str(item.get("title") or ""))[:90]
+        title = __import__("re").sub(r"\s+", " ", str(item.get("title") or ""))[:90]
         lines.append("· " + domain + (" — " + title if title else ""))
     serp_line = "现有搜索结果前几名（域名 — 页面标题）：\n" + "\n".join(lines) if lines else ""
 
@@ -110,7 +115,7 @@ def build_messages(body: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def serp_brief(data: dict[str, Any] | None) -> list[dict[str, str]]:
-    """只把前 6 名的域名 + 标题交给 AI；完整前 10 与竞争度由 radar 写 KV。"""
+    """只把前 6 名的域名 + 标题交给 AI；完整前 10 与竞争度由 KV 的 serp:v1: 提供。"""
     items = (data or {}).get("items") or []
     if not items:
         comp = (data or {}).get("competition") or {}
@@ -125,17 +130,17 @@ def work_signal(items: list[dict[str, str]]) -> str:
     hits = [x for x in items[:6] if x.get("title") and WORK_TITLE_RX.search(str(x["title"]))]
     if len(hits) < 2:
         return ""
-    title = re.sub(r"\s+", " ", hits[0]["title"])[:46]
+    title = __import__("re").sub(r"\s+", " ", hits[0]["title"])[:46]
     return "SERP 标题显示这是具体作品（" + title + "）"
 
 
 def verdict_of(text: str) -> str:
     """最后一节「结论」：做 / 观望 / 不做；小节号可能变，不写死数字。"""
     s = str(text or "")
-    m = re.search(r"\d+\)\s*结论[：:]\s*(不做|观望|做)", s)
+    m = __import__("re").search(r"\d+\)\s*结论[：:]\s*(不做|观望|做)", s)
     if m:
         return m.group(1)
-    if re.search(r"结论[：:][^\n]*不做", s):
+    if __import__("re").search(r"结论[：:][^\n]*不做", s):
         return "不做"
     return ""
 
@@ -143,17 +148,17 @@ def verdict_of(text: str) -> str:
 def redline_of(text: str) -> str:
     """AI 漏写「不做」时的兜底：真人姓名 / 影视作品，宁可错杀。"""
     s = str(text or "")
-    if re.search(r"(真人姓名|姓名权|肖像权|侵犯.{0,4}权|侵权风险)", s):
+    if __import__("re").search(r"(真人姓名|姓名权|肖像权|侵犯.{0,4}权|侵权风险)", s):
         return "真人姓名，涉姓名权/肖像权"
-    if (re.search(r"(影视作品|电影|剧集|作品名|专辑|小说|番剧)", s)
-            and re.search(r"(版权|侵权|合规|盗版)", s)):
+    if (__import__("re").search(r"(影视作品|电影|剧集|作品名|专辑|小说|番剧)", s)
+            and __import__("re").search(r"(版权|侵权|合规|盗版)", s)):
         return "影视/作品名，涉版权与合规风险"
     return ""
 
 
 def signals_of(text: str) -> list[str] | None:
     """第 8 节信号标签；解析不出返回 None（保持原样），写「无」返回空列表。"""
-    m = re.search(r"(?:^|\n)\s*8\)\s*信号标签[：:]\s*([^\n]+)", str(text or ""))
+    m = __import__("re").search(r"(?:^|\n)\s*8\)\s*信号标签[：:]\s*([^\n]+)", str(text or ""))
     if not m:
         return None
     line = m.group(1).strip()
@@ -176,30 +181,11 @@ def decide(text: str, signal: str = "") -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# 外部 IO（只允许在这一层发生）
+# 外部 IO（只允许在这一层发生，且全部走 KV / 外部 LLM / 外部抓取，不调 console/radar 接口）
 # ---------------------------------------------------------------------------
-def _console(method: str, path: str, *, params=None, payload=None) -> dict[str, Any]:
-    resp = requests.request(
-        method, CONSOLE_HQR.rstrip("/") + path,
-        params=params, json=payload,
-        auth=("agent", CONSOLE_PASS), timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-
-def _radar(path: str, params: dict[str, Any]) -> dict[str, Any]:
-    resp = requests.get(
-        RADAR_URL.rstrip("/") + path, params=params,
-        auth=(os.environ.get("RADAR_USER", ""), os.environ.get("RADAR_PASS", "")),
-        timeout=40,
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-
 def _llm(messages: list[dict[str, str]]) -> tuple[str, str]:
     """非流式（流式在这条链路上极不稳定）；无 key 返回空，由调用方跳过、绝不编正文。"""
+    from src.app.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
     if not LLM_API_KEY:
         return "", ""
     from openai import OpenAI
@@ -215,52 +201,115 @@ def _llm(messages: list[dict[str, str]]) -> tuple[str, str]:
     return (resp.choices[0].message.content or "").strip(), LLM_MODEL
 
 
-def _throttled_serp(term: str) -> tuple[dict[str, Any] | None, str]:
-    """radar /api/serp 自带退避重试；这里再全局串行一次，避免 4 并发同时打 DDG。"""
+def _throttled_serp(term: str, kv: CloudflareKV) -> tuple[dict[str, Any] | None, str]:
+    """KV 已有 serp:v1: 直接读；缺失则现抓并写回。全局串行避免 4 并发同时打 DDG。"""
+    key = term_key(term)
+    cached = kv.get_json(SERP_PREFIX + key)
+    if cached:
+        return cached, ""
     global _last_serp_at
     with _serp_lock:
         wait = _last_serp_at + SERP_GAP_SEC - time.monotonic()
         if wait > 0:
             time.sleep(wait)
         _last_serp_at = time.monotonic()
-        try:
-            data = _radar("/api/serp", {"term": term})
-            return (data if data.get("ok") else None), ""
-        except Exception as exc:  # noqa: BLE001 - 竞争度失败不拦 AI
-            log.warning("SERP 失败 %s: %s", term, exc)
-            return None, str(exc)[:120]
-
-
-def _trend(term: str) -> tuple[bool, str]:
     try:
-        data = _radar("/api/trend", {"term": term})
-        return bool(data.get("ok")), ""
+        s = scrape_serp.fetch_serp(term)
+    except Exception as exc:  # noqa: BLE001 - 竞争度失败不拦 AI
+        log.warning("SERP 失败 %s: %s", term, exc)
+        return None, str(exc)[:120]
+    comp = scrape_serp.score_competition(s["items"], term)
+    payload = {"engine": s["engine"], "items": s["items"], "competition": comp, "at": int(time.time() * 1000)}
+    kv.put_json(SERP_PREFIX + key, payload, ttl=SERP_TTL)
+    comp_map = kv.get_json(COMPETITION_KEY, {}) or {}
+    comp_map[key] = {"score": comp["score"], "level": comp["level"], "at": payload["at"]}
+    kv.put_json(COMPETITION_KEY, comp_map)
+    return payload, ""
+
+
+def _trend(term: str, kv: CloudflareKV) -> tuple[bool, str]:
+    """KV 已有 trend:v1: 直接读；缺失则现抓并写回 + 更新 interests 摘要表。"""
+    key = term_key(term)
+    cached = kv.get_json(TREND_PREFIX + key)
+    if cached:
+        return True, ""
+    try:
+        t = scrape_trend.fetch_interest(term)
     except Exception as exc:  # noqa: BLE001 - 趋势失败不影响结论
         log.warning("TREND 失败 %s: %s", term, exc)
         return False, str(exc)[:120]
+    payload = {"points": t["points"], "summary": t["summary"], "at": int(time.time() * 1000)}
+    kv.put_json(TREND_PREFIX + key, payload, ttl=TREND_TTL)
+    int_map = kv.get_json(INTERESTS_KEY, {}) or {}
+    int_map[key] = {
+        "term": term, "summary": t["summary"], "at": payload["at"],
+        "points": [p["v"] for p in t["points"]],
+    }
+    kv.put_json(INTERESTS_KEY, int_map)
+    return True, ""
 
 
 # ---------------------------------------------------------------------------
-# 编排：一次 20 条，逐条走完「补数据 → 分析 → 回写状态」
+# 编排：一次 20 条，逐条走完「补数据 → 分析 → 回写状态」；全部读写共享 KV
 # ---------------------------------------------------------------------------
-def _analyze_one(item: dict[str, Any]) -> dict[str, Any]:
+def _select_pending(kv: CloudflareKV, limit: int) -> list[dict[str, Any]]:
+    """读 KV 候选池，剔除已跟进/打标签/已分析的词，返回前 limit 条未跟进候选。"""
+    candidates = kv.get_json("candidates", []) or []
+    saved = kv.get_json(SAVED_KEY, []) or []
+    rejected = kv.get_json(REJECTED_KEY, []) or []
+    tags = kv.get_json(TAGS_KEY, {}) or {}
+
+    curated = set()
+    for x in (list(saved) + list(rejected)):
+        if isinstance(x, dict) and x.get("key"):
+            curated.add(term_key(x["key"]))
+    for k, v in (tags or {}).items():
+        if v:
+            curated.add(term_key(k))
+
+    analyzed = {k[len(AI_CACHE_PREFIX):] for k in kv.list_keys(AI_CACHE_PREFIX)}
+
+    items: list[dict[str, Any]] = []
+    for c in candidates:
+        if not isinstance(c, dict) or not c.get("term"):
+            continue
+        key = term_key(c.get("key") or c.get("term"))
+        if key in curated or key in analyzed:
+            continue
+        items.append({
+            "key": key,
+            "term": str(c.get("term") or "")[:120],
+            "related": [str(x) for x in (c.get("related") or [])][:6],
+            "hints": [str(x) for x in (c.get("hints") or [])][:6],
+            "geos": [str(x) for x in (c.get("geos") or [])][:16],
+            "geoCount": int(c.get("geoCount") or (len(c.get("geos") or []))),
+            "traffic": int(c.get("traffic") or 0),
+            "count": int(c.get("count") or 1),
+            "score": int(c.get("score") or 0),
+            "src": str(c.get("src") or "trends"),
+        })
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _analyze_one(item: dict[str, Any], kv: CloudflareKV) -> dict[str, Any]:
     term = str(item.get("term") or "").strip()
     out: dict[str, Any] = {"term": term, "verdict": "", "status": "", "model": "",
-                          "serp": False, "trend": False, "error": ""}
+                           "serp": False, "trend": False, "error": ""}
     if not term:
         out["error"] = "空词"
         return out
 
-    serp_data, serp_err = _throttled_serp(term)
+    serp_data, serp_err = _throttled_serp(term, kv)
     out["serp"] = serp_data is not None
-    trend_ok, trend_err = _trend(term)
+    trend_ok, trend_err = _trend(term, kv)
     out["trend"] = trend_ok
 
     brief = serp_brief(serp_data)
     signal = work_signal(brief)
-    body = dict(item, serp=brief)
     try:
-        text, model = _llm(build_messages(body))
+        text, model = _llm(build_messages(dict(item, serp=brief)))
     except Exception as exc:  # noqa: BLE001 - 单条失败不拖垮整批
         out["error"] = "LLM 调用失败：" + str(exc)[:160]
         return out
@@ -273,42 +322,47 @@ def _analyze_one(item: dict[str, Any]) -> dict[str, Any]:
     out["verdict"] = verdict
     hints = signals_of(text)
 
-    payload: dict[str, Any] = {
-        "term": term, "text": text, "verdict": verdict, "reason": reason,
-        "cand": {k: item.get(k) for k in
-                 ("term", "related", "hints", "geos", "geoCount", "traffic", "count", "score")},
-    }
+    # 直写 KV（不经由 console 的 /api/hotwords）
+    key = term_key(term)
+    kv.put_text(AI_CACHE_PREFIX + key, text)
     if hints is not None:
-        payload["hints"] = hints
-    try:
-        saved = _console("POST", "/api/hotwords", payload=payload)
-    except Exception as exc:  # noqa: BLE001 - 回写失败保留正文与诊断
-        out["error"] = "状态回写失败：" + str(exc)[:160]
-        return out
-    out["status"] = "todo" if saved.get("status") == "todo" else (
-        "rejected" if saved.get("rejected") else "")
+        hints_map = kv.get_json(HINTS_KEY, {}) or {}
+        kv.put_json(HINTS_KEY, set_hint_override(hints_map, term, hints))
+
+    if verdict == "不做":
+        before = kv.get_json(REJECTED_KEY, []) or []
+        kv.put_json(REJECTED_KEY, upsert_rejected(before, {"term": term, "reason": reason or "AI 判定不做", "source": "ai"}))
+        out["status"] = "rejected"
+    elif verdict == "做":
+        before = kv.get_json(SAVED_KEY, []) or []
+        cand = {k: item.get(k) for k in ("term", "related", "hints", "geos", "geoCount", "traffic", "count", "score")}
+        kv.put_json(SAVED_KEY, upsert_saved(before, {**cand, "term": term, "status": "todo", "verdict": "做"}))
+        out["status"] = "todo"
+    # 「观望」与解析不出结论：只留正文和标签，状态保持未跟进
+
     if serp_err or trend_err:
         out["error"] = ("SERP 未取到：" + serp_err if serp_err else "") + (
             "；趋势未取到：" + trend_err if trend_err else "")
     return out
 
 
-def run_batch(limit: int = 20) -> dict[str, Any]:
-    """GET 待分析词 → 并发逐条分析 → 汇总。console 不可达时整批失败，不写任何状态。"""
+def run_batch(limit: int = 20, kv: Optional[CloudflareKV] = None) -> dict[str, Any]:
+    """读 KV 候选池 → 并发逐条分析 → 汇总。KV 不可达时整批失败，不写任何状态。"""
+    kv = kv or get_kv()
     limit = max(1, min(int(limit or 20), 50))
     try:
-        pending = _console("GET", "/api/hotwords", params={"limit": limit})
+        items = _select_pending(kv, limit)
     except Exception as exc:  # noqa: BLE001
         log.warning("候选池读取失败：%s", exc)
         return {"ok": False, "error": "候选池读取失败：" + str(exc)[:200],
                 "items": [], "fetched": 0, "analyzed": 0, "failed": 0, "counts": {}}
-    items = pending.get("items") or []
+
     if not items:
         return {"ok": True, "items": [], "fetched": 0, "analyzed": 0,
                 "failed": 0, "counts": {}, "note": "没有未跟进且未分析过的候选词"}
 
     with ThreadPoolExecutor(max_workers=BATCH_WORKERS) as pool:
-        results = list(pool.map(_analyze_one, items))
+        results = list(pool.map(lambda it: _analyze_one(it, kv), items))
 
     counts: dict[str, int] = {}
     for r in results:

@@ -30,21 +30,16 @@ class FakeRuntime:
         ]
 
     # ---- 读 ----
+    # 说明：生产里 SelectionOps.hotwords / analyze_hotwords 已不再委托给这里的同名方法
+    #（2026-11-12 去接口化：改由 agent 直读共享 KV，见 sources/kv.py）。但 FakeRuntime 作为
+    # RuntimeService 的测试替身，仍需提供 hotwords 数据桩——get_hotwords 工具经 tool_registry
+    # 走到 self.ops.hotwords。真正的 KV 读写由 test/test_kv_sources.py + test_hotwords.py
+    # 经 fake_kv 夹具覆盖。analyze_hotwords 现由 run_batch 直接测，这里不另立桩。
+
     def hotwords(self, status="doing", limit=40):
         self.counts["hotwords"] += 1
         return {"items": self.hotwords_items[:limit],
                 "meta": self.hotwords_meta, "interests": {}}
-
-    def analyze_hotwords(self, limit=20):
-        self.counts["analyze_hotwords"] += 1
-        return {"ok": True, "fetched": 2, "analyzed": 2, "failed": 0,
-                "counts": {"做": 1, "不做": 1},
-                "items": [
-                    {"term": "free invoice calculator", "verdict": "做",
-                     "status": "todo", "serp": True, "trend": True},
-                    {"term": "Taylor Swift net worth", "verdict": "不做",
-                     "status": "rejected", "serp": True, "trend": True},
-                ]}
 
     def click_stats(self, days=7):
         return {"daily": [{"site": "music.example", "day": 1, "pv": 20, "uv": 8}],
@@ -181,6 +176,50 @@ class FakeRuntime:
         return {"sent": True}
 
 
+class FakeKV:
+    """内存版 KV，接口与 kv.CloudflareKV 对齐：测试不碰 Cloudflare。
+
+    支持 get_text/get_json/put_text/put_json/list_keys/configured；TTL 在内存实现里
+    被忽略（纯逻辑测试不关心过期）。writes 记录写入次数，便于断言「是否真的回写了 KV」。
+    """
+
+    def __init__(self) -> None:
+        self.store: dict[str, str] = {}
+        self.writes = 0
+
+    @property
+    def configured(self) -> bool:
+        return True
+
+    def get_text(self, key: str, default=None):
+        return self.store.get(key, default)
+
+    def get_json(self, key: str, default=None):
+        text = self.store.get(key)
+        if text is None:
+            return default
+        try:
+            return json.loads(text)
+        except (ValueError, TypeError):
+            return default
+
+    def put_text(self, key: str, text: str, ttl=None) -> bool:
+        self.store[key] = str(text)
+        self.writes += 1
+        return True
+
+    def put_json(self, key: str, obj, ttl=None) -> bool:
+        self.store[key] = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+        self.writes += 1
+        return True
+
+    def list_keys(self, prefix: str) -> list[str]:
+        return [k for k in self.store if k.startswith(prefix)]
+
+
+@pytest.fixture
+def fake_kv():
+    return FakeKV()
 
 
 @pytest.fixture

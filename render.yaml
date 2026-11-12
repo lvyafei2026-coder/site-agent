@@ -28,7 +28,7 @@ services:
       - key: D1_DATABASE_ID
         sync: false
       - key: KV_NAMESPACE_ID
-        sync: false          # 与 radar / console 共用 RADAR_KV，键统一 agent: 前缀
+        sync: false          # 与 radar / console 共用 RADAR_KV（★热词分析必须，agent 直读直写）
       - key: GITHUB_TOKEN
         sync: false
       - key: GH_ORG
@@ -53,12 +53,6 @@ services:
         value: site-agent
       - key: LANGSMITH_PROJECT_URL
         sync: false        # 项目页地址（非凭据）：smith 项目页 → 复制浏览器地址
-      - key: RADAR_URL
-        sync: false
-      - key: RADAR_USER
-        sync: false
-      - key: RADAR_PASS
-        sync: false
       - key: RESEND_API_KEY
         sync: false
       - key: ADMIN_EMAIL

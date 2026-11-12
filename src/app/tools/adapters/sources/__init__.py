@@ -7,6 +7,6 @@
 重依赖（google-api-python-client）一律在模块内延迟导入，导入本包不需要凭据。
 """
 
-from . import gsc, radar, reddit
+from . import gsc, candidates, reddit
 
-__all__ = ["gsc", "radar", "reddit"]
+__all__ = ["gsc", "candidates", "reddit"]

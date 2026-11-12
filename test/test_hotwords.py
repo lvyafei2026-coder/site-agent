@@ -2,10 +2,14 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""热词分析：提示词拼装、结论/红线/标签判据、作品硬证据、意图→工具映射。
+"""热词分析：提示词拼装、结论/红线/标签判据、作品硬证据、意图→工具映射，以及
+run_batch 经共享 KV 的端到端写回（不碰 console / radar / OpenAI / DDG / Google）。
 
-全部是纯函数 + FakeRuntime，不碰 console / radar / OpenAI。
+2026-11-12 去接口化后，run_batch 直接读写共享 KV（见 sources/kv.py）。这里用
+内存 FakeKV + monkeypatch 外部抓取/LLM，离线验证「候选 → 分析 → 回写状态」全链路。
 """
+
+import pytest
 
 from src.app.tools.adapters.sources import hotwords as hw
 from src.app.services.tool_service import INTENT_TOOLS, tool_service
@@ -92,12 +96,101 @@ def test_intent_maps_to_analyze_tool():
     assert "analyze_hotwords" in tool_registry.names()
 
 
-def test_run_tool_uses_injected_runtime(fake):
-    out = tool_service.execute_for_intent("analyze_hotwords", "分析未跟进热词", {})
-    assert set(out) == {"analyze_hotwords"}
-    result = out["analyze_hotwords"]["result"]
-    assert result["analyzed"] == 2
-    assert result["counts"] == {"做": 1, "不做": 1}
-    assert result["items"][0]["status"] == "todo"
-    assert result["items"][1]["status"] == "rejected"
-    assert fake.counts["analyze_hotwords"] == 1
+# ---------------------------------------------------------------------------
+# run_batch 经共享 KV 的端到端写回（离线：外部抓取 + LLM 全部 monkeypatch）
+# ---------------------------------------------------------------------------
+def _seed_candidates(fake_kv):
+    fake_kv.put_json("candidates", [
+        {"term": "free invoice calculator", "traffic": 900, "geos": ["US"], "geoCount": 1,
+         "related": ["invoice calculator free"], "hints": [], "src": "trends", "count": 1, "score": 10},
+        {"term": "Taylor Swift net worth", "traffic": 8000, "geos": ["US"], "geoCount": 1,
+         "related": [], "hints": [], "src": "trends", "count": 1, "score": 99},
+    ])
+
+
+def _patch_external(monkeypatch):
+    monkeypatch.setattr(hw.scrape_serp, "fetch_serp",
+                        lambda term, session=None, limit=10: {
+                            "engine": "duckduckgo",
+                            "items": [{"url": "https://calc.example/x", "domain": "calc.example",
+                                       "title": "Invoice Calculator"}],
+                            "attempts": [],
+                        })
+    monkeypatch.setattr(hw.scrape_trend, "fetch_interest",
+                        lambda term, session=None, geo="": {
+                            "points": [{"d": "2026-01-01", "v": 50}, {"d": "2026-01-02", "v": 60}],
+                            "summary": {"avg": 55, "max": 60, "last": 60, "delta": 20, "direction": "up"},
+                            "attempts": [],
+                        })
+
+    def fake_llm(messages):
+        user = messages[-1]["content"]
+        if "Taylor" in user:
+            return "1) 真人 7) 结论：不做，真人姓名有侵权风险\n8) 信号标签：无", "fake-model"
+        return "1) 工具站 7) 结论：做，工具站能吃长尾\n8) 信号标签：工具查询", "fake-model"
+
+    monkeypatch.setattr(hw, "_llm", fake_llm)
+
+
+def test_run_batch_writes_kv(fake_kv, monkeypatch):
+    _seed_candidates(fake_kv)
+    _patch_external(monkeypatch)
+
+    out = hw.run_batch(limit=20, kv=fake_kv)
+    assert out["ok"] is True
+    assert out["fetched"] == 2 and out["analyzed"] == 2
+    assert out["counts"].get("做") == 1 and out["counts"].get("不做") == 1
+
+    # 做 → saved(status=todo)
+    saved = fake_kv.get_json("saved", [])
+    assert any(x["key"] == hw.term_key("free invoice calculator") and x["status"] == "todo" for x in saved)
+    # 不做 → rejected(source=ai)
+    rejected = fake_kv.get_json("rejected", [])
+    assert any(x["key"] == hw.term_key("Taylor Swift net worth") and x["source"] == "ai" for x in rejected)
+    # 正文回写 ai:v3:，标签回写 aihints
+    assert fake_kv.get_text(hw.AI_CACHE_PREFIX + hw.term_key("free invoice calculator"))
+    hints = fake_kv.get_json("aihints", {})
+    assert hints.get(hw.term_key("free invoice calculator")) == ["工具查询"]
+    # 竞争度 / 趋势摘要表被更新
+    assert fake_kv.get_json("competition")
+    assert fake_kv.get_json("interests")
+
+
+def test_run_batch_no_candidates(fake_kv):
+    out = hw.run_batch(limit=20, kv=fake_kv)
+    assert out["ok"] is True and out["fetched"] == 0
+    assert "没有未跟进" in (out.get("note") or "")
+
+
+def test_select_pending_excludes_curated(fake_kv):
+    fake_kv.put_json("candidates", [
+        {"term": "a"}, {"term": "b"}, {"term": "c"}, {"term": "d"},
+    ])
+    fake_kv.put_json("saved", [{"key": hw.term_key("a"), "term": "a", "status": "saved"}])
+    fake_kv.put_json("rejected", [{"key": hw.term_key("b"), "term": "b", "status": "rejected"}])
+    fake_kv.put_json("tags", {hw.term_key("c"): ["工具查询"]})
+    fake_kv.put_text(hw.AI_CACHE_PREFIX + hw.term_key("d"), "already analyzed")
+    pending = hw._select_pending(fake_kv, 20)
+    assert pending == []  # 已收藏 / 不做 / 打标签 / 已分析 全部剔除
+
+
+def test_select_pending_limit_and_order(fake_kv):
+    fake_kv.put_json("candidates", [{"term": f"t{i}"} for i in range(10)])
+    pending = hw._select_pending(fake_kv, 3)
+    assert [p["term"] for p in pending] == ["t0", "t1", "t2"]
+
+
+def test_analyze_one_skips_blank(fake_kv):
+    out = hw._analyze_one({"term": ""}, fake_kv)
+    assert out["error"] == "空词"
+    # 不写任何 KV
+    assert fake_kv.writes == 0
+
+
+def test_run_batch_kv_unreachable_returns_error(fake_kv, monkeypatch):
+    class BoomKV:
+        def get_json(self, *a, **k):
+            raise RuntimeError("unreachable")
+    out = hw.run_batch(limit=20, kv=BoomKV())
+    assert out["ok"] is False and "候选池读取失败" in out["error"]
+    assert out["fetched"] == 0  # 没读到候选，不写任何状态

@@ -12,8 +12,8 @@
 
 | name | kind | method | 参数 | 用途 |
 |---|---|---|---|---|
-| `get_hotwords` | read | `hotwords` | `status=doing`、`limit=40` | 读 radar 候选词，返回 `items` + `meta`（`updatedMs` / `geosOk` / `raw`）。**判断有没有新数据要看 meta** |
-| `analyze_hotwords` | **write** | `analyze_hotwords` | `limit=20` | 热词分析（2026-11-12 从 site-console「开始分析」迁入）：经 console `/api/hotwords` 取 20 条「未跟进」词，逐条调 radar `/api/serp` + `/api/trend` 补数据、外部 LLM 出 8 小节站点方案，再写回正文 / 信号 / 「不做」或「待开发」。★`analyze_hotwords` 意图的默认集就是它本身，分类到该意图即执行；也可显式传 `tools` 触发 |
+| `get_hotwords` | read | `hotwords` | `status=doing`、`limit=40` | 读共享 KV 的候选词（radar 抓取写入），返回 `items` + `meta`（`updatedMs` / `geosOk` / `raw`）。**判断有没有新数据要看 meta** |
+| `analyze_hotwords` | **write** | `analyze_hotwords` | `limit=20` | 热词分析：直接读三方共用的共享 KV（radar 写入的候选池 + console 整理的 `saved`/`rejected`/`tags`），补 SERP 竞争度（直读 `serp:v1:`，缺失时现抓 DuckDuckGo 并写回）与 30 天趋势（直读 `trend:v1:`，缺失时现抓 Google Trends 并写回），外部 LLM 出 8 小节站点方案，再直写 KV（`ai:v3:` 正文 / `aihints` 信号 / `rejected` 不做 / `saved` 待开发）。**不调 console 的 /api/hotwords，也不调 radar 的 /api/serp、/api/trend——只有「存储介质依赖」没有「服务接口依赖」**。★`analyze_hotwords` 意图的默认集就是它本身，分类到该意图即执行；也可显式传 `tools` 触发 |
 
 ### 1.2 measurement（2）
 
