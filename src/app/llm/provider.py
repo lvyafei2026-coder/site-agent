@@ -9,11 +9,50 @@
 
 from __future__ import annotations
 
+import os
+
+import httpx
+
 from src.app.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 from src.app.observability.langsmith import tracing_enabled
 from src.app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _debug_http_client():
+    """LLM_DEBUG=1 时返回带请求/响应事件钩子的 httpx 客户端，打印原始 HTTP 交换。
+
+    这是排查「返回 OK 桩 / 非 JSON」类问题最直接的手段：能看到请求真正打到了哪个
+    URL、HTTP 状态码、响应头与响应体前 600 字符，直接判断是网关拦截、代理改写还是
+    模型真回了异常内容，避免来回猜测。
+    """
+    if not os.getenv("LLM_DEBUG"):
+        return None
+
+    def _on_request(req: httpx.Request) -> None:
+        logger.info("llm_http_request", extra={
+            "method": req.method,
+            "url": str(req.url),
+            "body_len": len(req.content or b""),
+        })
+
+    def _on_response(res: httpx.Response) -> None:
+        body = ""
+        try:
+            res.read()  # 钩子触发时响应体尚未读取，先强制读入再取文本
+            body = (res.text or "")[:600]
+        except Exception:  # noqa: BLE001 - 只读诊断，绝不干扰主流程
+            body = "<unreadable>"
+        logger.info("llm_http_response", extra={
+            "status": res.status_code,
+            "url": str(res.url),
+            "headers": {k: v for k, v in res.headers.items()
+                        if k.lower() not in ("authorization", "cookie", "set-cookie")},
+            "body_head": body,
+        })
+
+    return httpx.Client(event_hooks={"request": [_on_request], "response": [_on_response]})
 
 
 def get_llm():
@@ -25,9 +64,12 @@ def get_llm():
     """
     from openai import OpenAI
 
-    kwargs: dict[str, str] = {"api_key": LLM_API_KEY}
+    kwargs: dict[str, object] = {"api_key": LLM_API_KEY}
     if LLM_BASE_URL:
         kwargs["base_url"] = LLM_BASE_URL
+    http_client = _debug_http_client()
+    if http_client is not None:
+        kwargs["http_client"] = http_client
     client = OpenAI(**kwargs)
     if tracing_enabled():
         from langsmith.wrappers import wrap_openai
@@ -35,5 +77,5 @@ def get_llm():
         client = wrap_openai(client)
     logger.info("llm_provider",
                 extra={"model": LLM_MODEL, "base_url": LLM_BASE_URL,
-                       "traced": tracing_enabled()})
+                       "traced": tracing_enabled(), "debug_http": http_client is not None})
     return client

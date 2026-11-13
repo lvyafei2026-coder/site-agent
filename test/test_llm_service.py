@@ -105,6 +105,17 @@ def test_complete_prose_wrapped_json_succeeds(with_key, monkeypatch):
     assert failed is False
 
 
+def test_complete_ok_stub_is_flagged_not_failed(with_key, monkeypatch):
+    """GitHub Models 鉴权/权限异常时回 200+'OK' 桩而非 JSON：应识别为「请求未处理」，
+    优雅回退（failed=False），并打出可操作告警（不短路、不崩溃）。"""
+    monkeypatch.setattr(llm_mod, "get_llm", lambda: _FakeClient("OK\r\n"))
+
+    data, failed, retryable = llm_mod.llm_service._complete("sys", "user", "warn_event")
+    assert data is None
+    assert failed is False
+    assert retryable is False
+
+
 # ---- _complete 端到端：模拟 get_llm 返回裸字符串 ----
 
 class _FakeCompletions:

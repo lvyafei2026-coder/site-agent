@@ -14,9 +14,9 @@ import re
 
 from langchain_core.prompts import ChatPromptTemplate
 
-from src.app.config import INTENTS, LLM_API_KEY, LLM_MODEL
+from src.app.config import INTENTS, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 from src.app.llm.provider import get_llm
-from src.app.observability.langsmith import traceable
+from src.app.observability.langsmith import traceable, tracing_enabled
 from src.app.observability.metrics import metrics
 from src.app.tools.base import is_retryable_error
 from src.app.utils.logger import get_logger
@@ -141,6 +141,13 @@ class LLMService:
         return data if isinstance(data, dict) else None
 
     @staticmethod
+    def _cap(s: str | None, n: int = 2000) -> str:
+        if s is None:
+            return ""
+        s = s if isinstance(s, str) else str(s)
+        return s if len(s) <= n else s[:n] + f"...<truncated {len(s) - n} chars>"
+
+    @staticmethod
     def _complete(prompt: str, text: str, warn_event: str) -> tuple[dict | None, bool, bool]:
         """调 OpenAI 兼容接口并解析 JSON；任何异常都降级，不阻塞整轮。
 
@@ -153,12 +160,24 @@ class LLMService:
         - 异常且为网络层  → (None, True,  True )：连接/超时类，应走重试；
         - 异常且明确失败  → (None, True,  False)：鉴权/配额/参数，短路到 ERROR 等下次请求。
 
-        注意：兼容服务返回裸字符串/非标准形态时，_content_from_response 已归一；
-        JSON 解析失败会打一条诊断日志，把真实返回的开头 160 字符带出来，方便定位
-        （是散文、还是网关 HTML 错误页）。
+        诊断：每次调用都会打印 (1) 完整请求（解析出的真实 URL、model、prompt、response_format、
+        tracing 开关）；(2) 原始响应对象的形态与内容；(3) 每个解析阶段（取 content / 去围栏 /
+        解析 JSON）的中间结果。再配合 LLM_DEBUG=1 的底层 httpx 请求/响应钩子，能一次性定位
+        「返回 OK 桩 / 非 JSON」到底是网关拦截、代理改写、wrap_openai 干扰还是模型真回了异常。
         """
         if not LLM_API_KEY:
             return None, False, False
+        resolved_url = (f"{LLM_BASE_URL.rstrip('/')}/chat/completions"
+                        if LLM_BASE_URL else "https://api.openai.com/v1/chat/completions")
+        logger.info("llm_request", extra={
+            "model": LLM_MODEL,
+            "base_url": LLM_BASE_URL,
+            "resolved_url": resolved_url,
+            "traced": tracing_enabled(),
+            "response_format": "json_object",
+            "system_prompt": LLMService._cap(prompt, 2000),
+            "user_text": LLMService._cap(text, 2000),
+        })
         try:
             resp = get_llm().chat.completions.create(
                 model=LLM_MODEL,
@@ -167,14 +186,62 @@ class LLMService:
                 response_format={"type": "json_object"},
                 temperature=0,
             )
+            # 原始响应对象的形态与内容：直接判断 resp 到底是 ChatCompletion / dict / 裸字符串
+            try:
+                if hasattr(resp, "model_dump"):
+                    rd = resp.model_dump()
+                    choices = rd.get("choices") or []
+                    raw_info: dict = {
+                        "resp_type": type(resp).__name__,
+                        "id": rd.get("id"),
+                        "model": rd.get("model"),
+                        "object": rd.get("object"),
+                        "choices": len(choices),
+                        "first_role": (choices[0].get("message", {}).get("role")
+                                       if choices else None),
+                        "first_content_head": ((choices[0].get("message", {}).get("content") or "")[:400]
+                                               if choices else None),
+                        "usage": rd.get("usage"),
+                    }
+                else:
+                    raw_info = {"resp_type": type(resp).__name__,
+                                "repr": repr(resp)[:500]}
+            except Exception as dump_err:  # noqa: BLE001
+                raw_info = {"resp_type": type(resp).__name__,
+                            "dump_error": str(dump_err)[:200]}
+            logger.info("llm_raw_response", extra=raw_info)
+
             content = LLMService._content_from_response(resp)
+            logger.info("llm_content_extracted", extra={
+                "content_type": type(content).__name__,
+                "content_head": LLMService._cap(content, 400),
+            })
             if content is None:
                 logger.debug("llm_empty_content", extra={"warn_event": warn_event})
                 return None, False, False
+            # GitHub Models 等兼容端点，在鉴权/权限/限流异常时不一定返回 401，而可能回
+            # 200 + "OK"（健康检查桩）把请求吞掉——这是「请求根本没被模型处理」的强信号。
+            # 优先给出可操作提示，避免只看到一个莫名其妙的 OK。
+            stripped = content.strip()
+            if stripped[:2].lower() == "ok" and len(stripped) <= 16:
+                logger.warning(
+                    "llm_stub_response",
+                    extra={"warn_event": warn_event,
+                           "hint": "GitHub Models 返回 'OK' 桩响应：请求未被真正处理。"
+                                   "通常是请求被网关/代理拦截、或 wrap_openai 改写导致未真正打到模型。"
+                                   "请开 LLM_DEBUG=1 看 llm_http_request/llm_http_response 的真实 URL 与响应体。"})
+                return None, False, False
+            after_strip = LLMService._strip_fences(content)
+            logger.info("llm_after_strip_fences", extra={"text_head": LLMService._cap(after_strip, 400)})
             data = LLMService._parse_json(content)
+            logger.info("llm_parse_result", extra={
+                "ok": data is not None,
+                "keys": list(data.keys()) if data else None,
+                "head": LLMService._cap(content, 200),
+            })
             if data is None:
                 logger.warning("llm_nonjson_response",
-                               extra={"warn_event": warn_event, "head": content[:160]})
+                               extra={"warn_event": warn_event, "head": LLMService._cap(content, 400)})
                 return None, False, False
             return data, False, False
         except Exception as exc:  # noqa: BLE001 - LLM 不可用不影响整轮
