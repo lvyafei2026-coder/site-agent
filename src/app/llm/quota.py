@@ -21,7 +21,31 @@ import httpx
 
 from src.app.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 
-_DEFAULT_BASE = "https://api.openai.com/v1"
+# 与 LLM_MODEL 默认值 deepseek-flash 对齐：LLM_BASE_URL 没显式配时，ping 也打 DeepSeek，
+# 而不是 OpenAI（否则模型名 deepseek-flash 在 OpenAI 会被拒）。显式配 LLM_BASE_URL 时永远优先。
+_DEFAULT_BASE = "https://api.deepseek.com"
+
+
+def _is_deepseek() -> bool:
+    """是否命中 DeepSeek：base_url 显含 deepseek，或未配 base_url 且模型以 deepseek 开头。
+
+    命中时 ping 要显式关掉思考模式（见 _thinking_off），否则 max_tokens=1 会被 reasoning 吃光。
+    """
+    base = (LLM_BASE_URL or "").lower()
+    if "deepseek" in base:
+        return True
+    if not LLM_BASE_URL and LLM_MODEL.lower().startswith("deepseek"):
+        return True
+    return False
+
+
+def _thinking_off() -> dict:
+    """DeepSeek 思考模式默认开启：reasoning_content 会先吃掉 max_tokens，
+    导致 max_tokens=1 的 ping 返回空正文（虽不影响 quota 头读取，但浪费且不稳）。
+    与逐词分析 `_thinking_kwargs` 一致，这里也显式关掉。
+    DeepSeek 接受顶层 `thinking` 字段，与 OpenAI SDK 的 extra_body 等价。
+    """
+    return {"thinking": {"type": "disabled"}} if _is_deepseek() else {}
 
 
 def check_quota() -> dict:
@@ -31,14 +55,16 @@ def check_quota() -> dict:
 
     base = (LLM_BASE_URL or _DEFAULT_BASE).rstrip("/")
     url = base + "/chat/completions"
+    payload = {"model": LLM_MODEL,
+               "messages": [{"role": "user", "content": "ping"}],
+               "max_tokens": 1}
+    payload.update(_thinking_off())  # DeepSeek 时带 thinking:disabled；其它网关忽略该字段
     try:
         resp = httpx.post(
             url,
             headers={"Authorization": f"Bearer {LLM_API_KEY}",
                      "Content-Type": "application/json"},
-            json={"model": LLM_MODEL,
-                  "messages": [{"role": "user", "content": "ping"}],
-                  "max_tokens": 1},
+            json=payload,
             timeout=20.0,
         )
     except Exception as exc:  # 网络 / DNS 归为查询失败，不抛出
