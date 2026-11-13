@@ -4,13 +4,12 @@
 
 """LLM 额度查询：发一次最小推理请求，读回 x-ratelimit-* 响应头。
 
-GitHub Models（以及多数 OpenAI 兼容网关）没有"余额"面板，剩余额度只在
-每次推理响应的头部里。这里用 max_tokens=1 的 ping 把头部带回来，成本是
-1 次请求额度，只在页面上手动点击时触发。
+多数 OpenAI 兼容网关没有统一的「余额」面板，剩余额度/限流信息只在响应头里。
+这里用 max_tokens=1 的 ping 把头部带回来，成本是 1 次请求，只在页面上手动
+点击时触发。
 
-不走 openai SDK 的 with_raw_response：实测 models.github.ai 的 200 响应
-头被网关裁得只剩 connection/content-type，直接 httpx 请求拿全量头；
-429 时头里带 retry-after 与剩余量，同样有价值，一并返回。
+不走 openai SDK 的 with_raw_response：部分网关会裁剪响应头，直接 httpx
+请求可拿全量头；429 时头里带 retry-after 与剩余量，同样有价值，一并返回。
 """
 
 from __future__ import annotations
@@ -62,8 +61,8 @@ def check_quota() -> dict:
         return {"ok": False,
                 "reason": f"额度查询返回 HTTP {resp.status_code}：{detail or '无详情'}"}
 
-    # 实测 models.github.ai 的 200 响应不带 x-ratelimit-* 头（只在 429 时带
-    # retry-after / x-ratelimit-type），所以正常时 quota 为空属预期
+    # 部分网关 200 响应不带 x-ratelimit-* 头（只在 429 时带 retry-after），
+    # 所以正常时 quota 为空属预期
     return {"ok": True, "model": LLM_MODEL, "endpoint": urlparse(base).netloc,
             "quota": quota, "available": True, "checked_at": _now()}
 

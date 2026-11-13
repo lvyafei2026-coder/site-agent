@@ -71,9 +71,12 @@ WORK_TITLE_RX = __import__("re").compile(
     __import__("re").I,
 )
 
-MAX_TOKENS = 900
+# 逐词分析要输出 8 小节、450 字以内的中文正文，且思考型模型会先消耗 reasoning
+# token 再吐正文：900 会被推理预算吃光，导致 content 为空、finish_reason=length。
+MAX_TOKENS = 2000
 BATCH_WORKERS = 4           # 20 条逐条分析，并发压住外部 LLM 超时
 LLM_FAIL_STREAK = 2         # LLM 连续失败到这个数就判定模型侧不可用，中止整批
+BATCH_OK_MIN_RATE = 0.5     # 整批成功判定：成功率低于此值即视为失败（不再「1 条成功就算成功」）
 SERP_GAP_SEC = 1.5          # 全局串行 + 最小间隔；202 的根因是请求头，见 scrape_serp.py
 SERP_TTL = 604800           # serp:v1: 缓存 7 天
 TREND_TTL = 259200          # trend:v1: 缓存 3 天
@@ -192,21 +195,37 @@ def decide(text: str, signal: str = "") -> tuple[str, str]:
 # 外部 IO（只允许在这一层发生，且全部走 KV / 外部 LLM / 外部抓取，不调 console/radar 接口）
 # ---------------------------------------------------------------------------
 def _llm(messages: list[dict[str, str]]) -> tuple[str, str]:
-    """非流式（流式在这条链路上极不稳定）；无 key 返回空，由调用方跳过、绝不编正文。"""
-    from src.app.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+    """逐词分析的非流式 LLM 调用；无 key 返回空，由调用方跳过、绝不编正文。
+
+    ★走统一的 get_llm()：与 extract_fields 共用同一客户端（含 LangSmith trace 与
+      LLM_DEBUG 的 HTTP 钩子），逐词调用不再是 trace/日志的盲区。响应经
+      content_from_response 归一——wrap_openai 会把 ChatCompletion 转成 dict，
+      裸写 resp.choices[0].message.content 在这条路径上会直接抛 AttributeError。
+    """
+    from src.app.config import LLM_API_KEY, LLM_MODEL
+    from src.app.llm.provider import content_from_response, get_llm
+
     if not LLM_API_KEY:
         return "", ""
-    from openai import OpenAI
-
-    kwargs: dict[str, str] = {"api_key": LLM_API_KEY}
-    if LLM_BASE_URL:
-        kwargs["base_url"] = LLM_BASE_URL
-    client = OpenAI(**kwargs)
-    resp = client.chat.completions.create(
+    resp = get_llm().chat.completions.create(
         model=LLM_MODEL, messages=messages,
         max_tokens=MAX_TOKENS, temperature=0, timeout=60,
     )
-    return (resp.choices[0].message.content or "").strip(), LLM_MODEL
+    text = (content_from_response(resp) or "").strip()
+    if not text:
+        # 空正文时把现场打全（finish_reason / usage / 响应形态），便于直接判断
+        # 是 max_tokens 被推理吃光，还是服务返回了异常形态。
+        field = (lambda d, k, default=None: d.get(k, default) if isinstance(d, dict)
+                 else getattr(d, k, default))
+        choices = field(resp, "choices") or []
+        first = choices[0] if choices else None
+        log.warning(
+            "hotwords_llm_empty_content model=%s finish_reason=%s resp_type=%s "
+            "max_tokens=%s usage=%s",
+            field(resp, "model", LLM_MODEL), field(first, "finish_reason"),
+            type(resp).__name__, MAX_TOKENS, str(field(resp, "usage"))[:200],
+        )
+    return text, LLM_MODEL
 
 
 def _throttled_serp(term: str, kv: CloudflareKV) -> tuple[dict[str, Any] | None, str]:
@@ -521,12 +540,18 @@ def run_batch(limit: int = 20, kv: Optional[CloudflareKV] = None) -> dict[str, A
     for r in results:
         key = r["verdict"] or "未定"
         counts[key] = counts.get(key, 0) + 1
-    ok = sum(1 for r in results if not r["error"])
+    analyzed = sum(1 for r in results if not r["error"])
+    failed = len(results) - analyzed
+    # 整批口径：此前只要 1 条成功就 ok=True，会把「11 条失败 + 源已中止」掩盖成
+    # success（Smith 上看着跑通、控制台却什么都没产出）。改为按成功率判定，
+    # 并把比例一并回传，前端可直接展示。
+    rate = analyzed / len(results) if results else 0.0
     out = {
-        "ok": ok > 0,
+        "ok": rate >= BATCH_OK_MIN_RATE,
         "fetched": len(items),
-        "analyzed": ok,
-        "failed": len(results) - ok,
+        "analyzed": analyzed,
+        "failed": failed,
+        "successRate": round(rate, 3),
         "counts": counts,
         "items": results,
     }

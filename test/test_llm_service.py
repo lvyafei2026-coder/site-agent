@@ -2,10 +2,9 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""llm_service._complete 的兼容性与降级：覆盖线上「LLM_BASE_URL 返回裸字符串」场景。
+"""llm_service._complete 的兼容性与降级：覆盖「LLM 返回非标准形态」场景。
 
-此前写死 resp.choices[0].message.content，遇到返回裸字符串的服务就抛
-'str' object has no attribute 'choices'，整轮抽取被降级成正则兜底。这里验证：
+这里验证：
 - 裸字符串 / 标准对象 / dict / 顶层 content / 字符串 choices 都能归一；
 - JSON 外层的 ```json 围栏能被剥掉；
 - 返回形态异常不再被误判成「故障」（failed 不应被置 True）。
@@ -16,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 import src.app.services.llm_service as llm_mod
+from src.app.llm.provider import content_from_response
 from src.app.services.llm_service import LLMService
 
 
@@ -30,29 +30,29 @@ def _obj_resp(content):
 # ---- _content_from_response 四种形态 ----
 
 def test_content_from_str():
-    assert LLMService._content_from_response('{"a":1}') == '{"a":1}'
+    assert content_from_response('{"a":1}') == '{"a":1}'
 
 
 def test_content_from_obj():
-    assert LLMService._content_from_response(_obj_resp('{"a":2}')) == '{"a":2}'
+    assert content_from_response(_obj_resp('{"a":2}')) == '{"a":2}'
 
 
 def test_content_from_dict():
-    assert LLMService._content_from_response(
+    assert content_from_response(
         {"choices": [{"message": {"content": '{"a":3}'}}]}) == '{"a":3}'
 
 
 def test_content_from_top_level_dict():
-    assert LLMService._content_from_response({"content": '{"a":4}'}) == '{"a":4}'
+    assert content_from_response({"content": '{"a":4}'}) == '{"a":4}'
 
 
 def test_content_from_string_choice():
-    assert LLMService._content_from_response(
+    assert content_from_response(
         SimpleNamespace(choices=['{"a":5}'])) == '{"a":5}'
 
 
 def test_content_from_none():
-    assert LLMService._content_from_response(None) is None
+    assert content_from_response(None) is None
 
 
 # ---- _strip_fences ----
@@ -80,7 +80,7 @@ def test_parse_json_nonjson_returns_none():
 
 
 def test_parse_json_html_error_returns_none():
-    # GitHub Models 网关偶发 HTML 错误页（内容以 < 开头）：不应抛异常，返回 None 走回退
+    # 网关偶发 HTML 错误页（内容以 < 开头）：不应抛异常，返回 None 走回退
     assert LLMService._parse_json("<!DOCTYPE html><html>502</html>") is None
 
 
@@ -105,9 +105,9 @@ def test_complete_prose_wrapped_json_succeeds(with_key, monkeypatch):
     assert failed is False
 
 
-def test_complete_ok_stub_is_flagged_not_failed(with_key, monkeypatch):
-    """GitHub Models 鉴权/权限异常时回 200+'OK' 桩而非 JSON：应识别为「请求未处理」，
-    优雅回退（failed=False），并打出可操作告警（不短路、不崩溃）。"""
+def test_complete_short_nonjson_text_not_failed(with_key, monkeypatch):
+    """服务回短文本（如健康检查桩 "OK"）而非 JSON：按内容形态降级，
+    failed=False 不短路、不崩溃，由正则兜底接住。"""
     monkeypatch.setattr(llm_mod, "get_llm", lambda: _FakeClient("OK\r\n"))
 
     data, failed, retryable = llm_mod.llm_service._complete("sys", "user", "warn_event")

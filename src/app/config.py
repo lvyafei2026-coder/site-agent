@@ -150,4 +150,4 @@ REPO_DIR.mkdir(parents=True, exist_ok=True)
 # ---- LLM / 外部凭据 ----
 LLM_API_KEY = env("LLM_API_KEY", "")
 LLM_BASE_URL = env("LLM_BASE_URL", "")
-LLM_MODEL = env("LLM_MODEL", "gpt-4o-mini")
+LLM_MODEL = env("LLM_MODEL", "deepseek-flash")

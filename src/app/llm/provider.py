@@ -20,12 +20,41 @@ from src.app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+def content_from_response(resp) -> str | None:
+    """把 OpenAI 兼容响应归一为正文 content，供所有 LLM 调用点复用。
+
+    标准 ChatCompletion 对象、裸字符串、dict（含顶层 content）都能取到正文；
+    取不到返回 None，由调用方降级，绝不抛异常把整轮带崩。
+    """
+    if resp is None:
+        return None
+    if isinstance(resp, str):
+        return resp
+    if isinstance(resp, dict):
+        choices = resp.get("choices")
+    else:
+        choices = getattr(resp, "choices", None)
+    if choices:
+        first = choices[0]
+        if isinstance(first, str):
+            return first
+        msg = first.get("message") if isinstance(first, dict) else getattr(first, "message", None)
+        if msg is not None:
+            content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+            if isinstance(content, str):
+                return content
+    if isinstance(resp, dict):
+        top = resp.get("content")
+        if isinstance(top, str):
+            return top
+    return None
+
+
 def _debug_http_client():
     """LLM_DEBUG=1 时返回带请求/响应事件钩子的 httpx 客户端，打印原始 HTTP 交换。
 
-    这是排查「返回 OK 桩 / 非 JSON」类问题最直接的手段：能看到请求真正打到了哪个
-    URL、HTTP 状态码、响应头与响应体前 600 字符，直接判断是网关拦截、代理改写还是
-    模型真回了异常内容，避免来回猜测。
+    能看到请求真正打到的 URL、HTTP 状态码、响应头与响应体前 600 字符，用于排查
+    网关拦截、代理改写或模型返回异常内容；默认关闭，排查完把环境变量去掉即可。
     """
     if not os.getenv("LLM_DEBUG"):
         return None

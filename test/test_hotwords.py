@@ -277,6 +277,98 @@ def test_run_batch_no_candidates(fake_kv):
     assert "没有未跟进" in (out.get("note") or "")
 
 
+# ---- 2026-11-13：DeepSeek 上线后的三处修复（防止悄悄退化） ----
+
+def test_llm_uses_shared_client_and_normalizes_dict(monkeypatch, caplog):
+    """逐词 LLM 必须走 get_llm()（含 trace/HTTP 钩子），且能归一 wrap_openai 的 dict 形态。
+
+    此前裸建 OpenAI 客户端 + 裸写 resp.choices[0].message.content，既不进 trace，
+    遇到 dict 响应会直接抛 AttributeError 把整条算成失败。
+    """
+    import logging
+    import src.app.llm.provider as provider
+
+    calls = {}
+
+    def fake_create(**kwargs):
+        calls.update(kwargs)
+        return {"choices": [{"message": {"role": "assistant", "content": "7) 结论：观望"},
+                             "finish_reason": "stop"}]}
+
+    class FakeCompletions:
+        create = staticmethod(fake_create)
+
+    class FakeClient:
+        chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    # _llm 内部是延迟 import，patch 源模块 config 才生效
+    monkeypatch.setattr(provider, "get_llm", lambda: FakeClient())
+    monkeypatch.setattr("src.app.config.LLM_API_KEY", "sk-test")
+    monkeypatch.setattr("src.app.config.LLM_MODEL", "deepseek-flash")
+
+    with caplog.at_level(logging.WARNING):
+        text, model = hw._llm([{"role": "user", "content": "x"}])
+
+    assert text == "7) 结论：观望"
+    assert model == "deepseek-flash"
+    assert calls["max_tokens"] == hw.MAX_TOKENS == 2000  # 不再被推理 token 吃光预算
+    assert calls["temperature"] == 0 and calls["timeout"] == 60
+
+
+def test_llm_empty_content_logs_diagnostics(monkeypatch, caplog):
+    """content 为空时打出现场（finish_reason / usage / max_tokens），便于一次定位。"""
+    import logging
+    import src.app.llm.provider as provider
+
+    class FakeCompletions:
+        @staticmethod
+        def create(**_kwargs):
+            return {"choices": [{"message": {"role": "assistant", "content": ""},
+                                 "finish_reason": "length"}],
+                    "usage": {"completion_tokens": 2000, "reasoning_tokens": 1700}}
+
+    class FakeClient:
+        chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(provider, "get_llm", lambda: FakeClient())
+    monkeypatch.setattr("src.app.config.LLM_API_KEY", "sk-test")
+    monkeypatch.setattr("src.app.config.LLM_MODEL", "deepseek-flash")
+
+    with caplog.at_level(logging.WARNING):
+        text, _ = hw._llm([{"role": "user", "content": "x"}])
+
+    assert text == ""
+    assert any("hotwords_llm_empty_content" in r.message for r in caplog.records)
+    msg = next(r.getMessage() for r in caplog.records if "hotwords_llm_empty_content" in r.message)
+    assert "finish_reason=length" in msg and "max_tokens=2000" in msg
+
+
+def test_run_batch_ok_requires_success_rate(fake_kv, monkeypatch):
+    """整批 ok 按成功率判定：11 失败 / 1 成功不能再被报成 success。"""
+    monkeypatch.setattr(hw, "SERP_GAP_SEC", 0)
+    fake_kv.put_json("candidates", [{"term": f"term {i}"} for i in range(4)])
+    monkeypatch.setattr(hw.scrape_serp, "fetch_serp",
+                        lambda term, session=None, limit=10: {
+                            "engine": "duckduckgo", "items": [], "attempts": []})
+    monkeypatch.setattr(hw.scrape_trend, "fetch_interest",
+                        lambda term, session=None, geo="": {
+                            "points": [{"d": "2026-01-01", "v": 50}],
+                            "summary": {"avg": 50}, "attempts": []})
+
+    def one_success(messages):
+        user = messages[-1]["content"]
+        if "term 0" in user:
+            return "7) 结论：观望", "fake"
+        return "", "fake"   # 空正文 → LLM 无正文
+
+    monkeypatch.setattr(hw, "_llm", one_success)
+
+    out = hw.run_batch(limit=20, kv=fake_kv)
+    assert out["analyzed"] == 1 and out["failed"] == 3
+    assert out["successRate"] == 0.25
+    assert out["ok"] is False   # 旧口径 ok>0 会错报 True
+
+
 def test_select_pending_excludes_curated(fake_kv):
     fake_kv.put_json("candidates", [
         {"term": "a"}, {"term": "b"}, {"term": "c"}, {"term": "d"},

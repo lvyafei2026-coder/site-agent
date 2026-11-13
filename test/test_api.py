@@ -58,7 +58,7 @@ def test_llm_quota_endpoint(monkeypatch):
     assert "LLM_API_KEY" in r["reason"]
 
     import src.app.api.routes as routes
-    fake = {"ok": True, "model": "gpt-4o-mini", "endpoint": "models.github.ai",
+    fake = {"ok": True, "model": "deepseek-flash", "endpoint": "api.deepseek.com",
             "quota": {"x-ratelimit-remaining-requests": "149"}, "checked_at": "t"}
     monkeypatch.setattr(routes, "check_quota", lambda: fake)
     assert client.get("/llm-quota").json() == fake

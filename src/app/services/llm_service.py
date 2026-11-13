@@ -15,7 +15,7 @@ import re
 from langchain_core.prompts import ChatPromptTemplate
 
 from src.app.config import INTENTS, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
-from src.app.llm.provider import get_llm
+from src.app.llm.provider import content_from_response, get_llm
 from src.app.observability.langsmith import traceable, tracing_enabled
 from src.app.observability.metrics import metrics
 from src.app.tools.base import is_retryable_error
@@ -72,43 +72,6 @@ class LLMService:
         }
 
     @staticmethod
-    def _content_from_response(resp) -> str | None:
-        """把 OpenAI 兼容返回归一为文本 content。
-
-        线上 LLM_BASE_URL 指向的服务形态不一：有的返回标准 ChatCompletion 对象
-        （resp.choices[0].message.content），有的直接返回裸字符串，有的返回 dict。
-        此前写死 `resp.choices[0].message.content`，遇到裸字符串就抛
-        `'str' object has no attribute 'choices'`，整轮 LLM 抽取被降级成正则兜底。
-        这里统一兼容四种形态，避免把「返回形态不同」误判成故障。
-        """
-        if resp is None:
-            return None
-        if isinstance(resp, str):
-            return resp
-        if isinstance(resp, dict):
-            choices = resp.get("choices")
-        else:
-            choices = getattr(resp, "choices", None)
-        if choices:
-            first = choices[0]
-            if isinstance(first, str):
-                return first
-            msg = first.get("message") if isinstance(first, dict) else getattr(first, "message", None)
-            if msg is not None:
-                if isinstance(msg, dict):
-                    content = msg.get("content")
-                else:
-                    content = getattr(msg, "content", None)
-                if isinstance(content, str):
-                    return content
-        # 部分服务把 content 直接放顶层
-        if isinstance(resp, dict):
-            top = resp.get("content")
-            if isinstance(top, str):
-                return top
-        return None
-
-    @staticmethod
     def _strip_fences(text: str) -> str:
         """剥掉模型偶尔包在 JSON 外的 ```json ... ``` 围栏。"""
         s = text.strip()
@@ -124,8 +87,8 @@ class LLMService:
         """把模型返回的文本解析成 dict；容忍两种情况：
         1) 被 ```json 围栏包裹；2) 散文里夹着一段 JSON（抽第一个 {…} 对象）。
 
-        线上 GitHub Models 偶尔不吃 response_format，会返回散文/带说明文字而非纯
-        JSON；这里尽量「捞」出 JSON 对象，捞不到返回 None（上层走确定性回退）。
+        OpenAI 兼容服务偶尔忽略 response_format，返回散文/带说明文字而非纯 JSON；
+        这里尽量「捞」出 JSON 对象，捞不到返回 None（上层走确定性回退）。
         """
         s = LLMService._strip_fences(text or "").strip()
         try:
@@ -162,8 +125,8 @@ class LLMService:
 
         诊断：每次调用都会打印 (1) 完整请求（解析出的真实 URL、model、prompt、response_format、
         tracing 开关）；(2) 原始响应对象的形态与内容；(3) 每个解析阶段（取 content / 去围栏 /
-        解析 JSON）的中间结果。再配合 LLM_DEBUG=1 的底层 httpx 请求/响应钩子，能一次性定位
-        「返回 OK 桩 / 非 JSON」到底是网关拦截、代理改写、wrap_openai 干扰还是模型真回了异常。
+        解析 JSON）的中间结果。再配合 LLM_DEBUG=1 的底层 httpx 请求/响应钩子，可一次性定位
+        非 JSON 响应究竟是网关拦截、代理改写还是模型真回了异常内容。
         """
         if not LLM_API_KEY:
             return None, False, False
@@ -211,25 +174,13 @@ class LLMService:
                             "dump_error": str(dump_err)[:200]}
             logger.info("llm_raw_response", extra=raw_info)
 
-            content = LLMService._content_from_response(resp)
+            content = content_from_response(resp)
             logger.info("llm_content_extracted", extra={
                 "content_type": type(content).__name__,
                 "content_head": LLMService._cap(content, 400),
             })
             if content is None:
                 logger.debug("llm_empty_content", extra={"warn_event": warn_event})
-                return None, False, False
-            # GitHub Models 等兼容端点，在鉴权/权限/限流异常时不一定返回 401，而可能回
-            # 200 + "OK"（健康检查桩）把请求吞掉——这是「请求根本没被模型处理」的强信号。
-            # 优先给出可操作提示，避免只看到一个莫名其妙的 OK。
-            stripped = content.strip()
-            if stripped[:2].lower() == "ok" and len(stripped) <= 16:
-                logger.warning(
-                    "llm_stub_response",
-                    extra={"warn_event": warn_event,
-                           "hint": "GitHub Models 返回 'OK' 桩响应：请求未被真正处理。"
-                                   "通常是请求被网关/代理拦截、或 wrap_openai 改写导致未真正打到模型。"
-                                   "请开 LLM_DEBUG=1 看 llm_http_request/llm_http_response 的真实 URL 与响应体。"})
                 return None, False, False
             after_strip = LLMService._strip_fences(content)
             logger.info("llm_after_strip_fences", extra={"text_head": LLMService._cap(after_strip, 400)})
