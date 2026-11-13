@@ -74,14 +74,14 @@ WORK_TITLE_RX = __import__("re").compile(
 MAX_TOKENS = 900
 BATCH_WORKERS = 4           # 20 条逐条分析，并发压住外部 LLM 超时
 LLM_FAIL_STREAK = 2         # LLM 连续失败到这个数就判定模型侧不可用，中止整批
-SERP_GAP_SEC = 1.5          # DDG 连查会回 202 挑战页，全局串行 + 最小间隔
+SERP_GAP_SEC = 1.5          # 全局串行 + 最小间隔；202 的根因是请求头，见 scrape_serp.py
 SERP_TTL = 604800           # serp:v1: 缓存 7 天
 TREND_TTL = 259200          # trend:v1: 缓存 3 天
 
 # SERP 源不可用时怎么办：
 #   True （默认，2026-11-12 用户定）→ 立即中止整批，剩余词留待下次重试。
 #   False → 本批禁用 SERP 继续分析（AI 少了辨形线索，结论质量下降，会在 notice 里标明）。
-# ★当前 DuckDuckGo 已对无 JS 请求一律回 202 挑战页，改 False 只是让分析能跑，SERP 仍是缺的。
+# ★2026-11-13：202 挑战页根因已定位并修掉（多带的请求头），SERP 恢复正常；此开关保留为源级故障时的策略。
 ABORT_ON_SERP_DOWN = True
 
 _serp_lock = threading.Lock()

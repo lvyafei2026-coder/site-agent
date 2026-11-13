@@ -382,13 +382,37 @@ def test_fetch_serp_raises_source_unavailable_on_connect_failure(monkeypatch):
 
 
 def test_fetch_serp_raises_source_unavailable_on_challenge_pages(monkeypatch):
-    """DDG 现在对无 JS 请求一律 202 挑战页 → 也是源级不可用，不能当「无结果」。"""
+    """被判定异常时仍可能回 202 挑战页 → 仍是源级不可用，不能当「无结果」。"""
     monkeypatch.setattr(ss.time, "sleep", lambda s: None)
     with pytest.raises(SourceUnavailable) as ei:
         ss.fetch_serp("some term", session=_ChallengeSession())
     assert ei.value.source == "duckduckgo"
     assert "未返回可用结果" in str(ei.value)
     assert all(a["status"] == 202 for a in ei.value.attempts)
+
+
+class _MinimalHeaderSession:
+    """只认最小头的假 DDG：多带头就回 202，用来把 11-13 的定位钉成回归测试。"""
+
+    class _R:
+        def __init__(self, status: int, text: str):
+            self.status_code = status
+            self.text = text
+
+    def get(self, url, headers=None, **kwargs):
+        if set(headers or {}) - {"User-Agent"}:
+            return self._R(202, "<title>DuckDuckGo</title> are you a robot")
+        return self._R(200, DDG_HTML)
+
+
+def test_fetch_serp_uses_only_user_agent(monkeypatch):
+    """2026-11-13：202 挑战页是显式 Accept / Accept-Language / Referer 触发的。
+    只发 User-Agent 才能拿到真结果；防止有人把「更像浏览器」的头加回来。"""
+    monkeypatch.setattr(ss.time, "sleep", lambda s: None)
+    out = ss.fetch_serp("example term", session=_MinimalHeaderSession())
+    assert out["engine"] == "duckduckgo"
+    assert [x["domain"] for x in out["items"]] == ["example.com", "other.org", "plain.example.net"]
+    assert set(ss.BASE_HEADERS) == {"User-Agent"}
 
 
 def test_fetch_interest_raises_source_unavailable(monkeypatch):

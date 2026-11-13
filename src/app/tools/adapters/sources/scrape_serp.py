@@ -5,8 +5,13 @@
 """SERP 抓取 + 竞争度打分（从 radar/src/serp.js 原样移植到 Python）。
 
 为什么用 DuckDuckGo HTML 版：免 key、免登录、返回真实前 10 名；Google 前端结果在
-服务端拿不到（JS 渲染 + 反爬），Bing 结构随地区漂移。DDG 连查的惩罚是 202 挑战页
-而非 429，所以排 4 发、两个端点交替、间隔递增、单次调用内共享 cookie。
+服务端拿不到（JS 渲染 + 反爬），Bing 结构随地区漂移。
+
+★2026-11-13 实测定位「202 挑战页」根因：不是无 JS / 反爬升级，而是**我们自己多带的头**。
+  只发 User-Agent 时 html / lite 两个端点稳定返回 200 + 10 条真实结果；只要显式带上
+  Accept / Accept-Language / Referer 任意一个就是 202 anomaly 页。requests 自己补的默认头
+  （Accept: */*、Accept-Encoding、Connection）是安全的，别手动覆盖。
+  4 发退避 + 端点交替保留，用来兜住偶发的连接超时（本机实测约 1/7）。
 
 纯函数（parse_ddg / domain_of / decode_uddg / score_competition / serp_verdict）不碰网络，
 单测直接喂 HTML 即可。fetch_serp 是网络层，session 可注入，便于离线测试。
@@ -24,12 +29,10 @@ from .errors import SourceUnavailable
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
-BASE_HEADERS = {
-    "User-Agent": UA,
-    "Accept": "text/html,application/xhtml+xml",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://duckduckgo.com/",
-}
+# ★只留 User-Agent。2026-11-13 逐头实测：额外显式设置 Accept / Accept-Language /
+#  Referer 任意一个都会触发 DDG 的 202 anomaly 挑战页；requests 自动补的默认头无害。
+#  别为了「更像浏览器」把头加回来——那正是挑战页的触发条件。
+BASE_HEADERS = {"User-Agent": UA}
 
 
 def _ep_html(q: str) -> str:
@@ -275,10 +278,11 @@ def fetch_serp(term: str, session: Optional[Any] = None, limit: int = 10) -> dic
     返回 {engine, items, attempts}；失败抛 SourceUnavailable（源级不可用，调用方应在
     整批里立刻停手，等下次触发重试），异常里带 attempts 便于诊断。
 
-    ★2026-11-12 实测：DDG 的 html / lite 两个端点对无 JS 请求一律回 202 挑战页（本地）
-      或直接连接超时（Render 出口）。Bing 也被试过但会返回**结构合法、内容无关**的假结果页，
-      比失败更危险（竞争度算错、AI 拿错辨形线索还会静默写进 KV），故不留兜底源。
-      要恢复 SERP 能力需换正规接口（如 Brave Search API 免费额度），不是加爬虫能解决的。
+    ★2026-11-13 修正：11-12 判定的「DDG 已废」是误判，根因是 BASE_HEADERS 里多带的
+      Accept / Accept-Language / Referer 触发了 202 anomaly 页。改成只发 User-Agent 后，
+      html / lite 两端点均稳定 200 + 10 条真实结果，parse_ddg / score_competition 可直接消费。
+      Bing（含 &format=rss）仍返回结构合法、内容无关的假结果，不留兜底源。
+      Render 出口此前是连接超时（网络层），与 202 是不同问题，上线后需单独复测。
     """
     import urllib.parse as up
     q = up.quote(str(term or "").strip())
