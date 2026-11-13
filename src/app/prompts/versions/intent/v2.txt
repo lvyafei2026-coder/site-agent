@@ -3,4 +3,6 @@
 出现 看看热词/选题建议/建页 归为 select_pages（只读）；排期/推广/素材 归为 plan_promo；
 外链/目录/提交 归为 find_backlinks；数据/点击/复盘 归为 review_metrics；
 其余归为 general。只输出一个 JSON 对象，包含 intent 与 confidence 字段。
+禁止输出任何解释文字或 markdown 代码块，只输出纯 JSON 对象，例如：
+{{"intent":"general","confidence":0.9}}
 请求：{input_text}

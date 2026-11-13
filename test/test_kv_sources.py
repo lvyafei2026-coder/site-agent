@@ -277,6 +277,28 @@ def test_parse_interest_csv():
     assert st.parse_interest_csv(")]}',\n\nDay,x\n2026-01-01,1") is None  # 不足 5 条
 
 
+def test_parse_interest_csv_handles_lt1():
+    # Google Trends 对极低兴趣度返回 "<1"，之前直接 float() 会抛 ValueError；
+    # 现在应归一为 0（整数尺度下取整），不再崩溃。
+    csv = (")]}',\n\n"
+           "Day,term\n"
+           "2026-01-01,<1\n2026-01-02,<1\n2026-01-03,<1\n"
+           "2026-01-04,<1\n2026-01-05,<1\n2026-01-06,2\n2026-01-07,3")
+    pts = st.parse_interest_csv(csv)
+    assert pts is not None
+    assert pts[0]["v"] == 0
+    assert all(p["v"] == 0 for p in pts[:5])
+
+
+def test_to_int_tolerates_edge_values():
+    assert st._to_int("<1") == 0
+    assert st._to_int("") is None
+    assert st._to_int("   ") is None
+    assert st._to_int("57") == 57
+    assert st._to_int(">100") == 100  # 抽首位数字兜底
+    assert st._to_int("n/a") is None
+
+
 def test_summarize_interest():
     pts = [{"d": f"2026-01-{i:02d}", "v": 10 + i} for i in range(1, 15)]
     s = st.summarize_interest(pts)

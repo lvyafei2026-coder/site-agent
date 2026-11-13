@@ -5,4 +5,6 @@ general（无明确意图）。
 出现「分析 / 逐条 / 批量 / 20 条 / 待开发 / 不做 / 回写状态」等字样时优先归为 analyze_hotwords；
 只说「看看有没有新选题」而没有分析动作时归为 select_pages。
 只输出一个 JSON 对象，包含 intent 字段与 confidence 字段（0 到 1 之间）。
+禁止输出任何解释文字或 markdown 代码块，只输出纯 JSON 对象，例如：
+{{"intent":"general","confidence":0.9}}
 请求：{input_text}

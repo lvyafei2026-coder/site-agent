@@ -1,3 +1,5 @@
 从站群运营请求中抽取结构化事实。
 意图：{intent}；请求：{input_text}
 只输出一个 JSON 对象，字段为 target_site、keywords、pages、notes、requires_tool。
+禁止输出任何解释文字或 markdown 代码块，只输出纯 JSON 对象，例如：
+{{"target_site":"","keywords":[],"pages":[],"notes":"","requires_tool":true}}

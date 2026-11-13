@@ -65,6 +65,46 @@ def test_strip_plain_json():
     assert LLMService._strip_fences('{"a":1}') == '{"a":1}'
 
 
+# ---- _parse_json：容忍散文包裹 / 非 JSON 内容 ----
+
+def test_parse_json_clean():
+    assert LLMService._parse_json('{"intent":"general"}') == {"intent": "general"}
+
+
+def test_parse_json_prose_wrapped():
+    assert LLMService._parse_json('好的，这是结果：{"intent":"plan_promo"} 以上') == {"intent": "plan_promo"}
+
+
+def test_parse_json_nonjson_returns_none():
+    assert LLMService._parse_json("抱歉，我无法处理该请求") is None
+
+
+def test_parse_json_html_error_returns_none():
+    # GitHub Models 网关偶发 HTML 错误页（内容以 < 开头）：不应抛异常，返回 None 走回退
+    assert LLMService._parse_json("<!DOCTYPE html><html>502</html>") is None
+
+
+def test_complete_nonjson_content_not_failed(with_key, monkeypatch):
+    """调通了但模型返回非 JSON（散文/错误页）：按「未解析到结构化数据」降级，
+    不置 failed（避免把内容形态问题误判成故障去短路到 ERROR）。"""
+    monkeypatch.setattr(llm_mod, "get_llm", lambda: _FakeClient("这模型跑偏了，返回了散文"))
+
+    data, failed, retryable = llm_mod.llm_service._complete("sys", "user", "warn_event")
+    assert data is None
+    assert failed is False
+    assert retryable is False
+
+
+def test_complete_prose_wrapped_json_succeeds(with_key, monkeypatch):
+    monkeypatch.setattr(
+        llm_mod, "get_llm",
+        lambda: _FakeClient('说明：{"intent": "general", "confidence": 0.8} 完毕'))
+
+    data, failed, _ = llm_mod.llm_service._complete("sys", "user", "warn_event")
+    assert data == {"intent": "general", "confidence": 0.8}
+    assert failed is False
+
+
 # ---- _complete 端到端：模拟 get_llm 返回裸字符串 ----
 
 class _FakeCompletions:

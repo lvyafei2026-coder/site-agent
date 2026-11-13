@@ -55,14 +55,34 @@ def find_timeseries_widget(json_text: str) -> Optional[dict]:
     return None
 
 
+def _to_int(v: str) -> Optional[int]:
+    """把 Trends CSV 的兴趣度值归一为整数；容错极低/异常值。
+
+    Google Trends 对极低兴趣度返回 "<1"（小于 1），直接用 float() 会抛
+    "could not convert string to float: '<1'"。<1 在 0-100 整数尺度下取整为 0；
+    其它带符号/非数字值抽首位数字，抽不到返回 None（该点不参与汇总）。
+    """
+    s = (v or "").strip()
+    if not s:
+        return None
+    if s[0] == "<":          # "<1" 等极低值 → 整数尺度取整为 0
+        return 0
+    num = re.search(r"\d+(?:\.\d+)?", s)
+    if not num:
+        return None
+    try:
+        return int(float(num.group(0)))
+    except ValueError:
+        return None
+
+
 def parse_interest_csv(text: str) -> Optional[list[dict]]:
     out: list[dict] = []
     for line in strip_xssi(text).splitlines():
         m = re.match(r"^(\d{4}-\d{2}-\d{2}),(.*)$", line)
         if not m:
             continue
-        v = m.group(2).strip()
-        out.append({"d": m.group(1), "v": None if v == "" else (int(float(v)) if v else 0)})
+        out.append({"d": m.group(1), "v": _to_int(m.group(2))})
     return out if len(out) >= 5 else None
 
 

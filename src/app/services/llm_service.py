@@ -120,18 +120,42 @@ class LLMService:
         return s
 
     @staticmethod
+    def _parse_json(text: str) -> dict | None:
+        """把模型返回的文本解析成 dict；容忍两种情况：
+        1) 被 ```json 围栏包裹；2) 散文里夹着一段 JSON（抽第一个 {…} 对象）。
+
+        线上 GitHub Models 偶尔不吃 response_format，会返回散文/带说明文字而非纯
+        JSON；这里尽量「捞」出 JSON 对象，捞不到返回 None（上层走确定性回退）。
+        """
+        s = LLMService._strip_fences(text or "").strip()
+        try:
+            data = json.loads(s)
+        except json.JSONDecodeError:
+            mobj = re.search(r"\{.*\}", s, re.DOTALL)
+            if not mobj:
+                return None
+            try:
+                data = json.loads(mobj.group(0))
+            except json.JSONDecodeError:
+                return None
+        return data if isinstance(data, dict) else None
+
+    @staticmethod
     def _complete(prompt: str, text: str, warn_event: str) -> tuple[dict | None, bool, bool]:
         """调 OpenAI 兼容接口并解析 JSON；任何异常都降级，不阻塞整轮。
 
         返回 (data, failed, retryable)：
         - 无 key          → (None, False, False)：预期关闭（确定性回退），不算故障；
-        - 成功            → (data, False, False)；
+        - 成功解析到 dict → (data, False, False)；
+        - 调通了但内容非 JSON（散文/错误页）→ (None, False, False)：按「未解析到结构化
+          数据」降级回退，不置 failed——这是内容形态问题（重试也救不回），且我们有正则
+          兜底，不该触发短路到 ERROR 把整轮作废；
         - 异常且为网络层  → (None, True,  True )：连接/超时类，应走重试；
         - 异常且明确失败  → (None, True,  False)：鉴权/配额/参数，短路到 ERROR 等下次请求。
 
         注意：兼容服务返回裸字符串/非标准形态时，_content_from_response 已归一；
-        JSON 解析失败（含被围栏包裹）走 _strip_fences 后重试，再失败则按「未解析到
-        结构化数据」降级回退（failed=False），不触发短路。
+        JSON 解析失败会打一条诊断日志，把真实返回的开头 160 字符带出来，方便定位
+        （是散文、还是网关 HTML 错误页）。
         """
         if not LLM_API_KEY:
             return None, False, False
@@ -147,8 +171,12 @@ class LLMService:
             if content is None:
                 logger.debug("llm_empty_content", extra={"warn_event": warn_event})
                 return None, False, False
-            data = json.loads(LLMService._strip_fences(content) or "{}")
-            return (data if isinstance(data, dict) else None), False, False
+            data = LLMService._parse_json(content)
+            if data is None:
+                logger.warning("llm_nonjson_response",
+                               extra={"warn_event": warn_event, "head": content[:160]})
+                return None, False, False
+            return data, False, False
         except Exception as exc:  # noqa: BLE001 - LLM 不可用不影响整轮
             logger.warning(warn_event, extra={"error": str(exc)[:200]})
             return None, True, is_retryable_error(exc)
