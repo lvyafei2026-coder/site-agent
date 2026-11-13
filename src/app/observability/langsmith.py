@@ -10,9 +10,12 @@
      有 key 时发送必然 401，会在日志里刷一堆噪音，不如直接当关闭。
   3. 关闭时零开销：`traceable` 原样返回函数，不 import langsmith 运行时。
 
-开启后会自动产生四层 trace：
+开启后会自动产生五层 trace：
   - 图级：LangGraph 每次 `invoke` 一条 run（名字由调用方传 run_name）
   - 节点级：classify_intent / run_processing / validate_result / build_output …
+  - 工具级：`tool:<名字>`（本文件 `trace_tool`，run_type=tool）记 26 个 RuntimeTool
+    的入参/返回/错误；热词批次内部另有 `tool:serp` / `tool:trend` / `tool:kv.write`
+    等 IO span，把 SERP、Trends、KV 读写这些原本看不见的调用也挂到对应词下
   - 批次/逐词级：`run_traced`（本文件）给 run_batch 与每个热词各建一条 span
   - LLM 级：`llm/provider.py` 用 `wrap_openai` 包过的客户端，请求体与返回值都在
 
@@ -25,14 +28,70 @@
 from __future__ import annotations
 
 import functools
+import json
 import os
 import time
 from collections.abc import Callable
+from typing import Any
 
 from src.app.config import settings
 from src.app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# LangSmith 的 inputs/outputs 会随整棵 run 一起上报。某个工具返回整张候选表、
+# 或 AI 正文这种大字符串时，全量塞进去既拖慢上报也把 UI 卡住，所以统一裁剪：
+# 单个字符串最多 4000 字符、单个容器最多 60 项、递归最多 6 层。
+MAX_IO_CHARS = 4000
+MAX_IO_ITEMS = 60
+MAX_IO_DEPTH = 6
+
+
+def compact_io(value: Any, *, max_chars: int = MAX_IO_CHARS,
+               _depth: int = 0) -> Any:
+    """把任意工具出入参变成「可序列化、不会撑爆 trace」的纯数据。
+
+    逐项裁剪而不是整体截断：保留结构（哪个字段、哪一条），只把过长的值截断并
+    标注原长度，排查时仍能看到字段名与前后文。pydantic / dataclass 等对象降级
+    `model_dump()` 或 str()，绝不因为一个不可序列化对象让整条 trace 上报失败。
+    """
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        if len(value) <= max_chars:
+            return value
+        return value[:max_chars] + f"…[原长 {len(value)} 字符，已截断]"
+    if _depth >= MAX_IO_DEPTH:
+        return str(value)[:max_chars]
+    if isinstance(value, dict):
+        return {str(k)[:120]: compact_io(v, max_chars=max_chars, _depth=_depth + 1)
+                for k, v in list(value.items())[:MAX_IO_ITEMS]}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        seq = list(value)
+        out = [compact_io(v, max_chars=max_chars, _depth=_depth + 1)
+               for v in seq[:MAX_IO_ITEMS]]
+        if len(seq) > MAX_IO_ITEMS:
+            out.append(f"…[另有 {len(seq) - MAX_IO_ITEMS} 项]")
+        return out
+    if hasattr(value, "model_dump"):
+        try:
+            return compact_io(value.model_dump(), max_chars=max_chars, _depth=_depth + 1)
+        except Exception:  # noqa: BLE001 - 降级为字符串即可
+            pass
+    return str(value)[:max_chars]
+
+
+def _compact_envelope(value: Any) -> Any:
+    """最后一道总大小保护：极端嵌套下逐项裁剪仍可能很大，序列化后再兜一次。"""
+    out = compact_io(value)
+    try:
+        text = json.dumps(out, ensure_ascii=False, default=str)
+    except Exception:  # noqa: BLE001
+        return compact_io(str(out))
+    if len(text) <= MAX_IO_CHARS * 4:
+        return out
+    return {"_truncated": True, "size": len(text),
+            "preview": text[:MAX_IO_CHARS * 2]}
 
 
 def tracing_enabled() -> bool:
@@ -157,6 +216,46 @@ def run_traced(func, *, name: str, inputs: dict | None = None,
             # 这条 run（官方 trace 示例同款用法），随后 __exit__ 负责 patch 上报。
             run.end(outputs=out or {}, error=err)
         return result
+
+
+def trace_tool(func, *, name: str, inputs: dict | None = None,
+               tags: list[str] | None = None, metadata: dict | None = None,
+               parent=None, outputs=None, error=None, run_type: str = "tool"):
+    """给一次工具 / 外部 IO 调用建 `run_type=tool` 的 span，出入参全上 LangSmith。
+
+    与 `run_traced` 的区别：那个是业务流程 span（chain），这个是**叶子调用** span，
+    名字统一 `tool:<名字>`，Inputs/Outputs 面板里就是这次调用的真实参数与返回摘要。
+
+    ★异常不吞：func 抛异常时 LangSmith 的 `__exit__` 会把异常类型、消息和 traceback
+      写进 `error` 并把该 span 标红，异常原样抛给业务方走降级/重试。这正是排查
+      「SERP 源不可用」这类降级时最需要的信息——以前它只出现在日志里，Smith 上
+      完全看不到 SERP 被调用过。
+
+    tracing 关闭时直接 `func()`：`compact_io`、`run_traced`、langsmith runtime 全部
+    不执行，业务返回与未接入追踪前逐字一致。
+    """
+    if not tracing_enabled():
+        return func()
+
+    def _outputs(result):
+        raw = outputs(result) if callable(outputs) else outputs
+        return _compact_envelope(raw if raw is not None else {})
+
+    def _error(result):
+        raw = error(result) if callable(error) else error
+        return str(raw)[:1000] if raw else None
+
+    return run_traced(
+        func,
+        name=name,
+        run_type=run_type,
+        inputs=_compact_envelope(inputs or {}),
+        tags=tags or [],
+        metadata=metadata or {},
+        parent=parent,
+        outputs=_outputs,
+        error=_error,
+    )
 
 
 # 模块级执行：只要有任何代码 import 到本模块（llm_service / routes / graph 都会），

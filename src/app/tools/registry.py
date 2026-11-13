@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.app.observability.langsmith import trace_tool
 from src.app.tools.base import BaseTool
 from src.app.tools.distribution_tools import (
     DistributionOps,
@@ -55,6 +56,27 @@ from src.app.tools.publishing_tools import (
     WaitBuildTool,
 )
 from src.app.tools.selection_tools import AnalyzeHotwordsTool, GetHotwordsTool, SelectionOps
+
+
+def _tool_tracer(name: str, kind: str, method: str, kwargs: dict, call):
+    """26 个工具共用的 LangSmith span：入参、统一返回体、失败原因全留在一条 run 上。
+
+    ★`parent=None` 是刻意的：工具在 graph 节点里同步调用，LangSmith 会自动把 span
+      挂到当前节点（LangChainTracer 注入的 run）下。只有 ThreadPoolExecutor 的
+      worker 线程才需要显式 parent，那部分在 hotwords.py 单独处理。
+    ★`ok=False` 也要让 span 标红：RuntimeTool 把异常吞进 ToolOutput 返回体，
+      不抛异常的话 LangSmith 自己看不出失败。
+    """
+    return trace_tool(
+        call,
+        name="tool:" + name,
+        inputs=kwargs,
+        tags=["site-agent", "tool", "kind:" + kind],
+        metadata={"tool": name, "kind": kind, "method": method},
+        outputs=lambda result: result if isinstance(result, dict) else {"result": result},
+        error=lambda result: (result.get("error") or None)
+        if isinstance(result, dict) else None,
+    )
 
 
 class RuntimeService(SelectionOps, DistributionOps, LedgerOps,
@@ -101,7 +123,9 @@ class ToolRegistry:
     def bind(self, ops: Any) -> None:
         """换门面并重建工具：生产在 import 时绑一次，测试换成 FakeRuntime。"""
         self.ops = ops
-        self._tools = {tool.name: tool for tool in (cls(ops) for cls in TOOL_CLASSES)}
+        # tracer 注入而不是在 base.py 里 import 追踪模块：分层守卫要求 base 是叶子。
+        self._tools = {tool.name: tool for tool in
+                       (cls(ops, tracer=_tool_tracer) for cls in TOOL_CLASSES)}
 
     def get(self, name: str) -> BaseTool:
         return self._tools[name]

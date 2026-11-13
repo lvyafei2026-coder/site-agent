@@ -96,6 +96,12 @@ class RuntimeTool(BaseTool):
 
     子类只写三样：docstring（= 作用说明）、tool_name / method、嵌套 Input。
     kind 缺省 read；ledger / write 必须显式声明，方便一眼看出哪些会落库或不可逆。
+
+    ★tracer 是**注入**进来的横切钩子（registry.py 装配时传入），不是 import：
+      base 必须保持「只依赖标准库 + pydantic」的叶子身份（见 test_architecture.py），
+      但 26 个工具的每次调用又都要在 LangSmith 上留下入参/出参/错误。钩子签名：
+        tracer(name, kind, method, kwargs, call) -> ToolOutput.model_dump()
+      默认 None = 不打点，测试里直接 new 一个工具实例不受影响。
     """
 
     tool_name: ClassVar[str] = ""
@@ -105,12 +111,21 @@ class RuntimeTool(BaseTool):
     fixed: ClassVar[dict[str, Any]] = {}  # 补进调用的固定参数
     Input: ClassVar[type[BaseModel]]
 
-    def __init__(self, ops: Any) -> None:
+    def __init__(self, ops: Any, tracer: Any = None) -> None:
         super().__init__(name=self.tool_name,
                          description=self.tool_desc or (type(self).__doc__ or "").strip())
-        self.ops = ops  # 外部 IO 的唯一入口，装配时注入（见 tools/registry.py）
+        self.ops = ops      # 外部 IO 的唯一入口，装配时注入（见 tools/registry.py）
+        self.tracer = tracer
 
     def run(self, **kwargs: Any) -> dict[str, Any]:
+        # 追踪包在最外层：连 Input 校验失败（参数缺失/类型错）也有 span 可查，
+        # 而不是只记录「打到了 ops」的那部分调用。
+        if self.tracer is not None:
+            return self.tracer(self.name, self.kind, self.method, kwargs,
+                               lambda: self._run(**kwargs))
+        return self._run(**kwargs)
+
+    def _run(self, **kwargs: Any) -> dict[str, Any]:
         try:
             payload = self.Input(**kwargs).model_dump(exclude_none=True)
             result = getattr(self.ops, self.method)(**{**payload, **self.fixed})

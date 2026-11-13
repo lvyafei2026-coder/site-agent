@@ -135,17 +135,46 @@ API 的 `LLM_MODEL` 要写 **`openai/gpt-4o-mini`**（vendor/model）——以�
 |---|---|---|
 | 图级 | 整轮输入输出、总耗时、thread_id、input_text | `routes.py` 的 `run_name` / `metadata` |
 | 节点级 | classify_intent / run_processing / validate_result / build_output | LangGraph 自动打点 |
+| 工具级 | `tool:<工具名>`（26 个 RuntimeTool）：真实入参、统一返回体，`ok=False` 标红 | `tools/registry.py` 注入的 `trace_tool` |
 | 批次级 | `site-agent:hotword-batch`：analyzed / failed / successRate / 降级提示 | `hotwords.run_batch` 的 `run_traced` |
+| 批次内 IO | `tool:kv.read-candidates`：筛出哪些词、为什么这批跑空了 | `hotwords._run_batch` 的 `trace_tool` |
 | 逐词级 | `site-agent:hotword:<词>`：verdict / status / serp / trend / error（失败标红） | `hotwords._run_batch` 的逐词 `run_traced` |
+| 逐词内 IO | `tool:serp` / `tool:trend` / `tool:kv.write`：抓取出入参、缓存命中、尝试明细、每个 KV 键写入成败 | `hotwords.py` 的 `_tool_step` |
 | LLM 级 | 实际发送的 messages、返回 JSON、token 数与延迟 | `llm/provider.py` 的 `wrap_openai` |
 
-**热词批次是一棵树，不是 20 条散根**（2026-11-13 修）：
-`site-agent:analyze_hotwords` → `hotword-batch` → 每词一条 span → 该词的 `ChatOpenAI`。
+**整轮是一棵树，不是一堆散根**（2026-11-13 修）：
+
+```
+site-agent:analyze_hotwords                    ← 唯一根
+└─ run_processing
+   ├─ tool:get_hotwords / tool:get_page_inventory …   ← 26 个工具各自的出入参
+   └─ site-agent:hotword-batch
+      ├─ tool:kv.read-candidates
+      └─ site-agent:hotword:<词>              ← 每词一条
+         ├─ tool:serp      → SERP 前 10、竞争度、是否命中缓存、4 发尝试明细
+         ├─ tool:trend     → 趋势点数/摘要、是否命中缓存
+         ├─ ChatOpenAI     → 完整 messages 与返回
+         └─ tool:kv.write  → 写了哪些键、每个键 ok 与否、正文预览、失败清单
+```
+
 根因是 `ThreadPoolExecutor` 的 worker 线程**不继承主线程的 contextvars**，而 LangSmith
 把父 run 存在 contextvar 里；并发逐词时 `wrap_openai` 找不到父，每个 LLM 都成了独立根
 trace。修法在工具层：批次 span 自动挂到 LangGraph 节点下，逐词 span **显式传 `parent=`**
-（`observability/langsmith.py:run_traced`），词 span 一进入就把当前 run 写进 worker 线程
-的 contextvar，LLM 自然挂上去。**graph 结构本身没有改动**，也不是「每词一条独立 trace」。
+（`observability/langsmith.py:run_traced`），并把本词 run 继续传给所有 `tool:*` 子 span。
+**graph 结构本身没有改动**，也不是「每词一条独立 trace」。
+
+**工具可见性**（2026-11-13）：以前只有 `wrap_openai` 自动打点，SERP / Trends / KV 读写在
+Smith 上完全看不见，页面只显示「SERP 源不可用，本批已跳过 SERP」这类结果文字，无法判断
+到底调用过没有、卡在哪一步。现在每个工具调用都是一条 `run_type=tool` 的 span：
+- 源级故障（`SourceUnavailable`）会让 `tool:serp` / `tool:trend` **标红并带完整 traceback**，
+  业务侧照常降级；后续词走「本批已跳过」分支时也会留一条 `skipped` span，不会凭空消失。
+- `tool:kv.write` 的 Outputs 里逐个列出 `ai:v3:` / `aihints` / `saved` / `rejected` 的
+  key 与 `ok`，排查「正文写了、状态没写」不用再翻日志。
+- 26 个 RuntimeTool 连 Input 校验失败（参数缺失/类型错）也有 span 并标红，因为追踪包在
+  `RuntimeTool.run` 最外层；tracer 由 `registry.py` **注入**，`base.py` 仍是纯叶子模块。
+- 出入参统一经过 `compact_io` 裁剪：单字符串最多 4000 字符、单容器最多 60 项、最多
+  6 层，过长会标注原长度并截断，避免整张候选表/AI 正文把上报拖慢或撑爆 UI。
+- 关闭追踪时 `trace_tool` 就是原函数调用，`compact_io` 与 langsmith runtime 都不执行。
 
 - 整批共用一个 `thread_id`（= `batchId`），Threads 视图同样聚成一条；每词另有
   独立 `word_id`，要单独看某个词按它检索即可。

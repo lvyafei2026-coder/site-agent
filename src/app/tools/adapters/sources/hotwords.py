@@ -23,6 +23,7 @@ google-trend-radar 的 /api/serp、/api/trend、/api/candidates。它直接读�
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -31,7 +32,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
 from src.app.config import settings
-from src.app.observability.langsmith import run_traced
+from src.app.observability.langsmith import run_traced, trace_tool, tracing_enabled
 
 from .kv import (
     CloudflareKV, get_kv, term_key, atomic_update, table_lock,
@@ -87,11 +88,15 @@ SERP_GAP_SEC = 1.5          # 全局串行 + 最小间隔；202 的根因是请�
 SERP_TTL = 604800           # serp:v1: 缓存 7 天
 TREND_TTL = 259200          # trend:v1: 缓存 3 天
 
-# ★2026-11-13：LangSmith 一条根 trace 的层级 = graph 根 → 批次 span → 每词 span → ChatOpenAI。
+# ★2026-11-13：LangSmith 一条根 trace 的层级 =
+#   graph 根 → 批次 span → 每词 span → [tool:serp / tool:trend / ChatOpenAI / tool:kv.write]。
 #   ThreadPoolExecutor 的 worker 线程不继承主线程 contextvars，父 run 必须显式传（见
-#   observability/langsmith.py:run_traced）。graph 结构本身一个字都不改。
+#   observability/langsmith.py:run_traced）；词 span 拿到自己的 run 后，再把它作为
+#   所有 tool span 的 parent，SERP/Trends/KV 这些「原本只存在于日志里」的调用才会
+#   出现在 Traces 页面上。graph 结构本身一个字都不改。
 BATCH_TRACE_NAME = "site-agent:hotword-batch"
 WORD_TRACE_PREFIX = "site-agent:hotword:"
+TOOL_TRACE_PREFIX = "tool:"
 
 # ★2026-11-13（用户定）：批次不再因某一个词/某一个源失败而中止——「完成一个结束一个、互不影响」。
 #   ・SERP 源整体不可用 → 只让该词跳过 SERP（notice 里标明缺辨形线索），本批后续词也跳过，
@@ -219,8 +224,18 @@ class _WriteLog:
     def __init__(self, term: str = "") -> None:
         self.term = term
         self.failed: list[str] = []
+        # 每次写的明细（供 LangSmith 的 tool:kv.write / tool:serp / tool:trend 输出）。
+        # 关闭追踪时只记 key/kind/phase/ok 四个小字段，不算体积，零额外开销。
+        self.records: list[dict[str, Any]] = []
+        self.phase = "analysis"   # serp / trend / analysis
+        self.capture = False      # tracing 开启时才计算写入字节数
 
-    def _record(self, key: str, ok: bool) -> bool:
+    def _record(self, key: str, ok: bool, kind: str, value: Any = None) -> bool:
+        rec: dict[str, Any] = {"key": key, "kind": kind,
+                               "phase": self.phase, "ok": bool(ok)}
+        if self.capture:
+            rec["bytes"] = _io_size(value)
+        self.records.append(rec)
         if not ok:
             self.failed.append(key)
             log.warning("KV 写入失败 term=%s key=%s", self.term, key)
@@ -232,7 +247,7 @@ class _WriteLog:
         except Exception as exc:  # noqa: BLE001 - 单词级写失败不拖垮其它词
             log.warning("KV 写入异常 term=%s key=%s: %s", self.term, key, exc)
             ok = False
-        return self._record(key, ok)
+        return self._record(key, ok, "put_text", value)
 
     def json(self, kv: Any, key: str, obj: Any, ttl: Optional[int] = None) -> bool:
         try:
@@ -240,11 +255,42 @@ class _WriteLog:
         except Exception as exc:  # noqa: BLE001
             log.warning("KV 写入异常 term=%s key=%s: %s", self.term, key, exc)
             ok = False
-        return self._record(key, ok)
+        return self._record(key, ok, "put_json", obj)
 
     def table(self, kv: Any, key: str, mutator, *, reader, ttl: Optional[int] = None) -> bool:
-        ok, _ = atomic_update(kv, key, mutator, reader=reader, ttl=ttl)
-        return self._record(key, ok)
+        ok, updated = atomic_update(kv, key, mutator, reader=reader, ttl=ttl)
+        return self._record(key, ok, "atomic_update", updated)
+
+    def error(self) -> str:
+        return "KV 写入失败：" + "、".join(self.failed) if self.failed else ""
+
+
+def _io_size(value: Any) -> int:
+    """只在 tracing 开启时调用：给 span 里的「写了多大」一个可解释的量级。"""
+    if isinstance(value, str):
+        return len(value)
+    try:
+        return len(json.dumps(value, ensure_ascii=False, default=str))
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _tool_step(name: str, call, *, inputs: dict[str, Any], outputs,
+               parent, term: str):
+    """逐词内部的一步 IO = 一条 `tool:*` span，显式挂在词 span 下。
+
+    ★不吞异常：SERP/Trends 源不可用时 SDK 把 traceback 写进 span.error 并标红，
+      业务侧照常 catch 后降级。这样 Smith 上既看得到「调用过」，也看得到「为什么跳过」。
+    """
+    return trace_tool(
+        call,
+        name=TOOL_TRACE_PREFIX + name,
+        inputs=inputs,
+        parent=parent,                # ★worker 线程：必须显式传词 span 的 run
+        tags=["site-agent", "hotword-tool"],
+        metadata={"term": term, "component": "analyze_hotwords"},
+        outputs=outputs,
+    )
 
     def error(self) -> str:
         return "KV 写入失败：" + "、".join(self.failed) if self.failed else ""
@@ -371,16 +417,22 @@ def _llm(messages: list[dict[str, str]]) -> tuple[str, str]:
 
 
 def _throttled_serp(term: str, kv: CloudflareKV,
-                    writes: Optional[_WriteLog] = None) -> tuple[dict[str, Any] | None, str]:
+                    writes: Optional[_WriteLog] = None,
+                    diag: Optional[dict[str, Any]] = None) -> tuple[dict[str, Any] | None, str]:
     """KV 已有 serp:v1: 直接读；缺失则现抓并写回。全局串行避免并发同时打 DDG。
 
     ★源级不可用（连不上 / 被挑战页占满）原样抛 SourceUnavailable，由 _analyze_one
       **只让本词跳过 SERP**，不再中止整批；其它异常降级为「无 SERP」，不拦 AI。
+    ★diag 是给 LangSmith span 的现场记录（是否命中缓存、4 发尝试明细、抓取异常），
+      不改变返回值形状，老调用方不受影响。
     """
+    diag = {} if diag is None else diag
+    diag["fromCache"] = False
     key = term_key(term)
     writes = writes or _WriteLog(term)
     cached = kv.get_json(SERP_PREFIX + key)
     if cached:
+        diag["fromCache"] = True
         return cached, ""
     global _last_serp_at
     with _serp_lock:
@@ -394,7 +446,10 @@ def _throttled_serp(term: str, kv: CloudflareKV,
         raise
     except Exception as exc:  # noqa: BLE001 - 单词级问题（解析等）不拦 AI
         log.warning("SERP 失败 %s: %s", term, exc)
+        diag["fetchError"] = str(exc)[:300]
         return None, str(exc)[:120]
+    diag["engine"] = s.get("engine")
+    diag["attempts"] = s.get("attempts") or []
     comp = scrape_serp.score_competition(s["items"], term)
     payload = {"engine": s["engine"], "items": s["items"], "competition": comp, "at": int(time.time() * 1000)}
     # 单词缓存键：各词独立、无 read-modify-write，但仍要检查写返回值
@@ -406,16 +461,22 @@ def _throttled_serp(term: str, kv: CloudflareKV,
 
 
 def _trend(term: str, kv: CloudflareKV,
-           writes: Optional[_WriteLog] = None) -> tuple[bool, str]:
+           writes: Optional[_WriteLog] = None,
+           diag: Optional[dict[str, Any]] = None) -> tuple[bool, str]:
     """KV 已有 trend:v1: 直接读；缺失则现抓并写回 + 更新 interests 摘要表。
 
     ★源级不可用会抛 SourceUnavailable，由 _analyze_one 把「本批禁用趋势」置位——趋势只是
       辅助证据，不该因为它连不上就让整批分析白跑，但也不该每个词都去撞一遍超时。
+    ★diag 同理记录命中缓存 / 抓取点数 / 尝试明细，供 tool:trend span 输出。
     """
+    diag = {} if diag is None else diag
+    diag["fromCache"] = False
     key = term_key(term)
     writes = writes or _WriteLog(term)
     cached = kv.get_json(TREND_PREFIX + key)
     if cached:
+        diag["fromCache"] = True
+        diag["pointCount"] = len(cached.get("points") or [])
         return True, ""
     try:
         t = scrape_trend.fetch_interest(term)
@@ -423,7 +484,11 @@ def _trend(term: str, kv: CloudflareKV,
         raise
     except Exception as exc:  # noqa: BLE001 - 单词解析问题不影响结论
         log.warning("TREND 失败 %s: %s", term, exc)
+        diag["fetchError"] = str(exc)[:300]
         return False, str(exc)[:120]
+    diag["attempts"] = t.get("attempts") or []
+    diag["pointCount"] = len(t.get("points") or [])
+    diag["summary"] = t.get("summary") or {}
     payload = {"points": t["points"], "summary": t["summary"], "at": int(time.time() * 1000)}
     writes.json(kv, TREND_PREFIX + key, payload, ttl=TREND_TTL)
     entry = {
@@ -553,11 +618,15 @@ def _finalize(out: dict[str, Any], writes: _WriteLog) -> dict[str, Any]:
 
 
 def _analyze_one(item: dict[str, Any], kv: CloudflareKV,
-                 state: Optional["_BatchAbort"] = None) -> dict[str, Any]:
+                 state: Optional["_BatchAbort"] = None,
+                 parent_run=None) -> dict[str, Any]:
     """一个词走完「补数据 → LLM → 回写状态」，失败只落在这个词自己身上。
 
     ★不抛异常给上层：SERP/Trends/LLM/KV 任一环出问题都写进 items[].error，
       其它词继续跑（完成一个结束一个、互不影响）。
+    ★parent_run 是本词 span 的 RunTree：SERP / Trends / KV 三处 IO 各自建一条
+      `tool:*` 子 span 并显式挂在它下面（worker 线程没有主线程 contextvars）。
+      追踪关闭时它是 None，`trace_tool` 直接调函数、零开销。
     """
     term = str(item.get("term") or "").strip()
     out: dict[str, Any] = {"term": term, "verdict": "", "status": "", "model": "",
@@ -567,28 +636,90 @@ def _analyze_one(item: dict[str, Any], kv: CloudflareKV,
         return out
 
     writes = _WriteLog(term)
+    writes.capture = tracing_enabled()
+    key = term_key(term)
 
-    # SERP：源级不可用 → 只让本词跳过 SERP，本批后续词也跳过（省掉每词 4 发超时）
+    # ---- SERP：读缓存 / 现抓 / 写回，整段是一条 tool:serp span ----
     serp_err = ""
+    serp_diag: dict[str, Any] = {}
+    writes.phase = "serp"
+    serp_mark = len(writes.records)
+
+    def serp_outputs(res):
+        data, err = res
+        return {
+            "engine": (data or {}).get("engine") or serp_diag.get("engine") or "",
+            "itemCount": len((data or {}).get("items") or []),
+            "items": (data or {}).get("items") or [],
+            "competition": (data or {}).get("competition") or {},
+            "fromCache": bool(serp_diag.get("fromCache")),
+            "attempts": serp_diag.get("attempts") or [],
+            "fetchError": serp_diag.get("fetchError") or "",
+            "error": err,
+            "kvWrites": writes.records[serp_mark:],
+        }
+
     if state is not None and state.serp_off:
         serp_data, serp_err = None, "本批已跳过 SERP（源不可用）"
+        # 「跳过」也要留痕：否则 Smith 上这一词像是压根没打算取 SERP
+        _tool_step(
+            "serp", lambda: (None, serp_err),
+            inputs={"term": term, "key": key, "skipped": True,
+                    "reason": serp_err},
+            outputs=lambda res: {"skipped": True, "reason": res[1],
+                                 "kvWrites": []},
+            parent=parent_run, term=term,
+        )
     else:
         try:
-            serp_data, serp_err = _throttled_serp(term, kv, writes)
+            serp_data, serp_err = _tool_step(
+                "serp", lambda: _throttled_serp(term, kv, writes, serp_diag),
+                inputs={"term": term, "key": key, "cacheKey": SERP_PREFIX + key},
+                outputs=serp_outputs, parent=parent_run, term=term,
+            )
         except SourceUnavailable as exc:
+            # span 已被 SDK 标红（含完整 traceback）；这里只做业务降级。
             log.warning("SERP 源不可用，本词跳过 SERP 继续分析：%s", exc.brief())
             serp_data, serp_err = None, exc.brief()
             if state is not None and state.disable_serp():
                 log.warning("本批后续词跳过 SERP（结论缺少辨形线索）")
     out["serp"] = serp_data is not None
 
-    # Trends：源级不可用 → 本批禁用趋势，不中止
+    # ---- Trends：读缓存 / 现抓 / 写回，整段是一条 tool:trend span ----
     trend_ok, trend_err = False, ""
+    trend_diag: dict[str, Any] = {}
+    writes.phase = "trend"
+    trend_mark = len(writes.records)
+
+    def trend_outputs(res):
+        ok, err = res
+        return {
+            "ok": ok, "fromCache": bool(trend_diag.get("fromCache")),
+            "pointCount": trend_diag.get("pointCount") or 0,
+            "summary": trend_diag.get("summary") or {},
+            "attempts": trend_diag.get("attempts") or [],
+            "fetchError": trend_diag.get("fetchError") or "",
+            "error": err,
+            "kvWrites": writes.records[trend_mark:],
+        }
+
     if state is not None and state.trends_off:
         trend_err = "本批已禁用趋势（源不可用）"
+        _tool_step(
+            "trend", lambda: (False, trend_err),
+            inputs={"term": term, "key": key, "skipped": True,
+                    "reason": trend_err},
+            outputs=lambda res: {"skipped": True, "reason": res[1],
+                                 "kvWrites": []},
+            parent=parent_run, term=term,
+        )
     else:
         try:
-            trend_ok, trend_err = _trend(term, kv, writes)
+            trend_ok, trend_err = _tool_step(
+                "trend", lambda: _trend(term, kv, writes, trend_diag),
+                inputs={"term": term, "key": key, "cacheKey": TREND_PREFIX + key},
+                outputs=trend_outputs, parent=parent_run, term=term,
+            )
         except SourceUnavailable as exc:
             trend_err = exc.brief()
             if state is not None and state.disable_trends():
@@ -631,29 +762,50 @@ def _analyze_one(item: dict[str, Any], kv: CloudflareKV,
     out["verdict"] = verdict
     hints = signals_of(text)
 
-    # 直写 KV（不经由 console 的 /api/hotwords）。
+    # ---- 回写 KV：正文 / 标签 / 状态，整段是一条 tool:kv.write span ----
     # ★正文先写：正文写失败就直接收手，绝不写状态——否则会留下「有状态、没正文」的悬空词，
     #   _select_pending 既不会重跑它，前端也看不到方案。
-    key = term_key(term)
-    if not writes.text(kv, AI_CACHE_PREFIX + key, text):
-        return _finalize(out, writes)
+    writes.phase = "analysis"
+    write_mark = len(writes.records)
+    stopped = {"afterTextFailure": False}
 
-    if hints is not None:
-        writes.table(kv, HINTS_KEY,
-                     lambda m: set_hint_override(m, term, hints), reader=_kv_dict)
+    def write_back():
+        if not writes.text(kv, AI_CACHE_PREFIX + key, text):
+            stopped["afterTextFailure"] = True
+            return
+        if hints is not None:
+            writes.table(kv, HINTS_KEY,
+                         lambda m: set_hint_override(m, term, hints), reader=_kv_dict)
+        if verdict == "不做":
+            payload = {"term": term, "reason": reason or "AI 判定不做", "source": "ai"}
+            if writes.table(kv, REJECTED_KEY,
+                            lambda arr: upsert_rejected(arr, payload), reader=_kv_list):
+                out["status"] = "rejected"
+        elif verdict == "做":
+            cand = {k: item.get(k) for k in ("term", "related", "hints", "geos", "geoCount", "traffic", "count", "score")}
+            payload = {**cand, "term": term, "status": "todo", "verdict": "做"}
+            if writes.table(kv, SAVED_KEY,
+                            lambda arr: upsert_saved(arr, payload), reader=_kv_list):
+                out["status"] = "todo"
+        # 「观望」与解析不出结论：只留正文和标签，状态保持未跟进
 
-    if verdict == "不做":
-        payload = {"term": term, "reason": reason or "AI 判定不做", "source": "ai"}
-        if writes.table(kv, REJECTED_KEY,
-                        lambda arr: upsert_rejected(arr, payload), reader=_kv_list):
-            out["status"] = "rejected"
-    elif verdict == "做":
-        cand = {k: item.get(k) for k in ("term", "related", "hints", "geos", "geoCount", "traffic", "count", "score")}
-        payload = {**cand, "term": term, "status": "todo", "verdict": "做"}
-        if writes.table(kv, SAVED_KEY,
-                        lambda arr: upsert_saved(arr, payload), reader=_kv_list):
-            out["status"] = "todo"
-    # 「观望」与解析不出结论：只留正文和标签，状态保持未跟进
+    def write_outputs(_result):
+        return {
+            "verdict": verdict, "status": out.get("status") or "",
+            "textChars": len(text), "textPreview": text[:200],
+            "hints": hints,
+            "stoppedAfterTextFailure": stopped["afterTextFailure"],
+            "writes": writes.records[write_mark:],
+            "writeErrors": list(writes.failed),
+        }
+
+    _tool_step(
+        "kv.write", write_back,
+        inputs={"term": term, "key": key, "aiCacheKey": AI_CACHE_PREFIX + key,
+                "verdict": verdict, "hints": hints,
+                "tables": [HINTS_KEY, SAVED_KEY, REJECTED_KEY]},
+        outputs=write_outputs, parent=parent_run, term=term,
+    )
 
     return _finalize(out, writes)
 
@@ -733,7 +885,23 @@ def _run_batch(limit: int, kv: Optional[CloudflareKV], batch_run,
     kv = kv or get_kv()
     limit = max(1, min(int(limit or 20), 50))
     try:
-        items = _select_pending(kv, limit)
+        # 候选池读取也是一次 IO：KV 挂了/形状漂移会在 tool:kv.read-candidates 上标红，
+        # 正常时能看到「筛出哪几个词」，不用再去翻日志猜为什么这批跑空了。
+        items = trace_tool(
+            lambda: _select_pending(kv, limit),
+            name=TOOL_TRACE_PREFIX + "kv.read-candidates",
+            parent=batch_run,
+            inputs={"limit": limit,
+                    "keys": ["candidates", SAVED_KEY, REJECTED_KEY, TAGS_KEY,
+                             AI_CACHE_PREFIX]},
+            tags=["site-agent", "hotword-tool"],
+            metadata={"batch_id": batch_id, "component": "analyze_hotwords"},
+            outputs=lambda res: {
+                "selected": len(res),
+                "terms": [x.get("term", "") for x in res],
+                "keys": [x.get("key", "") for x in res],
+            },
+        )
     except Exception as exc:  # noqa: BLE001
         log.warning("候选池读取失败：%s", exc)
         return {"ok": False, "error": "候选池读取失败：" + str(exc)[:200],
@@ -750,7 +918,9 @@ def _run_batch(limit: int, kv: Optional[CloudflareKV], batch_run,
         term = str(item.get("term") or "").strip()
         key = term_key(item.get("key") or term)
         return run_traced(
-            lambda: _analyze_one(item, kv, state),
+            # ★pass_run：把本词 span 的 run 交给 _analyze_one，让它成为该词所有
+            #   tool:* 子 span 的显式父（worker 线程拿不到主线程的 contextvar）。
+            lambda word_run: _analyze_one(item, kv, state, word_run),
             name=WORD_TRACE_PREFIX + (term or key)[:60],
             parent=batch_run,          # ★显式父：worker 线程没有主线程的 contextvar
             inputs={"term": term, "key": key, "index": idx},
@@ -765,6 +935,7 @@ def _run_batch(limit: int, kv: Optional[CloudflareKV], batch_run,
             },
             outputs=_word_outputs,
             error=_word_error,
+            pass_run=True,
         )
 
     results: list[dict[str, Any]] = []
