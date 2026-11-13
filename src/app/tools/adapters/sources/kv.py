@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import re
+import threading
 import urllib.parse
 from typing import Any, Callable, Optional
 
@@ -40,6 +41,20 @@ REJECTED_KEY = "rejected"           # 「不做」表
 TAGS_KEY = "tags"                   # 词 → 标签
 COMPETITION_KEY = "competition"     # 词 → {score, level, at} 摘要表
 INTERESTS_KEY = "interests"         # 词 → {term, summary, points} 趋势摘要表
+
+# agent 会并发写回的 5 张「整表」：每张都是「读全表 → 改一项 → 写全表」。
+# candidates / tags 只读，不在此列；ai:v3: / serp:v1: / trend:v1: 是单词独立键，天然不冲突。
+SHARED_TABLE_KEYS: tuple[str, ...] = (
+    SAVED_KEY, REJECTED_KEY, HINTS_KEY, COMPETITION_KEY, INTERESTS_KEY,
+)
+
+# ★一把进程级 RLock 覆盖 5 张整表（不是每表一把）：跨表组合写入也要串行，
+#   否则「先写 saved、再写 aihints」之间仍可能被另一个 worker 插进来读旧值。
+#   用 RLock 而非 Lock：mutator 里若再调一次 atomic_update（回填等场景）不会自锁死。
+# ★边界：这把锁只保证**本进程内** 4 个 batch worker 不互相覆盖。Cloudflare KV 无 CAS、
+#   最终一致，跨进程（Render 多实例）/ console 人工同时写仍可能 lost update；
+#   后者靠「写失败记 error + backfill_states 状态回填」兜底，别把锁当成分布式事务。
+_TABLE_LOCK = threading.RLock()
 
 _WS = re.compile(r"\s+")
 
@@ -200,6 +215,42 @@ class CloudflareKV:
             if not cursor:
                 break
         return out
+
+
+def table_lock() -> threading.RLock:
+    """需要「多张表一起改完才放开」的调用方（如状态回填）可以直接拿这把锁。"""
+    return _TABLE_LOCK
+
+
+def atomic_update(
+    kv: Any,
+    key: str,
+    mutator: Callable[[Any], Any],
+    *,
+    reader: Optional[Callable[[Any, str], Any]] = None,
+    ttl: Optional[int] = None,
+) -> tuple[bool, Any]:
+    """把整表的「读 → 改 → 写 → 校验返回值」包成一次原子操作。
+
+    返回 `(ok, updated)`：
+      ok=False 表示读/改/写任一步抛异常，或 put_json 返回了假值（凭据失效 / 5xx /
+      序列化失败）。调用方必须据此把该词记为 error，不能默认写入成功。
+
+    `reader` 允许调用方注入形状兜底（期望 list 就是 _kv_list、dict 就是 _kv_dict），
+    避免形状漂移时把脏数据当成空表再写回去。`mutator` 应当是纯函数：不要在锁内
+    做网络请求，否则整批 worker 会被一次外部超时全部卡住。
+    """
+    with _TABLE_LOCK:
+        try:
+            current = reader(kv, key) if reader is not None else (kv.get_json(key, {}) or {})
+            updated = mutator(current)
+            ok = bool(kv.put_json(key, updated, ttl=ttl))
+        except Exception as exc:  # noqa: BLE001 - 任何一步失败都要变成「写失败」而不是中断整批
+            log.warning("KV 整表更新异常 key=%s: %s", key, exc)
+            return False, None
+        if not ok:
+            log.warning("KV 整表写入未成功 key=%s（put_json 返回 False）", key)
+        return ok, updated
 
 
 # 模块级单例：生产路径默认从这里取；单测显式传 kv 覆盖。

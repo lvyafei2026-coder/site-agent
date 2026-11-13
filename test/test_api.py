@@ -46,6 +46,33 @@ def test_http_validation_error():
     assert client.post("/run", json={}).status_code == 422
 
 
+def test_http_backfill_defaults_to_dry_run(monkeypatch):
+    """/backfill 默认只出报告；显式 dry_run=false 才真正写，且令牌可校验。"""
+    import src.app.api.routes as routes
+
+    seen = {}
+
+    def fake_backfill(**kwargs):
+        seen.update(kwargs)
+        return {"ok": True, "scanned": 3, "repaired": 0}
+
+    monkeypatch.setattr(routes, "backfill_states", fake_backfill)
+    monkeypatch.setattr(routes, "BACKFILL_TOKEN", "")
+    client = TestClient(api)
+
+    r = client.post("/backfill", json={})
+    assert r.status_code == 200 and seen == {"dry_run": True, "limit": 200}
+    assert r.json()["ok"] is True
+
+    r = client.post("/backfill", json={"dry_run": False, "limit": 10})
+    assert seen == {"dry_run": False, "limit": 10}
+
+    monkeypatch.setattr(routes, "BACKFILL_TOKEN", "s3cret")
+    assert client.post("/backfill", json={"dry_run": False}).status_code == 401
+    assert client.post("/backfill", json={},
+                       headers={"X-Backfill-Token": "s3cret"}).status_code == 200
+
+
 def test_llm_quota_endpoint(monkeypatch):
     """/llm-quota 透传 check_quota 结果；未配 key 时 ok=False 且不抛异常。"""
     import src.app.llm.quota as quota_mod

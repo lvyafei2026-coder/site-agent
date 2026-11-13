@@ -52,7 +52,7 @@ curl -s -X POST localhost:10000/run \
 | `DATABASE_URL` | sqlite 时 | 生产用 `sqlite:////data/agent.sqlite` |
 | `MAX_VALIDATION_RETRIES` | 否 | 默认 2（最多 3 次取数） |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | 否 | 追踪开关，默认关闭；见 §2.2 |
-| `LANGSMITH_PROJECT_URL` | 否 | 项目页地址，只用于 console 的结果回链；不填会自动解析；见 §2.2 |
+| `LANGSMITH_PROJECT_URL` | 否 | 项目页地址，用于 console 的结果回链与热词批次 `traceRun.url`；不填会自动解析；见 §2.2 |
 | `LLM_API_KEY` | 否 | 留空走确定性回退 |
 | `LLM_BASE_URL` | 否 | 兼容任何 OpenAI 风格服务 |
 | `LLM_MODEL` | 否 | 默认 `gpt-4o-mini`；生产用 `openai/gpt-4o-mini`（见下方「换模型」） |
@@ -61,6 +61,7 @@ curl -s -X POST localhost:10000/run \
 | `AGENT_STATE_DIR` | 否 | 本地仓库副本根目录，默认 `data/`；生产 `/data` |
 | `CF_ACCOUNT_ID` / `CF_API_TOKEN` / `D1_DATABASE_ID` | 是 | D1 读写 |
 | `KV_NAMESPACE_ID` | 是 | Workers KV（★热词分析必须）：与 radar / console 共用同一个 RADAR_KV 命名空间，键与 console/radar 对齐（`ai:v3:` / `serp:v1:` / `trend:v1:` / `saved` / `rejected` 等），agent 经 Cloudflare KV REST API 直读直写，不调它们的 App 接口 |
+| `BACKFILL_TOKEN` | 否 | `POST /backfill` 的请求头 `X-Backfill-Token`；不配则与 `/run` 一样无鉴权（上线必须配） |
 | `GITHUB_TOKEN` / `GH_ORG` | 是 | 仓库 clone / push / check run |
 | `GSC_SA_JSON` / `GSC_PROPERTY` | 否 | 有则读 GSC，无则返回空列表 |
 | `DEVTO_API_KEY` | 否 | 无则发布工具返回 `blocked` |
@@ -134,7 +135,26 @@ API 的 `LLM_MODEL` 要写 **`openai/gpt-4o-mini`**（vendor/model）——以�
 |---|---|---|
 | 图级 | 整轮输入输出、总耗时、thread_id、input_text | `routes.py` 的 `run_name` / `metadata` |
 | 节点级 | classify_intent / run_processing / validate_result / build_output | LangGraph 自动打点 |
+| 批次级 | `site-agent:hotword-batch`：analyzed / failed / successRate / 降级提示 | `hotwords.run_batch` 的 `run_traced` |
+| 逐词级 | `site-agent:hotword:<词>`：verdict / status / serp / trend / error（失败标红） | `hotwords._run_batch` 的逐词 `run_traced` |
 | LLM 级 | 实际发送的 messages、返回 JSON、token 数与延迟 | `llm/provider.py` 的 `wrap_openai` |
+
+**热词批次是一棵树，不是 20 条散根**（2026-11-13 修）：
+`site-agent:analyze_hotwords` → `hotword-batch` → 每词一条 span → 该词的 `ChatOpenAI`。
+根因是 `ThreadPoolExecutor` 的 worker 线程**不继承主线程的 contextvars**，而 LangSmith
+把父 run 存在 contextvar 里；并发逐词时 `wrap_openai` 找不到父，每个 LLM 都成了独立根
+trace。修法在工具层：批次 span 自动挂到 LangGraph 节点下，逐词 span **显式传 `parent=`**
+（`observability/langsmith.py:run_traced`），词 span 一进入就把当前 run 写进 worker 线程
+的 contextvar，LLM 自然挂上去。**graph 结构本身没有改动**，也不是「每词一条独立 trace」。
+
+- 整批共用一个 `thread_id`（= `batchId`），Threads 视图同样聚成一条；每词另有
+  独立 `word_id`，要单独看某个词按它检索即可。
+- `analyze_hotwords` 返回里新增 `traceRun{batchId, runId, traceId, url}`（附加字段，
+  老前端忽略不受影响）。`url` 只在配了 `LANGSMITH_PROJECT_URL` 时生成，不额外发网络；
+  没配就用 `runId` 在 LangSmith 搜索框定位。
+- 关掉追踪时这层包装零开销：直接调函数，返回里没有 `traceRun`。
+- 回归护栏：`test/test_hotword_tracing.py`（含真实 LangGraph 节点场景）验证
+  「批次挂节点、每词挂批次、LLM 挂对应词」。
 
 **排障**：列表里一条都没有时，按顺序查 ① 两个环境变量是否都生效
 （`/health` 看不到，直接 `docker run` 或 Render Shell 里 `env | grep LANGSMITH`）；
@@ -223,12 +243,38 @@ Render 的 FastAPI 为准。
 | `MEMORY_BACKEND=sqlite` 报错 | `/data` 未挂载或不可写 | 检查 Render disk 配置 |
 | 页面渲染成功但线上 404 | 仓库 `wrangler.toml` 的 `assets.directory` 与 `asset_dir` 不一致 | 改 `config/sites.json` 的 `asset_dir` |
 | sitemap 没更新 | 站点仓库里没有 `<asset_dir>/sitemap.xml` | 补一个空的 `<urlset>` 文件即可 |
-| `duckduckgo 不可用：连不上 DuckDuckGo（N 发全部连接失败）` | **网络层**：当前部署出口 IP 到 DDG 不通，与请求头 / 202 挑战页无关。本机直连与另一云端出口实测均 200 + 10 条真结果，Render singapore 出口 4 发全 ConnectTimeout | 默认已自动经公共 Reader 中转换出口（`SERP_FALLBACK_READER=1`，取回原始 DDG HTML，口径一致）；仍失败再配 `SERP_HTTPS_PROXY` 自备代理，或把 `region` 换区重建，或临时把 `ABORT_ON_SERP_DOWN` 设 `False` 让本批跳过 SERP 出结论（只是没有竞争度）。4 发已轮换 4 个不同域名 / IP，仍全挂就别再调请求头了 |
+| `duckduckgo 不可用：连不上 DuckDuckGo（N 发全部连接失败）` | **网络层**：当前部署出口 IP 到 DDG 不通，与请求头 / 202 挑战页无关。本机直连与另一云端出口实测均 200 + 10 条真结果，Render singapore 出口 4 发全 ConnectTimeout | 默认已自动经公共 Reader 中转换出口（`SERP_FALLBACK_READER=1`，取回原始 DDG HTML，口径一致）；仍失败再配 `SERP_HTTPS_PROXY` 自备代理，或把 `region` 换区重建。★11-13 起源级故障**不再中止整批**：本批跳过 SERP、LLM 照常出结论并回写状态，`items[].notice` 会标「SERP 未取到」（缺辨形线索），返回里 `serpDisabled=true`。4 发已轮换 4 个不同域名 / IP，仍全挂就别再调请求头了 |
 | `duckduckgo 不可用：连续 N 发未返回可用结果` | **HTTP 层**：202 anomaly 挑战页。显式设置 `Accept` / `Accept-Language` / `Referer` 任意一个都会触发 | `BASE_HEADERS` 必须只有 `User-Agent`；`test_fetch_serp_uses_only_user_agent` 是防回归测试，别把「更像浏览器」的头加回来 |
+
+### 6.1 热词并发写入与状态回填（2026-11-13）
+
+- 20 条热词由 4 个 worker 并发分析。`saved` / `rejected` / `aihints` / `competition` /
+  `interests` 这 5 张**整表**的「读 → 改 → 写 → 校验返回值」统一走
+  `sources/kv.py:atomic_update()` 的一把进程级 `threading.RLock`，不会互相覆盖。
+  ★只保证单进程：Cloudflare KV 无 CAS 且最终一致，多实例 / console 人工同时写仍可能
+  丢更新，靠下面的 error + 回填兜底。
+- 每次 `put_text` / `put_json` 都检查返回值，失败写进 `items[].error` + `writeErrors`，
+  该词**不算 analyzed**。正文写失败时直接收手，绝不写状态（不制造「有状态、没正文」）。
+- 正文已落库但状态整表没写上的词，`_select_pending` 会因「已有正文」永久剔除它。
+  用 `POST /backfill` 从正文第 7/8 节反推结论补写（不调 LLM、不重抓数据）：
+
+  ```bash
+  # 1) 先看报告（默认 dry_run=true，不写库）
+  curl -X POST https://<host>/backfill -H 'Content-Type: application/json' -d '{}'
+  # 2) 确认后真正补写
+  curl -X POST https://<host>/backfill \
+       -H 'Content-Type: application/json' -H "X-Backfill-Token: $BACKFILL_TOKEN" \
+       -d '{"dry_run": false, "limit": 200}'
+  ```
+
+  结论「观望」按设计不写状态；正文为空 / 结论解析不出的词列在 `items`（`action=unresolved`），
+  要重跑得先删掉对应的 `ai:v3:` 键。也可直接在 Python 里调
+  `hotwords.backfill_states(kv=..., dry_run=False)`。
 
 ## 7. 安全
 
-1. **`/run` 无鉴权**：正式环境必须放在网关鉴权或内网之后，不要裸奔公网。
+1. **`/run` 与 `/backfill` 无鉴权**：正式环境必须放在网关鉴权或内网之后，不要裸奔公网；
+   `/backfill` 额外支持 `BACKFILL_TOKEN` + `X-Backfill-Token` 校验（默认 `dry_run=true` 只出报告）。
 2. **写工具不可逆**：`git_push` / `publish_devto_article` 只能由请求 `tools` 显式触发，
    调用方自己承担后果；不要把 `tools` 的来源接到不可信输入上。
 3. **凭据最小化**：`GITHUB_TOKEN` 只给内容读写，`CF_API_TOKEN` 只给 D1 / KV 所需权限。

@@ -10,10 +10,16 @@
      有 key 时发送必然 401，会在日志里刷一堆噪音，不如直接当关闭。
   3. 关闭时零开销：`traceable` 原样返回函数，不 import langsmith 运行时。
 
-开启后会自动产生三层 trace：
+开启后会自动产生四层 trace：
   - 图级：LangGraph 每次 `invoke` 一条 run（名字由调用方传 run_name）
   - 节点级：classify_intent / run_processing / validate_result / build_output …
+  - 批次/逐词级：`run_traced`（本文件）给 run_batch 与每个热词各建一条 span
   - LLM 级：`llm/provider.py` 用 `wrap_openai` 包过的客户端，请求体与返回值都在
+
+★为什么要 `run_traced` 的显式 parent：ThreadPoolExecutor 的 worker 线程**不继承
+  主线程的 contextvars**，而 LangSmith 把父 run 存在 contextvar 里。并发逐词分析时
+  wrap_openai 找不到父，20 个 ChatOpenAI 全变成独立根 trace（Traces 页面「连不起来」）。
+  显式把父 run 传进去即可拼成 graph 根 → 批次 → 每词 → LLM 的一棵树。
 """
 
 from __future__ import annotations
@@ -114,6 +120,43 @@ def traceable(name: str) -> Callable:
         return wrapper
 
     return decorator
+
+
+def run_traced(func, *, name: str, inputs: dict | None = None,
+               tags: list[str] | None = None, metadata: dict | None = None,
+               parent=None, outputs=None, error=None,
+               pass_run: bool = False, run_type: str = "chain"):
+    """给任意同步函数套一条 LangSmith span —— 薄包，不改 graph、不改业务返回。
+
+    与 `observability/trace.py` 的 `run_traced(graph, state, config)` 不是一回事：那个
+    抓的是 LangGraph 节点轨迹（返回给 /run 的 `trace` 字段），这个是给普通函数加 span。
+
+    参数：
+      parent: 显式父 run（RunTree / dotted_order 字符串）。**并发场景必须传**——
+              worker 线程没有主线程的 contextvar，不传就会新建一条根 trace。
+              None 时 SDK 自动取当前线程里的 run（主线程用它挂到 LangGraph 节点下）。
+      pass_run: True 时把本次创建的 run 作为唯一位置参数传给 func，批次要拿它当
+              逐词 span 的 parent。关闭追踪时传 None。
+      outputs / error: 可传 dict / str，也可传 `result -> dict / str` 的回调，
+              把结论与业务失败标在 LangSmith 上（error 非空会让该 span 标红）。
+
+    tracing 关闭时零开销：不 import langsmith 运行时，直接返回 func() 的结果。
+    """
+    if not tracing_enabled():
+        return func(None) if pass_run else func()
+
+    from langsmith import trace as ls_trace
+
+    with ls_trace(name, run_type=run_type, inputs=inputs or {},
+                  tags=tags or [], metadata=metadata or {}, parent=parent) as run:
+        result = func(run) if pass_run else func()
+        out = outputs(result) if callable(outputs) else outputs
+        err = error(result) if callable(error) else error
+        if out is not None or err:
+            # SDK 的 __exit__ 只在抛异常时 end；主动 end 才能把 outputs/error 写进
+            # 这条 run（官方 trace 示例同款用法），随后 __exit__ 负责 patch 上报。
+            run.end(outputs=out or {}, error=err)
+        return result
 
 
 # 模块级执行：只要有任何代码 import 到本模块（llm_service / routes / graph 都会），

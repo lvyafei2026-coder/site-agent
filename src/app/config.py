@@ -142,6 +142,9 @@ CF_ACCOUNT_ID = env("CF_ACCOUNT_ID", "")
 KV_NAMESPACE_ID = env("KV_NAMESPACE_ID", "")
 CF_API_TOKEN = env("CF_API_TOKEN", "")
 CONTACT_EMAIL = env("CONTACT_EMAIL", f"hello@{FLEET_DOMAIN}")
+# /backfill 状态回填入口的令牌：配了才校验 X-Backfill-Token；留空与 /run 一样裸奔，
+# 上线前必须填（或用网关鉴权把 /run 与 /backfill 一起挡在后面）。
+BACKFILL_TOKEN = env("BACKFILL_TOKEN", "")
 
 # 建站仓库的本地工作副本（git clone 落盘位置）
 REPO_DIR = Path(env("AGENT_STATE_DIR", str(PROJECT_ROOT / "data"))) / "repos"
@@ -151,3 +154,6 @@ REPO_DIR.mkdir(parents=True, exist_ok=True)
 LLM_API_KEY = env("LLM_API_KEY", "")
 LLM_BASE_URL = env("LLM_BASE_URL", "")
 LLM_MODEL = env("LLM_MODEL", "deepseek-flash")
+# DeepSeek 思考模式默认开启：reasoning_content 会先吃掉 max_tokens，导致正文为空。
+# auto（默认）= 仅当 base_url 指向 DeepSeek 时自动关闭；off = 强制关闭；on = 保留思考。
+LLM_THINKING = env("LLM_THINKING", "auto")

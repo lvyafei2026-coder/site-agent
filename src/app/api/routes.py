@@ -2,22 +2,25 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""HTTP 入站：POST /run 跑完一轮，GET /health 报状态与进程内计数。"""
+"""HTTP 入站：POST /run 跑完一轮，GET /health 报状态与进程内计数，
+POST /backfill 补写「正文已落库、状态表丢了」的热词（运维入口）。"""
 
 from __future__ import annotations
 
 import time
+from typing import Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
-from src.app.config import settings
+from src.app.config import BACKFILL_TOKEN, settings
 from src.app.graph.builder import get_graph
 from src.app.graph.state import initial_state
 from src.app.llm.quota import check_quota
 from src.app.observability.langsmith import public_config as langsmith_config
 from src.app.observability.metrics import metrics
 from src.app.observability.trace import run_traced
+from src.app.tools.adapters.sources.hotwords import backfill_states
 
 
 class WorkflowRequest(BaseModel):
@@ -72,3 +75,25 @@ def health() -> dict:
 def llm_quota() -> dict:
     """LLM 剩余额度（读推理响应头）；页面上手动点击才查，每次消耗 1 次请求额度。"""
     return check_quota()
+
+
+class BackfillRequest(BaseModel):
+    dry_run: bool = True      # 默认只出报告；显式传 false 才真正写 KV
+    limit: int = 200
+
+
+@api.post("/backfill")
+def backfill(req: BackfillRequest,
+             x_backfill_token: Optional[str] = Header(default=None)) -> dict:
+    """状态回填：扫描 ai:v3: 正文，补写丢失的 saved / rejected / aihints。
+
+    典型用法：
+      curl -X POST .../backfill -H 'Content-Type: application/json' -d '{}'
+        → dry run，看哪些词会被补、哪些 unresolved
+      curl -X POST .../backfill -H 'X-Backfill-Token: <token>' \
+           -d '{"dry_run": false, "limit": 200}'
+        → 真正补写。BACKFILL_TOKEN 配了才校验请求头；线上必须配。
+    """
+    if BACKFILL_TOKEN and x_backfill_token != BACKFILL_TOKEN:
+        raise HTTPException(status_code=401, detail="invalid backfill token")
+    return backfill_states(dry_run=req.dry_run, limit=req.limit)

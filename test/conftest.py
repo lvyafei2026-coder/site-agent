@@ -181,11 +181,14 @@ class FakeKV:
 
     支持 get_text/get_json/put_text/put_json/list_keys/configured；TTL 在内存实现里
     被忽略（纯逻辑测试不关心过期）。writes 记录写入次数，便于断言「是否真的回写了 KV」。
+    fail_keys 里的键会模拟 Cloudflare 401/5xx：put_* 返回 False 且不落库，用来验证
+    「写失败 → 该词记 error、不算 analyzed」。
     """
 
     def __init__(self) -> None:
         self.store: dict[str, str] = {}
         self.writes = 0
+        self.fail_keys: set[str] = set()
 
     @property
     def configured(self) -> bool:
@@ -204,11 +207,15 @@ class FakeKV:
             return default
 
     def put_text(self, key: str, text: str, ttl=None) -> bool:
+        if key in self.fail_keys:
+            return False
         self.store[key] = str(text)
         self.writes += 1
         return True
 
     def put_json(self, key: str, obj, ttl=None) -> bool:
+        if key in self.fail_keys:
+            return False
         self.store[key] = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
         self.writes += 1
         return True
