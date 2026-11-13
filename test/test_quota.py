@@ -13,15 +13,17 @@ from src.app.llm import quota
 
 
 def _fake_post(result_json: dict, status: int = 200, headers: dict | None = None):
-    """返回一个替身 httpx.post：捕获请求体、回 200 + 给定 JSON。"""
+    """返回一个替身 httpx.post：捕获请求体、回指 status + 给定 JSON/响应头。"""
     captured: dict = {}
+    response_headers = headers
 
     def _post(url, *, headers=None, json=None, timeout=None):
         captured["url"] = url
         captured["json"] = json
+        # 注意：内层参数名不能与外层 headers（响应头）冲突，否则会被请求头覆盖
         resp = httpx.Response(
             status, json=result_json,
-            headers=headers or {"x-ratelimit-remaining-requests": "149"},
+            headers=response_headers or {"x-ratelimit-remaining-requests": "149"},
         )
         return resp
 
