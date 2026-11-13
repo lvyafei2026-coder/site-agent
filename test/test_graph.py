@@ -26,6 +26,39 @@ def test_one_cycle_runs_to_output(graph, fake):
     assert r.get("error") in (None, "")
 
 
+def test_review_metrics_runs_llm_analysis(graph, fake, monkeypatch):
+    """review_metrics 取数后调用 LLM 分析各站表现，结论并进 output 报告。"""
+    import src.app.services.llm_service as llm_mod
+
+    captured = {}
+    def fake_analyze(system_prompt, data):
+        captured["system"] = system_prompt
+        captured["data"] = data
+        return "## 表现较好的站点\n1. **music.example** — page_view 高且 outbound 占比健康"
+    monkeypatch.setattr(llm_mod.llm_service, "analyze_metrics", fake_analyze)
+
+    r = graph.invoke({"input_text": "哪些站表现好", "intent": "review_metrics",
+                      "retry_count": 0, "messages": [], "tool_results": {}},
+                     config={"configurable": {"thread_id": "t-rm"}})
+    assert captured, "review_metrics 应触发 analyze_metrics"
+    # 提示词来自 prompts/versions/review_metrics/v1.txt，且数据里含各站统计
+    assert "review_metrics" in captured["system"] or "表现较好" in captured["system"]
+    assert "music.example" in captured["data"]
+    assert r["metrics_analysis"]
+    assert "music.example" in r["output"]
+
+
+def test_review_metrics_skips_analysis_without_key(graph, fake, monkeypatch):
+    """无 LLM key 时 analyze_metrics 返回空串，不写 metrics_analysis，但整轮照常成功。"""
+    import src.app.services.llm_service as llm_mod
+    monkeypatch.setattr(llm_mod.llm_service, "analyze_metrics", lambda *a, **k: "")
+    r = graph.invoke({"input_text": "复盘流量", "intent": "review_metrics",
+                      "retry_count": 0, "messages": [], "tool_results": {}},
+                     config={"configurable": {"thread_id": "t-rm-nokey"}})
+    assert "metrics_analysis" not in r
+    assert "status=success" in r["output"]
+
+
 def test_explicit_tools_override_intent(graph, fake):
     r = graph.invoke({"input_text": "hello", "intent": "general",
                       "requested_tools": ["get_latest_plan"],

@@ -56,6 +56,7 @@ class Settings:
                 "intent": "v1", "intent_user": "v1",
                 "extraction": "v1", "extraction_user": "v1",
                 "hotwords": "v1", "hotwords_user": "v1",
+                "review_metrics": "v1",
             }
 
     @property

@@ -29,6 +29,7 @@ PROMPT_TASKS: dict[str, str] = {
     "extraction_user": "字段抽取 human 模板",
     "hotwords": "逐词站点方案 system（8 小节 + 辨形/真人/作品红线，原 radar/src/ai.js 的 AI_SYSTEM）",
     "hotwords_user": "逐词站点方案 human 模板（关键词 / 关联查询 / SERP 标题 / 信号 / 地区 / 热度）",
+    "review_metrics": "review_metrics 意图的站点表现分析 system：把各站埋点/GSC/页面数据交给 LLM 比对，识别表现好的站点（提示词集中此处，禁止在代码里写整段提示词）",
 }
 
 _registry = PromptRegistry()

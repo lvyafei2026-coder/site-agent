@@ -47,6 +47,10 @@ class WorkflowState(TypedDict, total=False):
     """processing 节点产出。LLM 抽取的运营字段（target_site/keywords/pages/notes 等）+ analysis 汇总；
     validation 节点以它做字段覆盖率校验。"""
 
+    metrics_analysis: str
+    """processing 节点产出（review_metrics 专属）。LLM 对各站埋点 / GSC / 页面数据做的自然语言分析，
+    识别「表现好的站点」及理由；无 LLM key 或分析失败时为空串。build_output 把它并入 output 报告。"""
+
     tool_results: dict[str, Any]
     """processing 节点产出。{工具名: ToolOutput dict}，入口初始化为 {}；
     validation 节点据此判断「全部失败不算 is_valid」，WorkflowResult 统计成功/失败数。"""

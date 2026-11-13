@@ -20,14 +20,39 @@ class MeasurementOps:
     """measurement 域的实现：只读 D1 埋点与 GSC。"""
 
     def click_stats(self, days=7):
+        """按站点 × 事件类型（浏览 / 点击 / 外链 / 提交…，event 列全量）统计
+        指定时间窗（默认近 7 天）内的事件数量。
+
+        返回透视后的结构，便于 review_metrics 的 LLM 直接比对各站表现：
+          - range: 查询时间窗（since_ms / until_ms / days）
+          - total_events: 窗口内事件总数
+          - by_site_event: 原始分组行 [{site, event, cnt}, ...]
+          - by_site: {site: {event: count}} 透视表
+        """
         since = int(time.time() * 1000) - days * 86400_000
-        out = {}
-        for key, sql in (("daily", Sql.DAILY_STATS), ("top_pages", Sql.TOP_PAGES)):
-            try:
-                out[key] = database.query(sql, [since])
-            except Exception:  # noqa: BLE001 - 采集失败不阻塞决策
-                out[key] = []
-        return out
+        rows = []
+        try:
+            rows = database.query(Sql.SITE_EVENT_COUNTS, [since])
+        except Exception:  # noqa: BLE001 - 采集失败不阻塞决策
+            rows = []
+        by_site: dict[str, dict[str, int]] = {}
+        total = 0
+        for r in rows:
+            site = r.get("site") or "(unknown)"
+            event = r.get("event") or "(unknown)"
+            cnt = int(r.get("cnt") or 0)
+            by_site.setdefault(site, {})[event] = cnt
+            total += cnt
+        return {
+            "range": {
+                "since_ms": since,
+                "until_ms": int(time.time() * 1000),
+                "days": days,
+            },
+            "total_events": total,
+            "by_site_event": rows,
+            "by_site": by_site,
+        }
 
     def search_analytics(self, days=7, dimensions=("page",)):
         return gsc.search_analytics(days=days, dimensions=tuple(dimensions))

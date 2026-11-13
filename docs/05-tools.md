@@ -19,7 +19,7 @@
 
 | name | kind | method | 参数 | 用途 |
 |---|---|---|---|---|
-| `get_click_stats` | read | `click_stats` | `days=7` | 按站点/天聚合埋点：`daily`（PV、UV）+ `top_pages`（UV 用 `COUNT(DISTINCT sid)`） |
+| `get_click_stats` | read | `click_stats` | `days=7` | 按**站点 × 事件类型**（浏览 `page_view` / 点击 `click` / 外链 `outbound` / 提交 `submit`…）聚合指定时间窗内的事件数量：`range`（窗口起止/天数）+ `total_events` + `by_site_event`（原始分组行）+ `by_site`（`{站点:{事件:次数}}` 透视表）。`review_metrics` 意图会用它喂给 LLM 比对各站表现 |
 | `get_search_analytics` | read | `search_analytics` | `days=7` | GSC 点击 / 展示 / 排名，固定 `dimensions=("page",)`；无凭据返回 `[]` |
 
 ### 1.3 distribution（4）
@@ -71,7 +71,7 @@
 | `select_pages` | `get_hotwords` + `get_page_inventory` + `get_reflections` |
 | `plan_promo` | `get_latest_plan` + `get_page_inventory` + `get_pending_events` |
 | `find_backlinks` | `get_backlink_ledger` + `search_reddit` + `list_devto_articles` |
-| `review_metrics` | `get_click_stats` + `get_search_analytics` + `get_page_inventory` |
+| `review_metrics` | `get_click_stats` + `get_search_analytics` + `get_page_inventory` | `get_click_stats` 现按站点×事件类型聚合；取数后 `run_processing` 再调 LLM `analyze_metrics`（提示词 `prompts/versions/review_metrics/v1.txt`）比对各站 PV/UV/点击/搜索，输出「表现好的站点」排名与理由，并入 `output` 报告 |
 | **`analyze_hotwords`** | **`analyze_hotwords`**（★唯一的默认集里带 write 工具的意图：这个意图的业务本身就是「分析并改状态」，LLM 分类到它即会执行，无需显式传 `tools`） |
 | `general` | `get_pending_events` + `get_reflections` |
 

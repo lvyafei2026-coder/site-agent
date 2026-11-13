@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import json
+
 from langchain_core.prompts import ChatPromptTemplate
 
 from src.app.graph.state import WorkflowState
@@ -73,10 +75,46 @@ def processing_node(state: WorkflowState) -> WorkflowState:
                 break
 
     logger.info("processing_node", extra={"intent": intent, "tool_count": len(results), "fatal": fatal})
+
+    # review_metrics 专属：取数后让 LLM 比对各站表现，识别「表现好的站点」。
+    # 无 LLM key 时 analyze_metrics 返回空串，本段整体跳过，不阻塞整轮。
+    metrics_analysis = ""
+    if intent == "review_metrics" and results and not fatal:
+        try:
+            versions = state.get("prompt_versions", {}) or {}
+            system = prompt_service.load_prompt(
+                "review_metrics", version=versions.get("review_metrics"))
+            metrics_analysis = llm_service.analyze_metrics(
+                system, _compact_metrics_payload(results))
+        except Exception:  # noqa: BLE001 - 分析失败不影响取数与出报告
+            metrics_analysis = ""
+
     out: WorkflowState = {"extracted_data": extracted, "tool_results": results,
                           "retry_count": state.get("retry_count", 0) + 1,
                           "messages": state.get("messages", []) + ["processed"]}
+    if metrics_analysis:
+        out["metrics_analysis"] = metrics_analysis
     if fatal:
         out["processing_fatal"] = True
         out["error"] = error
     return out
+
+
+def _compact_metrics_payload(results: dict, max_chars: int = 6000) -> str:
+    """把工具结果压成 LLM 易读的精简 JSON：只取 ok 工具的 result 部分，过长截断。
+
+    review_metrics 的数据可能很大（整张候选表 / 全站埋点），这里只保留
+    get_click_stats（by_site 透视表）/ get_search_analytics / get_page_inventory
+    的核心字段，避免把上报撑爆。
+    """
+    slim: dict = {}
+    for name, out in (results or {}).items():
+        if isinstance(out, dict) and out.get("ok"):
+            slim[name] = out.get("result")
+    try:
+        text = json.dumps(slim, ensure_ascii=False, default=str)
+    except TypeError:
+        text = str(slim)
+    if len(text) > max_chars:
+        text = text[:max_chars] + f"...<truncated {len(text) - max_chars} chars>"
+    return text

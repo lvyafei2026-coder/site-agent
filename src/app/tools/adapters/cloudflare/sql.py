@@ -42,6 +42,18 @@ ORDER BY pv DESC
 LIMIT 50
 """
 
+    # 按「站点 × 事件类型」统计指定时间窗内的事件数量：浏览 / 点击 / 外链 / 提交等全事件。
+    # 透视成 by_site: {site: {event: count}}，供 review_metrics 的 LLM 比对各站表现。
+    # idx_events_site_ev(site, event, ts) 可加速 WHERE ts >= ? GROUP BY site, event。
+    SITE_EVENT_COUNTS = """
+SELECT site, event, COUNT(*) AS cnt
+FROM events
+WHERE ts >= ?
+GROUP BY site, event
+ORDER BY site ASC, cnt DESC
+LIMIT 1000
+"""
+
     LATEST_PLAN = (
         "SELECT actions FROM agent_reports WHERE kind = 'plan' "
         "ORDER BY id DESC LIMIT 1"

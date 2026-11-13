@@ -14,7 +14,7 @@ import re
 
 from langchain_core.prompts import ChatPromptTemplate
 
-from src.app.config import INTENTS, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+from src.app.config import INTENTS, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, LLM_THINKING
 from src.app.llm.provider import content_from_response, get_llm
 from src.app.observability.langsmith import traceable, tracing_enabled
 from src.app.observability.metrics import metrics
@@ -24,6 +24,21 @@ from src.app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 DEFAULT_CONFIDENCE = 0.55
+
+
+def _thinking_kwargs() -> dict:
+    """DeepSeek 思考模式默认开启，分析类文案任务需要关掉（与 hotwords.py 的 _thinking_kwargs 一致）。
+
+    auto（默认）：仅当 LLM_BASE_URL 指向 DeepSeek 时注入 extra_body；换用别的
+      OpenAI 兼容服务不会误传这个 DeepSeek 专属参数；
+    off：强制注入；on：保留思考（此时要自行调大 max_tokens）。
+    """
+    mode = (LLM_THINKING or "auto").strip().lower()
+    if mode == "on":
+        return {}
+    if mode == "off" or (mode == "auto" and "deepseek" in (LLM_BASE_URL or "").lower()):
+        return {"extra_body": {"thinking": {"type": "disabled"}}}
+    return {}
 
 
 class LLMService:
@@ -70,6 +85,32 @@ class LLMService:
             "notes": str(data.get("notes") or text[:200]),
             "requires_tool": bool(data.get("requires_tool", True)),
         }
+
+    @traceable(name="analyze_metrics")
+    def analyze_metrics(self, system_prompt: str, data: str) -> str:
+        """对采集到的站点埋点 / GSC / 页面数据做自然语言分析，识别表现好的站点。
+
+        返回 markdown 文本（结论 + 表现好的站点排名 + 理由）；无 key 或调用失败返回
+        空串（上层走确定性回退，不阻塞整轮）。提示词来自 prompts/versions/review_metrics，
+        不在代码里硬编码（test/test_prompts.py 守着）。
+        """
+        if not LLM_API_KEY:
+            return ""
+        kwargs: dict = {
+            "model": LLM_MODEL,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": data},
+            ],
+            "temperature": 0.2,
+        }
+        kwargs.update(_thinking_kwargs())
+        try:
+            resp = get_llm().chat.completions.create(**kwargs)
+            return content_from_response(resp) or ""
+        except Exception as exc:  # noqa: BLE001 - 分析失败不影响整轮
+            logger.warning("analyze_metrics_failed", extra={"error": str(exc)[:200]})
+            return ""
 
     @staticmethod
     def _strip_fences(text: str) -> str:

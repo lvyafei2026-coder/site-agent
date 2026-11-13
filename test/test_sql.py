@@ -155,11 +155,42 @@ def test_unknown_page_mode_falls_back_to_all(db):
 
 
 def test_fixed_statements_have_no_unformatted_placeholders():
-    for name in ("DAILY_STATS", "TOP_PAGES", "LATEST_PLAN", "BACKLINK_LEDGER",
-                 "REFLECTIONS", "PENDING_EVENTS", "CONSUME_EVENT"):
+    for name in ("DAILY_STATS", "TOP_PAGES", "SITE_EVENT_COUNTS", "LATEST_PLAN",
+                 "BACKLINK_LEDGER", "REFLECTIONS", "PENDING_EVENTS", "CONSUME_EVENT"):
         sql = getattr(Sql, name)
         assert sql.strip(), name
         assert "{" not in sql, name
+
+
+def test_click_stats_groups_by_site_and_event(db):
+    """click_stats 按站点 × 事件类型统计时间窗内数量，并透视成 by_site 字典。"""
+    db.query_result = [
+        {"site": "a.example", "event": "page_view", "cnt": 30},
+        {"site": "a.example", "event": "click", "cnt": 12},
+        {"site": "b.example", "event": "page_view", "cnt": 5},
+    ]
+    out = measurement_tools.MeasurementOps().click_stats(days=7)
+    assert out["total_events"] == 47
+    assert out["range"]["days"] == 7
+    assert out["by_site"] == {
+        "a.example": {"page_view": 30, "click": 12},
+        "b.example": {"page_view": 5},
+    }
+    # 原始分组行也要原样保留，供 LLM 直接使用
+    assert len(out["by_site_event"]) == 3
+
+
+def test_click_stats_handles_query_failure(db, monkeypatch):
+    """D1 查询异常时降级为空统计，不抛出。"""
+    class BoomDb:
+        def query(self, *a, **k):
+            raise RuntimeError("D1 挂了")
+        def execute(self, *a, **k):
+            pass
+    monkeypatch.setattr(measurement_tools, "database", BoomDb())
+    out = measurement_tools.MeasurementOps().click_stats(days=3)
+    assert out["total_events"] == 0
+    assert out["by_site"] == {}
 
 
 def test_migration_matches_ledger_contract(tmp_path):

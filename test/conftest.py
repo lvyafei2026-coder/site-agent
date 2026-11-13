@@ -42,8 +42,15 @@ class FakeRuntime:
                 "meta": self.hotwords_meta, "interests": {}}
 
     def click_stats(self, days=7):
-        return {"daily": [{"site": "music.example", "day": 1, "pv": 20, "uv": 8}],
-                "top_pages": [{"site": "music.example", "path": "/", "pv": 20, "uv": 8}]}
+        return {
+            "range": {"since_ms": 0, "until_ms": 0, "days": days},
+            "total_events": 28,
+            "by_site_event": [
+                {"site": "music.example", "event": "page_view", "cnt": 20},
+                {"site": "music.example", "event": "click", "cnt": 8},
+            ],
+            "by_site": {"music.example": {"page_view": 20, "click": 8}},
+        }
 
     def page_inventory(self, mode="all", limit=200):
         rows = list(self.tables["agent_pages"])

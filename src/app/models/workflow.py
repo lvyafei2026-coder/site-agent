@@ -16,6 +16,7 @@ class WorkflowResult(BaseModel):
     validation_reason: str
     tool_results: dict = Field(default_factory=dict)
     tool_errors: list[str] = Field(default_factory=list)
+    metrics_analysis: str = Field(default="")
 
     @classmethod
     def from_state(cls, state: dict) -> "WorkflowResult":
@@ -30,9 +31,13 @@ class WorkflowResult(BaseModel):
             validation_reason=validation.get("reason", "No validation result."),
             tool_results=results,
             tool_errors=errors,
+            metrics_analysis=state.get("metrics_analysis", "") or "",
         )
 
     def render(self) -> str:
-        return (f"intent={self.intent}; confidence={self.confidence:.2f}; "
+        base = (f"intent={self.intent}; confidence={self.confidence:.2f}; "
                 f"status={self.status}; validation={self.validation_reason}; "
                 f"tools={len(self.tool_results)}; errors={len(self.tool_errors)}")
+        if self.metrics_analysis:
+            base += "\n\n" + self.metrics_analysis
+        return base
