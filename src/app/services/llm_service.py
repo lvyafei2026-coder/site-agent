@@ -72,6 +72,54 @@ class LLMService:
         }
 
     @staticmethod
+    def _content_from_response(resp) -> str | None:
+        """把 OpenAI 兼容返回归一为文本 content。
+
+        线上 LLM_BASE_URL 指向的服务形态不一：有的返回标准 ChatCompletion 对象
+        （resp.choices[0].message.content），有的直接返回裸字符串，有的返回 dict。
+        此前写死 `resp.choices[0].message.content`，遇到裸字符串就抛
+        `'str' object has no attribute 'choices'`，整轮 LLM 抽取被降级成正则兜底。
+        这里统一兼容四种形态，避免把「返回形态不同」误判成故障。
+        """
+        if resp is None:
+            return None
+        if isinstance(resp, str):
+            return resp
+        if isinstance(resp, dict):
+            choices = resp.get("choices")
+        else:
+            choices = getattr(resp, "choices", None)
+        if choices:
+            first = choices[0]
+            if isinstance(first, str):
+                return first
+            msg = first.get("message") if isinstance(first, dict) else getattr(first, "message", None)
+            if msg is not None:
+                if isinstance(msg, dict):
+                    content = msg.get("content")
+                else:
+                    content = getattr(msg, "content", None)
+                if isinstance(content, str):
+                    return content
+        # 部分服务把 content 直接放顶层
+        if isinstance(resp, dict):
+            top = resp.get("content")
+            if isinstance(top, str):
+                return top
+        return None
+
+    @staticmethod
+    def _strip_fences(text: str) -> str:
+        """剥掉模型偶尔包在 JSON 外的 ```json ... ``` 围栏。"""
+        s = text.strip()
+        if s.startswith("```"):
+            s = s.split("```", 2)[1]
+            if s.lstrip().startswith("json"):
+                s = s.lstrip()[4:]
+            s = s.strip()
+        return s
+
+    @staticmethod
     def _complete(prompt: str, text: str, warn_event: str) -> tuple[dict | None, bool, bool]:
         """调 OpenAI 兼容接口并解析 JSON；任何异常都降级，不阻塞整轮。
 
@@ -80,6 +128,10 @@ class LLMService:
         - 成功            → (data, False, False)；
         - 异常且为网络层  → (None, True,  True )：连接/超时类，应走重试；
         - 异常且明确失败  → (None, True,  False)：鉴权/配额/参数，短路到 ERROR 等下次请求。
+
+        注意：兼容服务返回裸字符串/非标准形态时，_content_from_response 已归一；
+        JSON 解析失败（含被围栏包裹）走 _strip_fences 后重试，再失败则按「未解析到
+        结构化数据」降级回退（failed=False），不触发短路。
         """
         if not LLM_API_KEY:
             return None, False, False
@@ -91,7 +143,11 @@ class LLMService:
                 response_format={"type": "json_object"},
                 temperature=0,
             )
-            data = json.loads(resp.choices[0].message.content or "{}")
+            content = LLMService._content_from_response(resp)
+            if content is None:
+                logger.debug("llm_empty_content", extra={"warn_event": warn_event})
+                return None, False, False
+            data = json.loads(LLMService._strip_fences(content) or "{}")
             return (data if isinstance(data, dict) else None), False, False
         except Exception as exc:  # noqa: BLE001 - LLM 不可用不影响整轮
             logger.warning(warn_event, extra={"error": str(exc)[:200]})
