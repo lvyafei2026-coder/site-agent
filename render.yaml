@@ -63,3 +63,10 @@ services:
         sync: false
       - key: MEMORY_BACKEND
         value: memory
+      # 可选：Render 出口连不上 DuckDuckGo 时，单独给 SERP 抓取换 HTTP 出口。
+      # 留空走直连；不影响 KV REST / LLM / GitHub 等其它出站调用。
+      - key: SERP_HTTPS_PROXY
+        sync: false
+      # 直连 DDG 全挂时经公共 Reader 中转换出口（默认开）；设 0 回到纯直连。
+      - key: SERP_FALLBACK_READER
+        value: "1"

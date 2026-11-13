@@ -17,3 +17,4 @@ class Tags:
     RETRY = "retry"
     COMPLETE = "complete"
     ERROR = "error"
+    VALIDATE = "validate"

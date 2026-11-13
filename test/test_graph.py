@@ -42,6 +42,110 @@ def test_route_branches():
     assert EDGE_MAP[Tags.RETRY] == Names.PROCESSING
 
 
+def test_route_after_processing_short_circuits_on_fatal():
+    from src.app.graph.edges import route_after_processing
+
+    # 硬失败 → 直接 error，跳过校验
+    assert route_after_processing({"processing_fatal": True}) == Tags.ERROR
+    # 软失败（无该字段）/ 正常 → 进入校验
+    assert route_after_processing({}) == Tags.VALIDATE
+    assert route_after_processing({"processing_fatal": False}) == Tags.VALIDATE
+
+
+def test_processing_llm_down_terminates_without_validate(graph, fake, monkeypatch):
+    """LLM 已配置但调用挂了（明确非网络失败） → processing 置 fatal → 直接 handle_error，
+    不进 validate、不重试。"""
+    import src.app.services.llm_service as llm_mod
+
+    monkeypatch.setattr(llm_mod.llm_service, "extract_failed", True)
+    monkeypatch.setattr(llm_mod.llm_service, "extract_fields", lambda **k: {})
+
+    r = graph.invoke(
+        {"input_text": "看看新热词", "intent": "select_pages",
+         "retry_count": 0, "messages": [], "tool_results": {}},
+        config={"configurable": {"thread_id": "t-fatal-llm"}},
+    )
+    assert r.get("error"), "应短路到 handle_error 并带 error"
+    assert r["output"].startswith("ERROR:")
+    assert "validation" not in r, "硬失败不应再进 validate_result"
+    assert r["retry_count"] == 1, "硬失败不重试，processing 只跑一次"
+
+
+def test_processing_llm_network_timeout_goes_to_validate(graph, fake, monkeypatch):
+    """LLM 是网络超时（retryable）→ 不短路，交 validate 走重试逻辑，不进 ERROR。"""
+    import src.app.services.llm_service as llm_mod
+
+    monkeypatch.setattr(llm_mod.llm_service, "extract_failed", True)
+    monkeypatch.setattr(llm_mod.llm_service, "extract_retryable", True)
+    monkeypatch.setattr(llm_mod.llm_service, "extract_fields", lambda **k: {})
+
+    r = graph.invoke(
+        {"input_text": "看看新热词", "intent": "select_pages",
+         "retry_count": 0, "messages": [], "tool_results": {}},
+        config={"configurable": {"thread_id": "t-llm-timeout"}},
+    )
+    assert "validation" in r, "网络超时不应短路，应进 validate"
+    assert not r.get("processing_fatal"), "网络超时不置 fatal"
+
+
+def test_processing_tool_exception_terminates(graph, fake, monkeypatch):
+    """工具执行抛未捕获异常（明确非网络）→ processing 置 fatal → 直接 handle_error。"""
+    import src.app.services.tool_service as ts_mod
+
+    def boom(*_a, **_k):
+        raise RuntimeError("radar 客户端炸了")
+
+    monkeypatch.setattr(ts_mod.tool_service, "execute_for_intent", boom)
+
+    r = graph.invoke(
+        {"input_text": "复盘流量", "intent": "review_metrics",
+         "retry_count": 0, "messages": [], "tool_results": {}},
+        config={"configurable": {"thread_id": "t-fatal-tool"}},
+    )
+    assert r.get("error")
+    assert "validation" not in r
+    assert r["retry_count"] == 1
+
+
+def test_processing_clear_tool_failure_short_circuits(graph, fake, monkeypatch):
+    """工具返回明确非网络失败（retryable=False）→ processing 短路到 ERROR，不进 validate。"""
+    from src.app.services.tool_service import tool_service
+
+    def fake_exec(*_a, **_k):
+        return {"get_click_stats": {"tool": "get_click_stats", "ok": False,
+                                   "error": "auth 401", "retryable": False}}
+
+    monkeypatch.setattr(tool_service, "execute_for_intent", fake_exec)
+
+    r = graph.invoke(
+        {"input_text": "复盘流量", "intent": "review_metrics",
+         "retry_count": 0, "messages": [], "tool_results": {}},
+        config={"configurable": {"thread_id": "t-clear-tool"}},
+    )
+    assert "validation" not in r, "明确非网络失败不应进 validate"
+    assert r.get("error")
+    assert r["retry_count"] == 1
+
+
+def test_processing_network_tool_timeout_retries(graph, fake, monkeypatch):
+    """工具返回网络超时（retryable=True）→ 不短路，交 validate 走重试逻辑。"""
+    from src.app.services.tool_service import tool_service
+
+    def fake_exec(*_a, **_k):
+        return {"get_click_stats": {"tool": "get_click_stats", "ok": False,
+                                   "error": "connect timeout", "retryable": True}}
+
+    monkeypatch.setattr(tool_service, "execute_for_intent", fake_exec)
+
+    r = graph.invoke(
+        {"input_text": "复盘流量", "intent": "review_metrics",
+         "retry_count": 0, "messages": [], "tool_results": {}},
+        config={"configurable": {"thread_id": "t-net-tool"}},
+    )
+    assert "validation" in r, "网络超时不应短路，应进 validate"
+    assert not r.get("processing_fatal")
+
+
 def test_prompt_version_fallback_and_explicit():
     reg = PromptRegistry()
     assert reg.resolve_version("intent") == "v1"

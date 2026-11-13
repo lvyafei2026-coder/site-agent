@@ -17,3 +17,25 @@ EDGE_MAP = {
     Tags.RETRY: Names.PROCESSING,
     Tags.ERROR: Names.ERROR,
 }
+
+
+def route_after_processing(state: WorkflowState) -> str:
+    """processing 置 processing_fatal（明确的非网络失败）→ 直接 error，跳过校验与重试；
+    否则（含网络/连接层瞬态故障）→ 进 validate，由 validation 走重试逻辑。
+
+    与 route_after_validation 的分工：
+    - 这里判的是「**节点级硬失败**」：LLM 鉴权/配额/参数错、工具返回明确非网络失败、
+      工具抛未捕获业务异常。这些重试没用，直接结束等下次请求重试；
+    - 网络超时（LLM 连接超时、工具 ConnectTimeout/SourceUnavailable）不置 fatal，
+      走 validate → 重试，连重试多轮仍失败才由 validation 落 ERROR；
+    - 软失败（字段偏少、部分工具 ok:False 但网络类）同样交给 validation 决定。
+    """
+    if state.get("processing_fatal"):
+        return Tags.ERROR
+    return Tags.VALIDATE
+
+
+PROCESSING_EDGE_MAP = {
+    Tags.VALIDATE: Names.VALIDATION,
+    Tags.ERROR: Names.ERROR,
+}

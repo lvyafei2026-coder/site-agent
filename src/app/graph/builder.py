@@ -5,7 +5,12 @@ from functools import lru_cache
 from langgraph.graph import END, START, StateGraph
 
 from src.app.graph.constants import Names
-from src.app.graph.edges import EDGE_MAP, route_after_validation
+from src.app.graph.edges import (
+    EDGE_MAP,
+    PROCESSING_EDGE_MAP,
+    route_after_processing,
+    route_after_validation,
+)
 from src.app.graph.state import WorkflowState
 from src.app.memory.checkpointer import get_checkpointer
 from src.app.nodes.error import error_node
@@ -27,7 +32,9 @@ def build_graph():
 
     graph.add_edge(START, Names.INTENT)
     graph.add_edge(Names.INTENT, Names.PROCESSING)
-    graph.add_edge(Names.PROCESSING, Names.VALIDATION)
+    # PROCESSING → VALIDATION 不是无条件边：processing 硬失败（LLM 不可用 / 工具抛异常）
+    # 直接短路到 ERROR，不再空转重试。软失败仍交给 validation 决定重试。
+    graph.add_conditional_edges(Names.PROCESSING, route_after_processing, PROCESSING_EDGE_MAP)
     graph.add_conditional_edges(Names.VALIDATION, route_after_validation, EDGE_MAP)
     graph.add_edge(Names.OUTPUT, END)
     graph.add_edge(Names.ERROR, END)

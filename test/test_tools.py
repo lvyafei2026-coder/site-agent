@@ -6,7 +6,7 @@
 
 from pydantic import BaseModel
 
-from src.app.tools.base import BaseTool, ToolOutput
+from src.app.tools.base import BaseTool, RuntimeTool, ToolOutput, is_retryable_error
 from src.app.tools.registry import tool_registry
 
 
@@ -69,3 +69,62 @@ def test_write_promo_slot_dedup(fake):
     second = tool_registry.run("write_promo_slot", item=item)
     assert first["result"]["status"] == "scheduled"
     assert second["result"]["status"] == "skipped"
+
+
+def test_is_retryable_error_classifies():
+    import requests
+
+    # 网络 / 连接层瞬态故障 → 重试
+    assert is_retryable_error(requests.exceptions.ConnectTimeout("x")) is True
+    assert is_retryable_error(requests.exceptions.ReadTimeout("x")) is True
+    assert is_retryable_error(requests.exceptions.ConnectionError("x")) is True
+    assert is_retryable_error(TimeoutError("x")) is True
+    assert is_retryable_error(ConnectionError("x")) is True
+
+    # 明确的非网络失败 → 不重试
+    assert is_retryable_error(ValueError("bad arg")) is False
+    assert is_retryable_error(KeyError("k")) is False
+    assert is_retryable_error(RuntimeError("boom")) is False
+
+
+def test_runtime_tool_run_marks_retryable_on_network_failure():
+    import requests
+
+    class _Empty(BaseModel):
+        pass
+
+    class _NetOps:
+        def boom(self):
+            raise requests.exceptions.ConnectTimeout("timed out")
+
+    class _NetTool(RuntimeTool):
+        tool_name = "net_boom"
+        method = "boom"
+        Input = _Empty
+
+    out = _NetTool(_NetOps()).run()
+    assert out["ok"] is False
+    assert out["retryable"] is True
+
+
+def test_runtime_tool_run_marks_non_retryable_on_clear_failure():
+    class _Empty(BaseModel):
+        pass
+
+    class _ClearOps:
+        def boom(self):
+            raise ValueError("bad config")
+
+    class _ClearTool(RuntimeTool):
+        tool_name = "clear_boom"
+        method = "boom"
+        Input = _Empty
+
+    out = _ClearTool(_ClearOps()).run()
+    assert out["ok"] is False
+    assert out["retryable"] is False
+
+
+def test_retryable_field_defaults_false_on_success(fake):
+    out = tool_registry.run("get_hotwords", limit=5)
+    assert out["retryable"] is False

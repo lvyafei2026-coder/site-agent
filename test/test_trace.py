@@ -24,13 +24,38 @@ def test_trace_success_path(fake):
     assert all(n["node"] in NODES for n in trace["nodes"])
 
 
-def test_trace_error_path_with_retry(fake, monkeypatch):
+def test_trace_clear_failure_short_circuits_without_retry(fake, monkeypatch):
+    """工具明确的非网络失败（RuntimeError）→ processing 短路到 ERROR，不进 validate、不重试。
+
+    与用户规则一致：明确的非网络失败直接结束，等下次请求重试；不空转重试。
+    """
     def boom(*_a, **_k):
         raise RuntimeError("radar 挂了")
 
-    # select_pages 挂三个只读工具，全部打挂才能逼出 handle_error
+    # select_pages 挂三个只读工具，全部打挂
     for name in ("hotwords", "page_inventory", "reflections"):
         monkeypatch.setattr(fake, name, boom)
+    r = invoke_workflow({"input_text": "看看新热词", "intent": "select_pages"})
+    trace = r["trace"]
+
+    assert trace["route"] == "error"
+    assert trace["retried"] is False                  # 明确失败不重试
+    nodes = [n["node"] for n in trace["nodes"]]
+    assert nodes[-1] == "handle_error"
+    assert nodes.count("run_processing") == 1          # 只跑一次，直接短路
+    assert "validate_result" not in nodes
+    assert r["error"]
+
+
+def test_trace_network_timeout_retries_then_errors(fake, monkeypatch):
+    """工具网络超时（ConnectTimeout）→ 不短路，交 validate 走重试，重试多轮后仍失败落 ERROR。"""
+    import requests
+
+    def net(*_a, **_k):
+        raise requests.exceptions.ConnectTimeout("timed out")
+
+    for name in ("hotwords", "page_inventory", "reflections"):
+        monkeypatch.setattr(fake, name, net)
     r = invoke_workflow({"input_text": "看看新热词", "intent": "select_pages"})
     trace = r["trace"]
 
@@ -39,7 +64,7 @@ def test_trace_error_path_with_retry(fake, monkeypatch):
     nodes = [n["node"] for n in trace["nodes"]]
     assert nodes[-1] == "handle_error"
     assert nodes.count("run_processing") == 2          # 首次 + 一次重试
-    assert r["error"]
+    assert "validate_result" in nodes
 
 
 def test_trace_changed_fields_are_small(fake):

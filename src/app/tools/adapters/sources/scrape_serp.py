@@ -7,11 +7,16 @@
 为什么用 DuckDuckGo HTML 版：免 key、免登录、返回真实前 10 名；Google 前端结果在
 服务端拿不到（JS 渲染 + 反爬），Bing 结构随地区漂移。
 
-★2026-11-13 实测定位「202 挑战页」根因：不是无 JS / 反爬升级，而是**我们自己多带的头**。
-  只发 User-Agent 时 html / lite 两个端点稳定返回 200 + 10 条真实结果；只要显式带上
-  Accept / Accept-Language / Referer 任意一个就是 202 anomaly 页。requests 自己补的默认头
-  （Accept: */*、Accept-Encoding、Connection）是安全的，别手动覆盖。
-  4 发退避 + 端点交替保留，用来兜住偶发的连接超时（本机实测约 1/7）。
+★2026-11-13 两轮实测，两个不同层次的故障别混为一谈：
+  ① HTTP 层「202 挑战页」：根因不是无 JS / 反爬升级，而是**我们自己多带的头**。
+     只发 User-Agent 时各端点稳定返回 200 + 10 条真实结果；显式带上 Accept /
+     Accept-Language / Referer 任意一个就是 202 anomaly 页。requests 自己补的默认头
+     （Accept: */*、Accept-Encoding、Connection）是安全的，别手动覆盖。
+  ② 网络层「连接超时」：与请求头无关，是**运行环境的出口 IP 到 DDG 不通**。本机直连 /
+     走代理、以及另一个云端出口都实测拿到真结果；Render singapore 出口则 4 发全部
+     ConnectTimeout。为此 PLAN 覆盖 4 个不同域名（DNS 各给一组不同 IP），并加两层换出口：
+     SERP_HTTPS_PROXY（部署侧自备代理，只作用于 SERP），以及直连全挂时自动走公共
+     Reader 中转（SERP_FALLBACK_READER=0 可关）。两者都不影响 KV REST / LLM / GitHub。
 
 纯函数（parse_ddg / domain_of / decode_uddg / score_competition / serp_verdict）不碰网络，
 单测直接喂 HTML 即可。fetch_serp 是网络层，session 可注入，便于离线测试。
@@ -19,6 +24,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import time
 from typing import Any, Optional
@@ -34,22 +40,65 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 #  别为了「更像浏览器」把头加回来——那正是挑战页的触发条件。
 BASE_HEADERS = {"User-Agent": UA}
 
+# 可选：只给 SERP 换出口（Render 等云端出口连不上 DDG 时在部署侧填）。
+# 不用 HTTPS_PROXY 是为了不影响同一进程里的 KV REST / LLM / GitHub 等出站调用。
+# 留空时 requests 仍按默认行为读进程环境，行为与改动前一致。
+SERP_HTTPS_PROXY = os.environ.get("SERP_HTTPS_PROXY", "").strip()
+
 
 def _ep_html(q: str) -> str:
     return "https://html.duckduckgo.com/html/?q=" + q + "&kl=us-en"
+
+
+def _ep_main(q: str) -> str:
+    return "https://duckduckgo.com/html/?q=" + q + "&kl=us-en"
 
 
 def _ep_lite(q: str) -> str:
     return "https://lite.duckduckgo.com/lite/?q=" + q + "&kl=us-en"
 
 
-# DDG 连查惩罚是 202 挑战页，排 4 发、两个端点交替、间隔递增（毫秒）
+def _ep_www(q: str) -> str:
+    return "https://www.duckduckgo.com/html/?q=" + q + "&kl=us-en"
+
+
+# ★4 发打 4 个不同 host（DNS 轮询各给一组不同 IP）：某个子域被污染 / 某段出口 IP 被拦时，
+#  其余路径仍有机会。2026-11-13 本机实测四条路径都返回结构一致、parse_ddg 可直接消费的
+#  10 条真结果。engine 只保留两种旧值，写进 KV 的 serp:v1: 口径不变。
+#  host 字段只用于失败诊断（到底哪些域名连不上），不参与抓取。
 PLAN = [
-    {"engine": "duckduckgo", "ep": _ep_html, "wait": 0},
-    {"engine": "duckduckgo-lite", "ep": _ep_lite, "wait": 1200},
-    {"engine": "duckduckgo", "ep": _ep_html, "wait": 2500},
-    {"engine": "duckduckgo-lite", "ep": _ep_lite, "wait": 4000},
+    {"engine": "duckduckgo",      "host": "html.duckduckgo.com", "ep": _ep_html, "wait": 0},
+    {"engine": "duckduckgo",      "host": "duckduckgo.com",      "ep": _ep_main, "wait": 1200},
+    {"engine": "duckduckgo-lite", "host": "lite.duckduckgo.com", "ep": _ep_lite, "wait": 2500},
+    {"engine": "duckduckgo",      "host": "www.duckduckgo.com",  "ep": _ep_www,  "wait": 4000},
 ]
+
+# 直连 4 发全没拿到真结果时的「换出口」兜底：公共 Reader 云端中转，取回的是**原始
+# DDG HTML**，serp_verdict / parse_ddg / score_competition 全部复用，口径与直连一致。
+# 2026-11-13 实测：x-respond-with: html 返回含 10 个 result__a 的原页，3 个词连测
+# 全部 200、0.8~1.4s。它是通用网页阅读服务、不是 SERP 转卖商；默认开启，
+# 设 SERP_FALLBACK_READER=0 可完全关掉（回到纯直连）。
+READER_BASE = "https://r.jina.ai/"
+READER_HEADERS = {"User-Agent": UA, "x-respond-with": "html"}
+SERP_FALLBACK_READER = os.environ.get("SERP_FALLBACK_READER", "1").strip().lower() not in (
+    "0", "false", "no", "")
+
+
+def _fetch_via_reader(q: str, limit: int, sess: Any, proxy: Optional[str]) -> dict:
+    """经 Reader 取原始 DDG HTML；session 可注入，离线测试完全可控。"""
+    kwargs: dict[str, Any] = {"headers": READER_HEADERS, "timeout": (6, 20)}
+    if proxy:
+        kwargs["proxies"] = {"http": proxy, "https": proxy}
+    resp = sess.get(READER_BASE + _ep_html(q), **kwargs)
+    return serp_verdict(resp.status_code, resp.text, limit)
+
+
+# ★直连被判定不通后，短时间内不再每个词都撞 4 次 6 秒 connect 超时。
+#   Render 出口全挂时每词要白等约 32 秒，20 词 ≈ 10 分钟，免费实例会被拖到请求超时。
+#   记住状态后同一批后续词直接走兜底出口；DIRECT_RETRY_SEC 到期会再探一次直连。
+#   进程内状态，重启即清零；只是性能优化，不影响结果口径与中止语义。
+DIRECT_RETRY_SEC = 300
+_STATE = {"direct_down_until": 0.0}
 
 RE_BLOCK = re.compile(r"anomaly|unusual traffic|are you a robot|captcha", re.I)
 RE_NO_RESULT = re.compile(r"no-results|No results found|没有找到", re.I)
@@ -273,47 +322,85 @@ def score_competition(items: list[dict], term: str = "") -> dict[str, Any]:
 
 
 def fetch_serp(term: str, session: Optional[Any] = None, limit: int = 10) -> dict[str, Any]:
-    """抓真实 SERP 前 10，带 4 发退避（202 挑战页）。session 可注入（测试用）。
+    """抓真实 SERP 前 10，4 发退避、4 个不同 host。session 可注入（测试用）。
 
     返回 {engine, items, attempts}；失败抛 SourceUnavailable（源级不可用，调用方应在
     整批里立刻停手，等下次触发重试），异常里带 attempts 便于诊断。
 
     ★2026-11-13 修正：11-12 判定的「DDG 已废」是误判，根因是 BASE_HEADERS 里多带的
       Accept / Accept-Language / Referer 触发了 202 anomaly 页。改成只发 User-Agent 后，
-      html / lite 两端点均稳定 200 + 10 条真实结果，parse_ddg / score_competition 可直接消费。
+      四条路径均稳定 200 + 10 条真实结果，parse_ddg / score_competition 可直接消费。
       Bing（含 &format=rss）仍返回结构合法、内容无关的假结果，不留兜底源。
-      Render 出口此前是连接超时（网络层），与 202 是不同问题，上线后需单独复测。
+    ★同日第二轮：Render singapore 出口报「4 发全部连接失败」，这属于网络层、与请求头无关
+      （本机直连 / 代理、另一云端出口都能拿到真结果）。PLAN 因此改成 4 个不同域名，
+      失败诊断列出全部 host + 异常类型；直连全挂时再自动走 Reader 中转换出口，
+      仍失败才抛 SourceUnavailable（用户定的「遇异常退出等下次重试」不变）。
     """
     import urllib.parse as up
     q = up.quote(str(term or "").strip())
     sess = session or requests.Session()
     attempts: list[dict] = []
     last_note = ""
+    proxy = SERP_HTTPS_PROXY or None
+
+    # 本进程刚判定过「直连出口不通」→ 后续词别再撞 4 次超时，直接走已验证可用的兜底出口。
+    # 兜底也失败就继续走下面的正常 4 发流程（不直接判死），让直连有机会自愈。
+    if SERP_FALLBACK_READER and time.monotonic() < _STATE["direct_down_until"]:
+        try:
+            v = _fetch_via_reader(q, limit, sess, proxy)
+            if v["ok"]:
+                return {"engine": "duckduckgo", "items": v["items"],
+                        "attempts": [], "via": "reader", "skipped_direct": True}
+        except Exception:  # noqa: BLE001
+            pass
+
     for step in PLAN:
         if step["wait"]:
             time.sleep(step["wait"] / 1000.0)
+        # connect 超时压到 6 秒：连不上时没必要每个端点干等 20 秒
+        kwargs: dict[str, Any] = {"headers": BASE_HEADERS, "timeout": (6, 15)}
+        if proxy:
+            kwargs["proxies"] = {"http": proxy, "https": proxy}
         try:
-            # connect 超时单独压到 8 秒：连不上时没必要每个端点干等 20 秒（4 发就是 80 秒）
-            resp = sess.get(step["ep"](q), headers=BASE_HEADERS, timeout=(8, 20))
+            resp = sess.get(step["ep"](q), **kwargs)
             status = resp.status_code
             text = resp.text
         except Exception as exc:
-            attempts.append({"engine": step["engine"], "status": 0, "note": "连接失败"})
+            attempts.append({"engine": step["engine"], "host": step["host"],
+                             "status": 0, "note": "连接失败",
+                             "error": type(exc).__name__, "detail": str(exc)[:160]})
             last_note = str(exc)
             continue
         # requests.Session 会自动处理 Set-Cookie，无需手动吸收
         v = serp_verdict(status, text, limit)
-        attempts.append({"engine": step["engine"], "status": status,
+        attempts.append({"engine": step["engine"], "host": step["host"], "status": status,
                          "note": v.get("note") or v.get("kind"), "items": len(v.get("items", []))})
         if v["ok"]:
             return {"engine": step["engine"], "items": v["items"], "attempts": attempts}
         last_note = v["note"]
 
-    # 4 发全没拿到真结果：连不上（status 全 0）或被挑战页占满。这跟具体词无关，
-    # 换下一个词照样失败，所以按「源级不可用」上报，让上层中止整批。
+    # 直连 4 发全没拿到真结果 → 换出口：经公共 Reader 取回原始 HTML 再判一次。
+    # 本机 / 正常出口第一发就成功，永远走不到这里；只有 Render 那类连不上 DDG 的环境会用到。
+    fallback_note = ""
+    if SERP_FALLBACK_READER:
+        try:
+            v = _fetch_via_reader(q, limit, sess, proxy)
+            if v["ok"]:
+                _STATE["direct_down_until"] = time.monotonic() + DIRECT_RETRY_SEC
+                return {"engine": "duckduckgo", "items": v["items"],
+                        "attempts": attempts, "via": "reader"}
+            fallback_note = f"Reader 中转 {v['kind']}"
+        except Exception as exc:  # noqa: BLE001 - 兜底也挂就按源级不可用上报
+            fallback_note = f"Reader 中转也连不上（{type(exc).__name__}）"
+
+    # 这跟具体词无关，换下一个词照样失败，所以按「源级不可用」上报，让上层中止整批。
     connected = sum(1 for a in attempts if a.get("status"))
     if connected == 0:
-        note = "连不上 DuckDuckGo（4 发全部连接失败）" + (f"：{last_note}" if last_note else "")
+        hosts = " / ".join(dict.fromkeys(a["host"] for a in attempts))
+        kinds = "/".join(sorted({a.get("error") or "?" for a in attempts}))
+        note = f"连不上 DuckDuckGo（{len(attempts)} 发全部连接失败：{hosts}；{kinds}），出口网络到 DDG 不通"
     else:
         note = f"DuckDuckGo 连续 {len(attempts)} 发未返回可用结果（最后一次：{last_note}）"
+    if fallback_note:
+        note += f"；{fallback_note}"
     raise SourceUnavailable("duckduckgo", note + "，过几分钟再试", attempts)

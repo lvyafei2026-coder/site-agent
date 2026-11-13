@@ -204,7 +204,7 @@ Render 的 FastAPI 为准。
 
 ## 5. 验证清单
 
-1. `pytest -q` → **56 passed**（`FakeRuntime`，不碰任何外部服务）。
+1. `pytest -q` → 全绿（`FakeRuntime`，不碰任何外部服务；具体条数随用例增减，别写死）。
 2. `python -m compileall -q src test` 通过。
 3. `python -m pyflakes src test` 无输出。
 4. `/health` 返回 `{"status":"ok","metrics":{...}}`。
@@ -224,6 +224,8 @@ Render 的 FastAPI 为准。
 | `MEMORY_BACKEND=sqlite` 报错 | `/data` 未挂载或不可写 | 检查 Render disk 配置 |
 | 页面渲染成功但线上 404 | 仓库 `wrangler.toml` 的 `assets.directory` 与 `asset_dir` 不一致 | 改 `config/sites.json` 的 `asset_dir` |
 | sitemap 没更新 | 站点仓库里没有 `<asset_dir>/sitemap.xml` | 补一个空的 `<urlset>` 文件即可 |
+| `duckduckgo 不可用：连不上 DuckDuckGo（N 发全部连接失败）` | **网络层**：当前部署出口 IP 到 DDG 不通，与请求头 / 202 挑战页无关。本机直连与另一云端出口实测均 200 + 10 条真结果，Render singapore 出口 4 发全 ConnectTimeout | 默认已自动经公共 Reader 中转换出口（`SERP_FALLBACK_READER=1`，取回原始 DDG HTML，口径一致）；仍失败再配 `SERP_HTTPS_PROXY` 自备代理，或把 `region` 换区重建，或临时把 `ABORT_ON_SERP_DOWN` 设 `False` 让本批跳过 SERP 出结论（只是没有竞争度）。4 发已轮换 4 个不同域名 / IP，仍全挂就别再调请求头了 |
+| `duckduckgo 不可用：连续 N 发未返回可用结果` | **HTTP 层**：202 anomaly 挑战页。显式设置 `Accept` / `Accept-Language` / `Referer` 任意一个都会触发 | `BASE_HEADERS` 必须只有 `User-Agent`；`test_fetch_serp_uses_only_user_agent` 是防回归测试，别把「更像浏览器」的头加回来 |
 
 ## 7. 安全
 

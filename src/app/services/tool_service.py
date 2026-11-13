@@ -48,7 +48,8 @@ class ToolService:
         results: dict = {}
         for name in names:
             if name not in self.registry.names():
-                results[name] = {"tool": name, "ok": False, "error": "unknown tool"}
+                results[name] = {"tool": name, "ok": False,
+                                "error": "unknown tool", "retryable": False}
                 continue
             builder = TOOL_ARGS.get(name)
             kwargs = builder(text, extracted) if builder else {}

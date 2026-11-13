@@ -20,6 +20,14 @@ from src.app.tools.adapters.sources import candidates as cand
 from src.app.tools.adapters.sources.errors import SourceUnavailable
 
 
+@pytest.fixture(autouse=True)
+def _reset_serp_egress_state():
+    """SERP「直连出口不通」是进程级状态，每个用例前后清零，避免跨用例污染。"""
+    ss._STATE["direct_down_until"] = 0.0
+    yield
+    ss._STATE["direct_down_until"] = 0.0
+
+
 # ---------------------------------------------------------------------------
 # kv.py：CloudflareKV 的键常量 / term_key / FakeKV 行为
 # ---------------------------------------------------------------------------
@@ -413,6 +421,159 @@ def test_fetch_serp_uses_only_user_agent(monkeypatch):
     assert out["engine"] == "duckduckgo"
     assert [x["domain"] for x in out["items"]] == ["example.com", "other.org", "plain.example.net"]
     assert set(ss.BASE_HEADERS) == {"User-Agent"}
+
+
+class _HtmlSession:
+    """按 host 决定成败的假 DDG：用来验证多域名退避，不碰网络。"""
+
+    class _R:
+        def __init__(self, status: int, text: str):
+            self.status_code = status
+            self.text = text
+
+    def __init__(self, down_hosts=()):
+        self.down_hosts = set(down_hosts)
+        self.seen: list[str] = []
+        self.kwargs: list[dict] = []
+
+    def get(self, url, **kwargs):
+        import urllib.parse as up
+        import requests
+        host = up.urlparse(url).hostname
+        self.seen.append(host)
+        self.kwargs.append(kwargs)
+        if host in self.down_hosts:
+            raise requests.exceptions.ConnectTimeout("connect timed out")
+        return self._R(200, DDG_HTML)
+
+
+def test_fetch_serp_tries_four_distinct_hosts(monkeypatch):
+    """★出口只拦部分子域时，第二发（主域、另一组 IP）就能拿到真结果。
+    4 发必须覆盖 4 个不同 host，别退化回两个子域来回撞。"""
+    monkeypatch.setattr(ss.time, "sleep", lambda s: None)
+    fake = _HtmlSession(down_hosts=["html.duckduckgo.com"])
+    out = ss.fetch_serp("example term", session=fake)
+    assert fake.seen == ["html.duckduckgo.com", "duckduckgo.com"]
+    assert [x["domain"] for x in out["items"]] == ["example.com", "other.org", "plain.example.net"]
+    assert out["engine"] == "duckduckgo"
+    assert len({s["host"] for s in ss.PLAN}) == 4
+
+
+def test_fetch_serp_connect_failure_reports_hosts_and_error_kind(monkeypatch):
+    """★Render 出口 4 发全挂时，报错要直接说清「哪些 host、什么异常」，
+    别再甩一长串被 UI 截断的 HTTPSConnectionPool 文本。"""
+    monkeypatch.setattr(ss.time, "sleep", lambda s: None)
+    with pytest.raises(SourceUnavailable) as ei:
+        ss.fetch_serp("petroleum", session=_DownSession())
+    msg = str(ei.value)
+    assert "连不上" in msg and "ConnectTimeout" in msg
+    for host in ("html.duckduckgo.com", "duckduckgo.com",
+                 "lite.duckduckgo.com", "www.duckduckgo.com"):
+        assert host in msg
+    assert len(ei.value.attempts) == 4
+    assert {a["host"] for a in ei.value.attempts} == {s["host"] for s in ss.PLAN}
+    assert all(a["error"] == "ConnectTimeout" for a in ei.value.attempts)
+    assert all(a["status"] == 0 for a in ei.value.attempts)
+
+
+def test_fetch_serp_honors_dedicated_proxy_env(monkeypatch):
+    """SERP_HTTPS_PROXY 只给 SERP 换出口；不配时不能往 kwargs 里塞 proxies，
+    否则会连带改掉同进程里 KV REST / LLM 的传输路径。"""
+    monkeypatch.setattr(ss.time, "sleep", lambda s: None)
+    monkeypatch.setattr(ss, "SERP_HTTPS_PROXY", "")
+    plain = _HtmlSession()
+    ss.fetch_serp("x", session=plain)
+    assert "proxies" not in plain.kwargs[0]
+
+    monkeypatch.setattr(ss, "SERP_HTTPS_PROXY", "http://127.0.0.1:8899")
+    proxied = _HtmlSession()
+    ss.fetch_serp("x", session=proxied)
+    assert proxied.kwargs[0]["proxies"] == {
+        "http": "http://127.0.0.1:8899", "https": "http://127.0.0.1:8899"}
+
+
+class _ReaderSession:
+    """直连一律连不上；Reader 出口可按开关给真 HTML / 也连不上。全程离线。"""
+
+    class _R:
+        def __init__(self, status: int, text: str):
+            self.status_code = status
+            self.text = text
+
+    def __init__(self, reader_ok=True, reader_down=False):
+        self.reader_ok = reader_ok
+        self.reader_down = reader_down
+        self.urls: list[str] = []
+
+    def get(self, url, **kwargs):
+        import requests
+        self.urls.append(url)
+        if "r.jina.ai" in url:
+            if self.reader_down:
+                raise requests.exceptions.ConnectTimeout("reader down")
+            return self._R(200, DDG_HTML if self.reader_ok else "<title>DuckDuckGo</title>")
+        raise requests.exceptions.ConnectTimeout("direct down")
+
+
+def test_fetch_serp_falls_back_to_reader_when_direct_all_down(monkeypatch):
+    """★Render 出口 4 发全 ConnectTimeout 时，自动换 Reader 出口拿到真结果。
+    兜底不能污染直连的 4 发 attempts（上层按 attempts 记账）。"""
+    monkeypatch.setattr(ss.time, "sleep", lambda s: None)
+    monkeypatch.setattr(ss, "SERP_FALLBACK_READER", True)
+    fake = _ReaderSession()
+    out = ss.fetch_serp("petroleum", session=fake)
+    assert out["via"] == "reader"
+    assert out["engine"] == "duckduckgo"     # 写进 KV 的口径不变
+    assert [x["domain"] for x in out["items"]] == ["example.com", "other.org", "plain.example.net"]
+    assert len(out["attempts"]) == 4
+    assert sum("r.jina.ai" in u for u in fake.urls) == 1
+    assert fake.urls[-1].startswith(ss.READER_BASE)
+
+
+def test_fetch_serp_reader_can_be_disabled(monkeypatch):
+    """SERP_FALLBACK_READER=0 → 回到纯直连，一个字节都不发给第三方服务。"""
+    monkeypatch.setattr(ss.time, "sleep", lambda s: None)
+    monkeypatch.setattr(ss, "SERP_FALLBACK_READER", False)
+    fake = _ReaderSession()
+    with pytest.raises(SourceUnavailable):
+        ss.fetch_serp("petroleum", session=fake)
+    assert not any("r.jina.ai" in u for u in fake.urls)
+
+
+def test_fetch_serp_reports_reader_failure_when_both_paths_down(monkeypatch):
+    """两条出口都挂 → 诊断要点名 Reader，避免又回到「是不是请求头不对」的老猜测。"""
+    monkeypatch.setattr(ss.time, "sleep", lambda s: None)
+    monkeypatch.setattr(ss, "SERP_FALLBACK_READER", True)
+    fake = _ReaderSession(reader_down=True)
+    with pytest.raises(SourceUnavailable) as ei:
+        ss.fetch_serp("petroleum", session=fake)
+    assert "Reader 中转也连不上" in str(ei.value)
+    assert "ConnectTimeout" in str(ei.value)
+
+
+def test_fetch_serp_skips_direct_after_egress_marked_down(monkeypatch):
+    """★一批 20 词不能每词都撞 4 次 6 秒超时：判定出口不通后，后续词直接走兜底。"""
+    monkeypatch.setattr(ss.time, "sleep", lambda s: None)
+    monkeypatch.setattr(ss, "SERP_FALLBACK_READER", True)
+    first = ss.fetch_serp("petroleum", session=_ReaderSession())
+    assert first["via"] == "reader" and not first.get("skipped_direct")
+    assert ss._STATE["direct_down_until"] > 0
+
+    fake = _ReaderSession()
+    second = ss.fetch_serp("another term", session=fake)
+    assert second.get("skipped_direct") is True
+    assert len(fake.urls) == 1 and "r.jina.ai" in fake.urls[0]  # 一次直连都没打
+
+
+def test_fetch_serp_fast_path_falls_through_when_reader_also_down(monkeypatch):
+    """记住的兜底出口失效时，要退回直连 4 发给它自愈机会，不能直接判死。"""
+    monkeypatch.setattr(ss.time, "sleep", lambda s: None)
+    monkeypatch.setattr(ss, "SERP_FALLBACK_READER", True)
+    ss._STATE["direct_down_until"] = float("inf")
+    with pytest.raises(SourceUnavailable) as ei:
+        ss.fetch_serp("petroleum", session=_ReaderSession(reader_down=True))
+    assert len(ei.value.attempts) == 4         # 直连 4 发照常跑完
+    assert "Reader 中转也连不上" in str(ei.value)
 
 
 def test_fetch_interest_raises_source_unavailable(monkeypatch):

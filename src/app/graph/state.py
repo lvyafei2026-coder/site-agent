@@ -72,6 +72,11 @@ class WorkflowState(TypedDict, total=False):
     """终态错误信息。handle_error 节点写入失败原因（优先取 validation["reason"]）；
     edges 兜底：validate_result 之后若 error 非空，直接路由到 handle_error。"""
 
+    processing_fatal: bool
+    """processing 节点级硬失败信号（LLM 已配置但调用挂了 / 工具执行抛未捕获异常）。
+    只在确实硬失败时写入 True；graph 的 route_after_processing 据此**跳过校验与重试**，
+    直接路由到 handle_error。软失败（工具 ok:False、字段偏少）不写此字段。"""
+
 
 def initial_state(
     input_text: str,
