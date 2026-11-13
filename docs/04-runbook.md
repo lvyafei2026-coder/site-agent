@@ -37,7 +37,7 @@ curl -s -X POST localhost:10000/run \
 | `input_text` | ✅ | 运营请求原文 |
 | `intent` | 否 | 强制指定意图，跳过 LLM 分类（`confidence=1.0`） |
 | `tools` | 否 | 显式工具列表，**覆盖**意图默认集；写工具只能这样触发 |
-| `prompt_versions` | 否 | 如 `{"intent": "v2"}`，缺省回退 v1 |
+| `prompt_versions` | 否 | 如 `{"intent": "v2"}`、`{"hotwords": "v2"}`；缺省回退 `config.default_prompt_versions`。所有提示词在 `src/app/prompts/versions/<task>/vN.txt`，改措辞请新增版本文件而不是改已上线的 vN |
 | `thread_id` | 否 | checkpointer 会话归属，缺省 `run-<毫秒>` |
 
 返回值是完整 state：`output` / `error` / `intent` / `confidence` /

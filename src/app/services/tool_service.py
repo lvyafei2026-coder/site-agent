@@ -43,7 +43,8 @@ class ToolService:
         self.registry = registry or tool_registry
 
     def execute_for_intent(self, intent: str, text: str,
-                           extracted: dict, tools: list[str] | None = None) -> dict:
+                           extracted: dict, tools: list[str] | None = None,
+                           prompt_versions: dict[str, str] | None = None) -> dict:
         names = list(tools) if tools else list(INTENT_TOOLS.get(intent, INTENT_TOOLS["general"]))
         results: dict = {}
         for name in names:
@@ -53,6 +54,12 @@ class ToolService:
                 continue
             builder = TOOL_ARGS.get(name)
             kwargs = builder(text, extracted) if builder else {}
+            # 热词分析是唯一自己调 LLM 的工具，把 /run 里的 prompt_versions.hotwords 透传下去，
+            # 让「换提示词 = 新增 vN.txt + 请求里带版本」在整条链路上都成立。
+            if name == "analyze_hotwords" and prompt_versions:
+                version = prompt_versions.get("hotwords")
+                if version:
+                    kwargs["prompt_version"] = version
             results[name] = self.registry.run(name, **kwargs)
         return results
 

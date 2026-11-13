@@ -49,7 +49,14 @@ class Settings:
 
     def __post_init__(self) -> None:
         if self.default_prompt_versions is None:
-            self.default_prompt_versions = {"intent": "v1", "extraction": "v1"}
+            # ★与 src/app/prompts/versions/ 的目录一一对应（test_prompts.py 双向校验）。
+            #   所有发给 LLM 的文本都在那里，包括热词逐词分析；这里只记各 task 的默认版本。
+            #   改默认版本 = 改这里；改措辞 = 新增 vN.txt（见 prompts/__init__.py）。
+            self.default_prompt_versions = {
+                "intent": "v1", "intent_user": "v1",
+                "extraction": "v1", "extraction_user": "v1",
+                "hotwords": "v1", "hotwords_user": "v1",
+            }
 
     @property
     def prompt_root(self) -> Path:

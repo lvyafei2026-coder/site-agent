@@ -18,8 +18,9 @@ class SelectionOps:
     def hotwords(self, status="doing", limit=40):
         return candidates.snapshot(status=status, limit=limit)
 
-    def analyze_hotwords(self, limit=20):
-        return hotwords.run_batch(limit=limit)
+    def analyze_hotwords(self, limit=20, prompt_version=None):
+        # prompt_version 来自 /run 的 prompt_versions.hotwords；None 时 run_batch 走默认 v1
+        return hotwords.run_batch(limit=limit, prompt_version=prompt_version)
 
 
 class GetHotwordsTool(RuntimeTool):
@@ -42,3 +43,5 @@ class AnalyzeHotwordsTool(RuntimeTool):
 
     class Input(BaseModel):
         limit: int = Field(20, description="一次捞取并逐条分析的条数，默认 20")
+        prompt_version: str | None = Field(
+            None, description="提示词版本，对应 prompts/versions/hotwords/vN.txt；留空走默认 v1")

@@ -33,10 +33,13 @@ def processing_node(state: WorkflowState) -> WorkflowState:
     """
     text = state.get("input_text", "")
     intent = state.get("intent", "general")
-    system = prompt_service.load_prompt(
-        "extraction", version=state.get("prompt_versions", {}).get("extraction"))
+    versions = state.get("prompt_versions", {}) or {}
+    system = prompt_service.load_prompt("extraction", version=versions.get("extraction"))
+    # human 模板同样在 prompts/versions/ 下，代码里不留任何提示词字面量
+    user = prompt_service.load_prompt("extraction_user",
+                                     version=versions.get("extraction_user"))
     template = ChatPromptTemplate.from_messages(
-        [("system", system), ("human", "意图：{intent}\n请求：{input_text}")])
+        [("system", system), ("human", user)])
 
     extracted = llm_service.extract_fields(template=template, text=text, intent=intent)
 
@@ -51,7 +54,8 @@ def processing_node(state: WorkflowState) -> WorkflowState:
     try:
         results = tool_service.execute_for_intent(
             intent=intent, text=text, extracted=extracted,
-            tools=state.get("requested_tools"))
+            tools=state.get("requested_tools"),
+            prompt_versions=state.get("prompt_versions"))
     except Exception as exc:  # noqa: BLE001 - 工具抛未捕获异常（非 RuntimeTool 安全网）
         # 只有「明确非网络失败」才短路；网络超时类交给 validation 重试。
         if not is_retryable_error(exc):

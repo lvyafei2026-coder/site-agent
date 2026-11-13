@@ -1,0 +1,6 @@
+关键词：{term}
+{related_line}
+{serp_line}
+{hints_line}
+覆盖地区数：{geo_count} 个
+热度（Google 相对值）：{traffic}

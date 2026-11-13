@@ -18,7 +18,9 @@ def test_settings_contract():
     assert isinstance(settings, Settings)
     assert settings.project_name == "site-agent"
     assert settings.prompt_root.name == "versions"
-    assert set(settings.default_prompt_versions) == {"intent", "extraction"}
+    # 默认版本清单与 prompts/versions 目录一一对应（双向校验在 test_prompts.py）
+    from src.app.prompts import PROMPT_TASKS
+    assert set(settings.default_prompt_versions) == set(PROMPT_TASKS)
 
 
 def test_intents_are_the_single_source():

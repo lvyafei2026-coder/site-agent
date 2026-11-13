@@ -69,7 +69,9 @@ src/app/
 │   ├── *_tools.py           6 个业务域：<Domain>Ops 实现 + 工具类
 │   └── adapters/            cloudflare · sources · hosting · publishing
 ├── models/                  ExtractionSchema · WorkflowResult
-├── prompts/versions/        <task>/vN.txt（intent 有 v1/v2，extraction 有 v1）
+├── prompts/versions/        <task>/vN.txt：所有发给 LLM 的文本唯一存放处
+│                            intent(v1/v2) · extraction · intent_user · extraction_user
+│                            hotwords（逐词 8 小节 system）· hotwords_user（逐词入参模板）
 ├── memory/checkpointer.py   memory / sqlite
 ├── llm/provider.py          OpenAI 兼容客户端
 ├── observability/           metrics · langsmith · trace（图轨迹）

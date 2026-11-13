@@ -10,7 +10,7 @@
 | 组 | 字段 | 类型 | 谁写 | 谁读 |
 |---|---|---|---|---|
 | 输入 | `input_text` | `str` | `/run` / CLI | intent、processing |
-| 输入 | `prompt_versions` | `dict[str,str]` | `/run`（缺省用 `settings.default_prompt_versions`） | 三个节点各取自己那份 |
+| 输入 | `prompt_versions` | `dict[str,str]` | `/run`（缺省用 `settings.default_prompt_versions`） | intent / processing 各取自己那份；`hotwords` 由 tool_service 透传给逐词分析 |
 | 输入 | `requested_tools` | `list[str] \| None` | `/run` | tool_service（`None` = 按意图默认集） |
 | 输入/中间 | `intent` | `str` | 调用方可强制指定；否则 intent 节点产出 | processing、输出报告 |
 | 中间 | `confidence` | `float` | intent 节点 | validation、报告 |
@@ -81,9 +81,17 @@ START → classify_intent → run_processing → validate_result
 
 ### 4.2 `prompt_service`：版本可指定、缺失回退
 
-- 根目录 `src/app/prompts/versions/<task>/vN.txt`，现有 `intent`（v1/v2）、`extraction`（v1）。
+- 根目录 `src/app/prompts/versions/<task>/vN.txt`，**所有发给 LLM 的文本唯一存放处**：
+  `intent`（v1/v2）、`intent_user`、`extraction`、`extraction_user`、
+  `hotwords`（逐词 8 小节 system，原 `AI_SYSTEM`）、`hotwords_user`（逐词入参模板）。
+  `*_user` 是同一任务的 human 模板，与 system 分文件存放。
+  ★2026-11-13 起业务代码里不允许再出现整段提示词字面量（`test_prompts.py` 静态守着）。
 - 解析顺序：请求 `prompt_versions[task]` → `settings.default_prompt_versions[task]` → `v1`；
-  文件不存在时回退 `v1.txt`。
+  文件不存在时回退 `v1.txt`。默认版本清单在 `config.py`，与目录一一对应。
+- 工具层（adapters）不能反向依赖 `services`，所以热词逐词分析走 `prompts/__init__.py`
+  的纯加载函数 `_prompt_pair()`（带进程内缓存，一批 20 词只读一次磁盘）；
+  `/run` 的 `prompt_versions.hotwords` 经 `processing → tool_service → AnalyzeHotwordsTool
+  → SelectionOps → run_batch` 一路透传，批次 trace 的 inputs 里也记 `promptVersion`。
 - 每次加载打日志 `prompt_loaded`（task + version），排查「这轮用的是哪版」很快。
 
 ### 4.3 `tool_service`：意图 → 工具集

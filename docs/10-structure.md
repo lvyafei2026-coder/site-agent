@@ -53,7 +53,7 @@ src/app/
 | `tools/` 四个 demo（calculator / retriever / db_query / http） | 换成 6 个业务域 `*_tools.py` + `adapters/`，26 个工具 | demo 没有业务含义；能力清单见 `05-tools.md` |
 | `observability/` 的 `@traceable` | 真 `langsmith.traceable` + `wrap_openai`，另加 `trace.py` | 模板装饰器只打日志不上报；图轨迹要随 `/run` 返回 |
 | `llm/provider.py` 四家 provider | 只留 OpenAI 兼容 + 无 key 确定性回退 | 站群只用一家兼容接口，node 里不做 SDK 分支 |
-| `prompts/versions/` | 保留 `intent/v1,v2`、`extraction/v1`；删 `validation/v1` | 校验是确定性代码，不需要 prompt |
+| `prompts/versions/` | 保留 `intent/v1,v2`、`extraction/v1`；删 `validation/v1`；★2026-11-13 新增 `intent_user` / `extraction_user` / `hotwords` / `hotwords_user` | 校验是确定性代码，不需要 prompt；所有发给 LLM 的文本（含原 hardcode 在 `hotwords.py` 的 `AI_SYSTEM`）统一进版本目录 |
 | `config.py` | 保留并扩展 `FLEET_DOMAIN` / `SITES` / `INTENTS` | 模板只有通用 Settings |
 | `models/` · `api/` · `main.py` · `memory/` · `utils/` | 保留，按需加字段 | — |
 
@@ -104,7 +104,7 @@ src/app/
 | `tools/base.py` | 契约叶子 | `BaseTool` / `RuntimeTool` / `ToolOutput` / `stable_key`，不 import 任何 `src.app.*` | 保留 |
 | `tools/registry.py` | 装配 | `RuntimeService` 组合 6 个域 Ops + `ToolRegistry.bind()` | 保留 |
 | `models/` | 跨层数据契约 | `ExtractionSchema`、`WorkflowResult` | 保留 |
-| `prompts/` | prompt 文本与加载 | 版本解析、缺失回退 v1 | 保留 |
+| `prompts/` | **所有 LLM 文本的唯一存放处** | `registry.py` 版本解析（缺失回退 v1）、`__init__.py` 的纯加载函数供工具层用、`versions/<task>/vN.txt` | 保留 + 扩充 6 个 task |
 | `llm/provider.py` | 模型客户端 | OpenAI 兼容构造、无 key 返回 `None`、`wrap_openai` | 改造 |
 | `memory/` | checkpointer | memory / sqlite 选择与连接参数 | 改造 |
 | `observability/` | 观测 | metrics、LangSmith 开关、图轨迹采集 | 保留 + 新增 |
@@ -145,7 +145,9 @@ site-agent/
 │   │       ├── hosting/         repository · renderer · verification
 │   │       └── publishing/      devto · email
 │   ├── models/                  ExtractionSchema · WorkflowResult
-│   ├── prompts/                 registry.py + versions/<task>/vN.txt
+│   ├── prompts/                 registry.py + __init__.py（纯加载）+ versions/<task>/vN.txt
+│   │                            intent · intent_user · extraction · extraction_user
+│   │                            hotwords（逐词 system）· hotwords_user（逐词 human）
 │   ├── memory/checkpointer.py   memory / sqlite
 │   ├── llm/provider.py          OpenAI 兼容客户端
 │   ├── observability/           metrics · langsmith(@traceable) · trace(图轨迹)
@@ -165,6 +167,8 @@ site-agent/
 flowchart LR
   api --> graph --> nodes --> services --> tools --> adapters
   services --> prompts
+  tools --> prompts
+  adapters --> prompts
   services --> observability
   services --> llm
   nodes --> models
@@ -177,6 +181,8 @@ flowchart LR
 ```
 
 规则只有一条：**services 可以依赖 tools，tools 不能依赖 services**。
+`prompts/` 是基础设施，`services` 与 `tools/adapters` 都能直接依赖它——所以热词逐词分析
+从 `prompts/__init__.py` 取纯加载函数，而不是绕道 `services/prompt_service.py`。
 
 工具包内还有两条更细的：
 

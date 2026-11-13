@@ -22,10 +22,12 @@ def intent_node(state: WorkflowState) -> WorkflowState:
     if forced:
         result = {"intent": forced, "confidence": 1.0}
     else:
-        system = prompt_service.load_prompt(
-            "intent", version=state.get("prompt_versions", {}).get("intent"))
+        versions = state.get("prompt_versions", {}) or {}
+        system = prompt_service.load_prompt("intent", version=versions.get("intent"))
+        # human 模板同样在 prompts/versions/ 下，代码里不留任何提示词字面量
+        user = prompt_service.load_prompt("intent_user", version=versions.get("intent_user"))
         template = ChatPromptTemplate.from_messages(
-            [("system", system), ("human", "请求：{input_text}")])
+            [("system", system), ("human", user)])
         result = llm_service.classify_intent(template=template, text=text)
     logger.info("intent_node", extra={"intent": result["intent"]})
     return {"intent": result["intent"], "confidence": result["confidence"],

@@ -34,6 +34,11 @@ site-agent = "src.app.main:run"
 [tool.setuptools.packages.find]
 include = ["src*"]
 
+# 提示词是运行时数据文件，不是 .py：非 editable 安装（wheel）也必须带上，
+# 否则线上 PromptRegistry 会找不到 versions/<task>/vN.txt。
+[tool.setuptools.package-data]
+"src.app.prompts" = ["versions/*/*.txt"]
+
 [tool.pytest.ini_options]
 pythonpath = ["src", "."]
 testpaths = ["test"]
