@@ -52,16 +52,73 @@ from .curation import upsert_saved, upsert_rejected, set_hint_override
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# 提示词：正文全部在 `src/app/prompts/versions/hotwords/v1.txt` 与
-#   `hotwords_user/v1.txt`（唯一真源，逐字对齐 radar 原 src/ai.js 的 AI_SYSTEM）。
-#   这里只做「加载 + 进程内缓存」：一批 20 个词不能每词都读一次磁盘。
-#   ★改了 .txt 要重启进程；正式换措辞请新增 v2.txt 并切版本（见 prompts/__init__.py）。
+# 提示词：正文全部在 `src/app/prompts/versions/hotwords/` 与 `hotwords_user/`
+#   （唯一真源，v1 逐字对齐 radar 原 src/ai.js 的 AI_SYSTEM；v2 加了固化的
+#   人工判定规则与收紧后的观望口径，见 v2.txt）。这里只做「加载 + 进程内缓存」：
+#   一批 20 个词不能每词都读一次磁盘。
+#   ★改了 .txt 要重启进程；换措辞请新增 vN.txt 并切 config 默认版本。
 # ---------------------------------------------------------------------------
 @lru_cache(maxsize=8)
 def _prompt_pair(version: Optional[str] = None) -> tuple[str, str]:
     """返回 (system, user 模板)。version 由 /run 的 prompt_versions.hotwords 透传。"""
     v = version or (settings.default_prompt_versions or {}).get("hotwords", "v1")
     return load_prompt("hotwords", v), load_prompt("hotwords_user", v)
+
+# 判例反馈：从人工「不做」标记里挑少量真实词例喂回 AI，让它对同类词倾向判不做。
+# ★v2 提示词已固化高频规则（非工具意图/时效资讯/热度下降/真人/作品），这里的判例
+#   只取「人工判定 + 有泛化价值理由」的词，避开已固化的占位理由，防止提示词与判例重复。
+EXAMPLE_LIMIT = 8
+# 这些理由已写进 v2 提示词的硬规则，再当判例注入只是重复占位、浪费 token。
+_EXAMPLE_SKIP_RX = __import__("re").compile(
+    r"搜索意图不是找工具|热度下降|趋势下降|未填原因|旧版本本地标记"
+)
+
+
+def pick_examples(rejected: list, limit: int = EXAMPLE_LIMIT) -> list[dict[str, str]]:
+    """从 rejected 表挑判例：只人工标记、理由有泛化价值、按理由去重。
+
+    - 排除 `source=ai`（AI 自己的判定不是「学习素材」）与无/占位理由；
+    - 理由过短（<4 字，多是「世界末日」这类纯释义）或无信息量则跳过；
+    - 同一理由只留最新一条，避免 8 条「搜索意图不是找工具」刷屏；
+    - 按 updatedAt/at 倒序取最近 ``limit`` 条。
+    """
+    import re as _re
+
+    if not isinstance(rejected, list):
+        return []
+    seen_reason: set[str] = set()
+    out: list[dict[str, str]] = []
+    # 先按时间倒序（最新在前），同理由去重时自然保留最新一条。
+    for row in sorted(
+        (x for x in rejected if isinstance(x, dict)),
+        key=lambda x: (x.get("updatedAt") or x.get("at") or 0),
+        reverse=True,
+    ):
+        if row.get("source") != "manual":
+            continue
+        term = str(row.get("term") or "").strip()
+        reason = str(row.get("reason") or "").strip()
+        if not term or len(reason) < 4 or _EXAMPLE_SKIP_RX.search(reason):
+            continue
+        # 理由归一化去重：去掉首尾标点与空白，同类理由只留一条。
+        norm = _re.sub(r"[\s，。；、,.;:：]+$", "", reason)
+        if norm in seen_reason:
+            continue
+        seen_reason.add(norm)
+        out.append({"term": term[:60], "reason": reason[:120]})
+        if len(out) >= max(0, min(int(limit), 20)):
+            break
+    return out
+
+
+def examples_line(examples: list[dict[str, str]]) -> str:
+    """把判例拼成 user 模板的 ``{examples_line}`` 占位内容；无判例返回空串。"""
+    if not examples:
+        return ""
+    head = "以下是你过去判定「不做」的真实案例，遇到同类词请优先判不做："
+    rows = [f"· {e['term']} — {e['reason']}" for e in examples]
+    return head + "\n" + "\n".join(rows)
+
 
 HINT_NAMES = ("工具查询", "价格规格", "日程日期", "资格政策", "用法教程", "对比评测")
 
@@ -111,11 +168,15 @@ _last_serp_at = 0.0
 # ---------------------------------------------------------------------------
 def build_messages(body: dict[str, Any], *, prompt_version: Optional[str] = None,
                    system: Optional[str] = None,
-                   user_template: Optional[str] = None) -> list[dict[str, str]]:
+                   user_template: Optional[str] = None,
+                   examples: Optional[list[dict[str, str]]] = None) -> list[dict[str, str]]:
     """拼 system + user；**措辞全部来自 prompts/versions/hotwords***，这里只填数据。
 
     SERP 前 6 的「域名 — 标题」是 AI 辨形的主要线索。system / user_template 可注入
     （单测固定模板用）；生产由 _prompt_pair() 一次性加载并缓存，20 个词只读一次磁盘。
+
+    ``examples`` 是人工判例反馈（见 :func:`pick_examples`）：仅当 user 模板含
+    ``{examples_line}`` 占位符（v2+）时注入；v1 模板无此占位符则输出逐字不变。
     """
     if system is None or user_template is None:
         default_system, default_tpl = _prompt_pair(prompt_version)
@@ -142,10 +203,13 @@ def build_messages(body: dict[str, Any], *, prompt_version: Optional[str] = None
     hints_line = "命中的常青信号：" + hints if hints else "未命中明显常青信号"
 
     # 模板里没有 SERP 时是一整行空占位，过滤空行后与原拼装结果逐字一致。
-    user = "\n".join(x for x in user_template.format(
-        term=term, related_line=related_line, serp_line=serp_line,
-        hints_line=hints_line, geo_count=geo_count, traffic=traffic,
-    ).split("\n") if x)
+    fields = dict(term=term, related_line=related_line, serp_line=serp_line,
+                  hints_line=hints_line, geo_count=geo_count, traffic=traffic)
+    # ★只有模板真的含 {examples_line} 才传该字段：v1 模板没有它，传了会 KeyError。
+    #   test_prompts 的逐字一致回归因此继续成立。
+    if "{examples_line}" in user_template:
+        fields["examples_line"] = examples_line(examples or [])
+    user = "\n".join(x for x in user_template.format(**fields).split("\n") if x)
     return [{"role": "system", "content": system},
             {"role": "user", "content": user}]
 
@@ -626,7 +690,8 @@ def _finalize(out: dict[str, Any], writes: _WriteLog) -> dict[str, Any]:
 def _analyze_one(item: dict[str, Any], kv: CloudflareKV,
                  state: Optional["_BatchAbort"] = None,
                  parent_run=None,
-                 prompt_version: Optional[str] = None) -> dict[str, Any]:
+                 prompt_version: Optional[str] = None,
+                 examples: Optional[list[dict[str, str]]] = None) -> dict[str, Any]:
     """一个词走完「补数据 → LLM → 回写状态」，失败只落在这个词自己身上。
 
     ★不抛异常给上层：SERP/Trends/LLM/KV 任一环出问题都写进 items[].error，
@@ -746,7 +811,8 @@ def _analyze_one(item: dict[str, Any], kv: CloudflareKV,
     signal = work_signal(brief)
     try:
         text, model = _llm(build_messages(dict(item, serp=brief),
-                                          prompt_version=prompt_version))
+                                          prompt_version=prompt_version,
+                                          examples=examples))
     except LLMEmptyContent as exc:
         # 「调用成功但没正文」≠「调用异常」：错误说明必须来自真实诊断，
         # 不能笼统写成「LLM_API_KEY 未配置」，也不影响其它词。
@@ -922,6 +988,23 @@ def _run_batch(limit: int, kv: Optional[CloudflareKV], batch_run,
         return {"ok": True, "items": [], "fetched": 0, "analyzed": 0,
                 "failed": 0, "counts": {}, "note": "没有未跟进且未分析过的候选词"}
 
+    # 判例反馈：整批只读一次 rejected，筛出人工判例喂给每个词。
+    # ★失败只降级掉判例（examples=[]），不让整批分析因为这张表而挂掉。
+    examples: list[dict[str, str]] = []
+    try:
+        rejected_rows = trace_tool(
+            lambda: _kv_list(kv, REJECTED_KEY),
+            name=TOOL_TRACE_PREFIX + "kv.read-examples",
+            parent=batch_run,
+            inputs={"key": REJECTED_KEY},
+            tags=["site-agent", "hotword-tool"],
+            metadata={"batch_id": batch_id, "component": "analyze_hotwords"},
+            outputs=lambda res: {"rejected": len(res) if isinstance(res, list) else 0},
+        )
+        examples = pick_examples(rejected_rows)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("判例读取失败，本批不带判例继续：%s", str(exc)[:120])
+
     state = _BatchAbort()
 
     def work(pair: tuple[int, dict[str, Any]]) -> dict[str, Any]:
@@ -931,7 +1014,7 @@ def _run_batch(limit: int, kv: Optional[CloudflareKV], batch_run,
         return run_traced(
             # ★pass_run：把本词 span 的 run 交给 _analyze_one，让它成为该词所有
             #   tool:* 子 span 的显式父（worker 线程拿不到主线程的 contextvar）。
-            lambda word_run: _analyze_one(item, kv, state, word_run, prompt_version),
+            lambda word_run: _analyze_one(item, kv, state, word_run, prompt_version, examples),
             name=WORD_TRACE_PREFIX + (term or key)[:60],
             parent=batch_run,          # ★显式父：worker 线程没有主线程的 contextvar
             inputs={"term": term, "key": key, "index": idx},

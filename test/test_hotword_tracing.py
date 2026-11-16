@@ -206,7 +206,7 @@ def test_tracing_off_has_no_spans_and_plain_result(fake_kv, monkeypatch):
 # 工具可见性：SERP / Trends / KV / 26 个 RuntimeTool 都要在 Smith 上看得到出入参
 # ---------------------------------------------------------------------------
 def test_batch_tool_spans_capture_serp_trend_kv_io(fake_kv, monkeypatch, traced_runs):
-    """每词三条 tool span + 批次一条候选池读 span，父链与出入参都要对。"""
+    """每词三条 tool span + 批次候选池读 + 判例读两条 span，父链与出入参都要对。"""
     def llm(messages):
         _fake_openai_call("x")
         return "7) 结论：不做，影视作品\n8) 信号标签：工具查询", "fake"
@@ -220,8 +220,8 @@ def test_batch_tool_spans_capture_serp_trend_kv_io(fake_kv, monkeypatch, traced_
     tools = [r for r in traced_runs if r.name.startswith(hw.TOOL_TRACE_PREFIX)]
     assert str(batch.parent_run_id) == str(root.id)
     assert len(words) == 3
-    # 3 词 × (serp/trend/kv.write) + 1 条候选池读
-    assert len(tools) == 10
+    # 3 词 × (serp/trend/kv.write) + 1 条候选池读 + 1 条判例读
+    assert len(tools) == 11
     assert all(r.run_type == "tool" for r in tools)
 
     readers = [r for r in tools if r.name == "tool:kv.read-candidates"]
@@ -230,7 +230,11 @@ def test_batch_tool_spans_capture_serp_trend_kv_io(fake_kv, monkeypatch, traced_
     assert readers[0].outputs["selected"] == 3
     assert len(readers[0].outputs["terms"]) == 3
 
-    per_word = [r for r in tools if r is not readers[0]]
+    # 判例读 span 挂在 batch 下（不是词级），单独校验
+    ex_readers = [r for r in tools if r.name == "tool:kv.read-examples"]
+    assert len(ex_readers) == 1 and str(ex_readers[0].parent_run_id) == str(batch.id)
+
+    per_word = [r for r in tools if r is not readers[0] and r is not ex_readers[0]]
     word_ids = {str(w.id) for w in words}
     assert all(str(r.parent_run_id) in word_ids for r in per_word)
     for name in ("tool:serp", "tool:trend", "tool:kv.write"):

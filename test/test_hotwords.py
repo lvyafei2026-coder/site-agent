@@ -42,6 +42,57 @@ def test_build_messages_without_serp():
     assert "未命中明显常青信号" in user
 
 
+def test_pick_examples_only_manual_with_generic_reason():
+    """判例只取人工标记 + 有泛化价值理由；排除 AI 判定、占位理由、纯释义。"""
+    rows = [
+        {"term": "how to sound better", "reason": "改写润色，要的是一次性答案", "source": "manual", "updatedAt": 500},
+        {"term": "doomsday", "reason": "世界末日", "source": "manual", "updatedAt": 490},       # 纯释义<4字? 4字，但无模式——靠去重/长度
+        {"term": "some ai term", "reason": "AI 判定不做", "source": "ai", "updatedAt": 480},   # AI 判定排除
+        {"term": "foo", "reason": "搜索意图不是找工具，做站没流量", "source": "manual", "updatedAt": 470},  # 已固化，跳过
+        {"term": "bar", "reason": "热度下降", "source": "manual", "updatedAt": 460},            # 已固化，跳过
+        {"term": "", "reason": "有理由但没词", "source": "manual", "updatedAt": 455},
+        {"term": "baz", "reason": "", "source": "manual", "updatedAt": 450},
+        {"term": "欧盟新规什么时候生效", "reason": "查的是当期政策资讯，内容很快过时", "source": "manual", "updatedAt": 440},
+    ]
+    ex = hw.pick_examples(rows)
+    terms = [e["term"] for e in ex]
+    assert "how to sound better" in terms
+    assert "欧盟新规什么时候生效" in terms
+    assert "some ai term" not in terms           # AI 判定不学习
+    assert "foo" not in terms and "bar" not in terms  # 已固化理由不重复注入
+    assert "baz" not in terms and "" not in terms
+
+
+def test_pick_examples_dedup_by_reason_and_limit():
+    """同一理由只留最新一条；limit 生效；上限 20 封顶。"""
+    rows = [
+        {"term": f"old-{i}", "reason": "查的是一次性资讯不是工具", "source": "manual", "updatedAt": 100 + i}
+        for i in range(5)
+    ] + [
+        {"term": f"uniq-{i}", "reason": f"第{i}种独立理由说明", "source": "manual", "updatedAt": 200 + i}
+        for i in range(10)
+    ]
+    # 取足够多时验证「同理由只留一条」：5 条 old 同理由 → 只剩 1 条
+    all_ex = hw.pick_examples(rows, limit=99)
+    assert sum(1 for e in all_ex if e["term"].startswith("old-")) == 1
+    assert sum(1 for e in all_ex if e["term"].startswith("uniq-")) == 10
+    # limit 生效
+    assert len(hw.pick_examples(rows, limit=3)) == 3
+    assert len(all_ex) <= 20
+
+
+def test_pick_examples_handles_bad_input():
+    assert hw.pick_examples(None) == []
+    assert hw.pick_examples("not a list") == []
+    assert hw.pick_examples([None, 3, "x"]) == []
+
+
+def test_examples_line_format():
+    assert hw.examples_line([]) == ""
+    line = hw.examples_line([{"term": "abc", "reason": "理由一"}])
+    assert "过去判定「不做」" in line and "abc — 理由一" in line
+
+
 def test_verdict_of():
     assert hw.verdict_of("1) 词义…\n7) 结论：做，理由") == "做"
     assert hw.verdict_of("7) 结论: 观望，等长尾") == "观望"

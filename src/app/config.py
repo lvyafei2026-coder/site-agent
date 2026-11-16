@@ -55,7 +55,7 @@ class Settings:
             self.default_prompt_versions = {
                 "intent": "v1", "intent_user": "v1",
                 "extraction": "v1", "extraction_user": "v1",
-                "hotwords": "v1", "hotwords_user": "v1",
+                "hotwords": "v2", "hotwords_user": "v2",
                 "review_metrics": "v1",
             }
 

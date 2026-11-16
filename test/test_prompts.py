@@ -24,9 +24,12 @@ from src.app.tools.adapters.sources import hotwords as hw
 
 APP = Path(__file__).resolve().parents[1] / "src" / "app"
 
-# 迁移前实测（2026-11-13，从 hotwords.py 原 AI_SYSTEM / build_messages 取样）
-SYSTEM_LEN = 1631
-SYSTEM_SHA = "3cba194f780f7f61"          # sha256 前 16 位
+# 迁移前实测（2026-11-13，从 hotwords.py 原 AI_SYSTEM / build_messages 取样）= v1 基线
+SYSTEM_LEN_V1 = 1631
+SYSTEM_SHA_V1 = "3cba194f780f7f61"        # sha256 前 16 位
+# v2（当前默认）：固化人工判定规则 + 收紧观望；逐字基线锁死防误改
+SYSTEM_LEN_V2 = 2277
+SYSTEM_SHA_V2 = "34b0551ac209ed68"
 USER_SAMPLES = [
     ({"term": "nayyi naveli", "related": ["a", "b", "c", "d", "e", "f", "g"],
       "hints": ["工具查询"], "geoCount": 3, "traffic": 900,
@@ -86,27 +89,62 @@ def test_no_prompt_literals_left_in_source():
     assert not offenders, "提示词又粘回代码了：" + "; ".join(offenders)
 
 
-def test_hotword_system_is_byte_identical_after_move():
-    """★逐字一致：system 正文一个字都不能变，否则 AI 的 8 小节/判死口径全变了。"""
-    system = load_prompt("hotwords")
-    assert len(system) == SYSTEM_LEN
-    assert _sha(system) == SYSTEM_SHA
+def test_hotword_system_v1_is_byte_identical_after_move():
+    """★v1 逐字一致：迁移基线一个字都不能变（防有人误改历史版本）。"""
+    system = load_prompt("hotwords", "v1")
+    assert len(system) == SYSTEM_LEN_V1
+    assert _sha(system) == SYSTEM_SHA_V1
     assert "8) 信号标签" in system
     assert "⓪ 先辨形" in system and "③ 其余情况" in system
+
+
+def test_hotword_system_v2_is_current_and_locked():
+    """★v2 是当前默认：固化人工规则 + 收紧观望，8 小节结构与结论解析格式不变。"""
+    system = load_prompt("hotwords", "v2")
+    assert len(system) == SYSTEM_LEN_V2
+    assert _sha(system) == SYSTEM_SHA_V2
+    assert load_prompt("hotwords") == system          # 默认就是 v2
     assert hw._prompt_pair()[0] == system
+    # 8 小节 / 第 7 节结论格式（verdict_of 依赖）不能丢
+    assert "8) 信号标签" in system
+    assert "7) 结论：做 / 观望 / 不做" in system
+    # 人工规则已固化
+    assert "非工具意图" in system and "时效资讯" in system
+    assert "观望」是稀缺档" in system
 
 
 def test_hotword_user_template_placeholders_and_output():
-    """user 模板只用命名占位符；三组样例（有/无 SERP、有/无信号）输出逐字一致。"""
+    """user 模板只用命名占位符；三组样例（有/无 SERP、有/无信号）输出逐字一致。
+
+    ★v2 多了 ``{examples_line}``；无判例时该行为空被过滤，输出仍与迁移前逐字一致。
+    """
     tpl = load_prompt("hotwords_user")
     assert set(re.findall(r"\{(\w+)\}", tpl)) == {
         "term", "related_line", "serp_line", "hints_line", "geo_count", "traffic",
+        "examples_line",
     }
     for body, expected in USER_SAMPLES:
         msgs = hw.build_messages(body)
         assert msgs[0]["role"] == "system" and msgs[0]["content"] == load_prompt("hotwords")
         assert _sha(msgs[1]["content"]) == expected
         assert "{term}" not in msgs[1]["content"]
+
+    # v1 老模板（无 examples_line）即使传 examples 也应逐字不变、不报 KeyError
+    tpl_v1 = load_prompt("hotwords_user", "v1")
+    msgs = hw.build_messages(USER_SAMPLES[0][0], system=load_prompt("hotwords", "v1"),
+                             user_template=tpl_v1,
+                             examples=[{"term": "x", "reason": "人工判定"}])
+    assert "{examples_line}" not in msgs[1]["content"]
+    assert "人工判定" not in msgs[1]["content"]
+
+
+def test_examples_injected_only_when_present():
+    """判例只在带 {examples_line} 的模板里注入，且格式含「过去判定不做」提示。"""
+    ex = [{"term": "how to sound better", "reason": "改写润色，一次性答案"}]
+    msgs = hw.build_messages({"term": "make this text better", "related": [], "hints": []},
+                             examples=ex)
+    assert "过去判定「不做」" in msgs[1]["content"]
+    assert "how to sound better — 改写润色，一次性答案" in msgs[1]["content"]
 
 
 def test_prompt_pair_is_cached(monkeypatch):
