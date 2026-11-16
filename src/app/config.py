@@ -174,3 +174,8 @@ LLM_THINKING = env("LLM_THINKING", "auto")
 # 该 token 等同只读账单权限，按密码对待，绝不写进仓库；会过期，失效时
 # /llm-quota 会降级成提示，余额仍照常显示。留空 = 只显示官方余额。
 DEEPSEEK_PLATFORM_TOKEN = env("DEEPSEEK_PLATFORM_TOKEN", "")
+
+# 后台「用量信息」按 API Key 维度返回多条 series，这个服务用的是哪一条。
+# 账户里还有 Harness / workbuddy 等其它 key，卡片主数字只认本站这个 key，
+# 免得把别的调用方的消费算进来。填平台下拉里显示的 key 名称即可。
+DEEPSEEK_API_KEY_NAME = env("DEEPSEEK_API_KEY_NAME", "site-agent")

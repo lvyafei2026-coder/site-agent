@@ -46,6 +46,7 @@ def _setup(monkeypatch, *, token: str = "") -> None:
     monkeypatch.setattr(quota, "LLM_BASE_URL", "")
     monkeypatch.setattr(quota, "LLM_MODEL", "deepseek-flash")
     monkeypatch.setattr(quota, "DEEPSEEK_PLATFORM_TOKEN", token)
+    monkeypatch.setattr(quota, "DEEPSEEK_API_KEY_NAME", "site-agent")
 
 
 def test_missing_api_key_returns_ok_false(monkeypatch):
@@ -116,6 +117,10 @@ def test_usage_parses_nested_envelope_and_groups_by_api_key(monkeypatch):
         {"name": "site-agent", "cost": 0.32, "requests": 72, "tokens": 200},
         {"name": "another-key", "cost": 0.05, "requests": 3, "tokens": 50},
     ]
+    # 卡片主数字只认本站 key，别把 another-key 的消费算进来
+    assert usage["current_key"] == "site-agent"
+    assert usage["current"] == {
+        "name": "site-agent", "cost": 0.32, "requests": 72, "tokens": 200}
 
     amount_call = next(c for c in calls if "by_api_key/amount" in c["url"])
     assert amount_call["params"]["tz"] == 8 * 3600
@@ -177,6 +182,29 @@ def test_empty_usage_data_is_not_reported_as_zero(monkeypatch):
     assert usage["ok"] is False
     assert usage["keys"] == []
     assert "空用量" in usage["reason"]
+
+
+def test_unknown_current_key_falls_back_to_account_total(monkeypatch):
+    """配置的 key 名在平台里找不到 → 不输出 current，前端退回全账户合计。"""
+    _setup(monkeypatch, token="ut-test")
+    monkeypatch.setattr(quota, "DEEPSEEK_API_KEY_NAME", "renamed-key")
+    get, _ = _fake_get({
+        "/user/balance": {"json": _BALANCE},
+        "by_api_key/amount": {"json": _envelope({"series": [
+            {"api_key": "other", "buckets": [
+                {"usage": {"RESPONSE_TOKEN": 10, "REQUEST": 1}}]}]})},
+        "by_api_key/cost": {"json": _envelope({"data": [
+            {"currency": "CNY", "series": [{"api_key": "other",
+                                            "buckets": [{"cost": 0.1}]}]}]})},
+        "get_user_summary": {"json": _envelope({})},
+    })
+    monkeypatch.setattr(quota.httpx, "get", get)
+
+    usage = quota.check_quota()["usage"]
+    assert usage["ok"] is True
+    assert "current" not in usage and "current_key" not in usage
+    assert usage["cost"] == 0.1
+    assert usage["requests"] == 1
 
 
 def test_non_deepseek_gateway_skips_balance(monkeypatch):

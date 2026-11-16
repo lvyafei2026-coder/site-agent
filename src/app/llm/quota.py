@@ -26,7 +26,8 @@
 
 展示口径：窗口与时间一律北京时间 UTC+8（与后台一致），后台数据约 5 分钟延迟。
 页面加载时自动查一次，不做 cron、不缓存；金额/Tokens 同时给出账户合计与
-按 API Key 的明细（``usage.keys[]``）。
+按 API Key 的明细（``usage.keys[]``），卡片主数字取 ``DEEPSEEK_API_KEY_NAME``
+指定的那个 key（``usage.current``），避免把其它调用方的消费算进来。
 """
 
 from __future__ import annotations
@@ -36,7 +37,13 @@ from urllib.parse import urlparse
 
 import httpx
 
-from src.app.config import DEEPSEEK_PLATFORM_TOKEN, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+from src.app.config import (
+    DEEPSEEK_API_KEY_NAME,
+    DEEPSEEK_PLATFORM_TOKEN,
+    LLM_API_KEY,
+    LLM_BASE_URL,
+    LLM_MODEL,
+)
 
 _DEFAULT_BASE = "https://api.deepseek.com"
 _PLATFORM_BASE = "https://platform.deepseek.com"
@@ -268,6 +275,11 @@ def _platform_usage() -> dict:
     } for name in names]
     keys.sort(key=lambda k: (-k["cost"], -k["requests"], k["name"]))
     out["keys"] = keys
+    wanted = (DEEPSEEK_API_KEY_NAME or "").strip().lower()
+    current = next((k for k in keys if wanted and k["name"].lower() == wanted), None)
+    if current:
+        out["current_key"] = current["name"]
+        out["current"] = current          # 卡片主数字只认本站这个 key
     out["cost"] = round(sum(cost_by_key.values()), 4)
     out["requests"] = sum(k["requests"] for k in keys)
     out["tokens"] = sum(k["tokens"] for k in keys)
