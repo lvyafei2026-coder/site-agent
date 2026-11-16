@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""quota.py 单测：官方余额零消耗查询、平台用量聚合、登录态失效与非 DeepSeek 网关降级。"""
+"""quota.py 单测：官方余额零消耗查询、平台双层外壳解析、按 API Key 分组、
+登录态失效 / 空数据 / 非 DeepSeek 网关降级。"""
 
 from __future__ import annotations
 
@@ -17,6 +18,12 @@ _BALANCE = {
         "granted_balance": "0.00", "topped_up_balance": "8.09",
     }],
 }
+
+
+def _envelope(biz_data: dict) -> dict:
+    """平台真实外壳：{code,msg,data:{biz_code,biz_msg,biz_data}}。"""
+    return {"code": 0, "msg": "", "data": {
+        "biz_code": 0, "biz_msg": "", "biz_data": biz_data}}
 
 
 def _fake_get(routes: dict):
@@ -67,41 +74,52 @@ def test_balance_uses_official_endpoint_without_spending_quota(monkeypatch):
     assert out["checked_at_bj"]
 
 
-def test_usage_parses_amount_cost_and_summary(monkeypatch):
-    """近 30 天消费 / 请求次数 / Tokens / 累计消费，窗口按北京时间 UTC+8。"""
+def test_usage_parses_nested_envelope_and_groups_by_api_key(monkeypatch):
+    """双层外壳 + 按 API Key 明细；窗口按北京时间 UTC+8，参数只有 start/end/tz。"""
     _setup(monkeypatch, token="ut-test")
     routes = {
         "/user/balance": {"json": _BALANCE},
-        "by_api_key/amount": {"json": {"code": 0, "biz_data": {
-            "series": [{"api_key": "k1", "model": "deepseek-flash", "buckets": [
-                {"time": 1, "usage": {"PROMPT_CACHE_HIT_TOKEN": 100,
-                                       "PROMPT_CACHE_MISS_TOKEN": 80,
-                                       "RESPONSE_TOKEN": 20, "REQUEST": 2}},
-                {"time": 2, "usage": {"RESPONSE_TOKEN": 0, "REQUEST": 70}},
-            ]}]}}},
-        "by_api_key/cost": {"json": {"code": 0, "biz_data": {
+        "by_api_key/amount": {"json": _envelope({
+            "start": 0, "end": 0, "bucket": 86400, "series": [
+                {"api_key": "site-agent", "model": "deepseek-flash", "buckets": [
+                    {"time": 1, "usage": {"PROMPT_CACHE_HIT_TOKEN": 100,
+                                           "PROMPT_CACHE_MISS_TOKEN": 80,
+                                           "RESPONSE_TOKEN": 20, "REQUEST": 2}},
+                    {"time": 2, "usage": {"RESPONSE_TOKEN": 0, "REQUEST": 70}},
+                ]},
+                {"api_key": "another-key", "model": "deepseek-flash", "buckets": [
+                    {"time": 1, "usage": {"RESPONSE_TOKEN": 50, "REQUEST": 3}},
+                ]},
+            ]})},
+        "by_api_key/cost": {"json": _envelope({
             "data": [{"currency": "CNY", "series": [
-                {"api_key": "k1", "model": "deepseek-flash",
-                 "buckets": [{"time": 1, "cost": 0.32}]}]}]}}},
-        "get_user_summary": {"json": {"code": 0, "biz_data": {
-            "total_costs": [{"currency": "CNY", "amount": 296.90}]}}},
+                {"api_key": "site-agent", "model": "deepseek-flash",
+                 "buckets": [{"time": 1, "cost": "0.32"}]},
+                {"api_key": "another-key", "model": "deepseek-flash",
+                 "buckets": [{"time": 1, "cost": 0.05}]},
+            ]}]})},
+        "get_user_summary": {"json": _envelope({
+            "total_costs": [{"currency": "CNY", "amount": "296.90"}]})},
     }
     get, calls = _fake_get(routes)
     monkeypatch.setattr(quota.httpx, "get", get)
 
-    out = quota.check_quota()
-    usage = out["usage"]
+    usage = quota.check_quota()["usage"]
     assert usage["ok"] is True
-    assert usage["tokens"] == 200
-    assert usage["requests"] == 72
-    assert usage["cost"] == 0.32
+    assert usage["tokens"] == 250
+    assert usage["requests"] == 75
+    assert usage["cost"] == 0.37
     assert usage["total_cost"] == 296.9
     assert usage["currency"] == "CNY"
     assert usage["window_days"] == 30
+    assert usage["keys"] == [
+        {"name": "site-agent", "cost": 0.32, "requests": 72, "tokens": 200},
+        {"name": "another-key", "cost": 0.05, "requests": 3, "tokens": 50},
+    ]
 
     amount_call = next(c for c in calls if "by_api_key/amount" in c["url"])
     assert amount_call["params"]["tz"] == 8 * 3600
-    assert amount_call["params"]["bucket"] == 86400
+    assert "bucket" not in amount_call["params"]     # 平台只认 start/end/tz
     assert amount_call["params"]["end"] - amount_call["params"]["start"] == 30 * 86400
     assert amount_call["headers"]["Authorization"] == "Bearer ut-test"
 
@@ -126,6 +144,41 @@ def test_platform_login_expired_degrades_without_hiding_balance(monkeypatch):
     assert "登录态" in out["usage"]["reason"]
 
 
+def test_biz_code_failure_degrades(monkeypatch):
+    """外壳 code=0 但 biz_code 非 0 也是业务失败，不能被当成空数据。"""
+    _setup(monkeypatch, token="ut-test")
+    bad = {"code": 0, "msg": "", "data": {"biz_code": 40003, "biz_msg": "expired",
+                                          "biz_data": {}}}
+    get, _ = _fake_get({
+        "/user/balance": {"json": _BALANCE},
+        "by_api_key/amount": {"json": bad},
+        "by_api_key/cost": {"json": bad},
+        "get_user_summary": {"json": bad},
+    })
+    monkeypatch.setattr(quota.httpx, "get", get)
+
+    usage = quota.check_quota()["usage"]
+    assert usage["ok"] is False
+    assert "biz_code=40003" in usage["reason"]
+
+
+def test_empty_usage_data_is_not_reported_as_zero(monkeypatch):
+    """接口 200 但 series 为空 → 明确报空数据，别显示成「近30天 ¥0.00」。"""
+    _setup(monkeypatch, token="ut-test")
+    get, _ = _fake_get({
+        "/user/balance": {"json": _BALANCE},
+        "by_api_key/amount": {"json": _envelope({"series": []})},
+        "by_api_key/cost": {"json": _envelope({"data": []})},
+        "get_user_summary": {"json": _envelope({})},
+    })
+    monkeypatch.setattr(quota.httpx, "get", get)
+
+    usage = quota.check_quota()["usage"]
+    assert usage["ok"] is False
+    assert usage["keys"] == []
+    assert "空用量" in usage["reason"]
+
+
 def test_non_deepseek_gateway_skips_balance(monkeypatch):
     """其它网关没有 /user/balance，明确报错而不是猜路径。"""
     _setup(monkeypatch)
@@ -140,7 +193,7 @@ def test_non_deepseek_gateway_skips_balance(monkeypatch):
 
 
 def test_amount_field_rename_falls_back_to_numeric_sum(monkeypatch):
-    """面板 token 字段改名时不静默归零：除 REQUEST 外的数值仍累加。"""
+    """token 字段改名 + 旧单层外壳都不静默归零。"""
     _setup(monkeypatch, token="ut-test")
     get, _ = _fake_get({
         "/user/balance": {"json": _BALANCE},

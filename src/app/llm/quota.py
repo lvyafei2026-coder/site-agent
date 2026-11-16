@@ -7,7 +7,7 @@
 两条数据源，凭据完全不同，别混：
 
 1. 余额：``GET https://api.deepseek.com/user/balance``，用 ``LLM_API_KEY``。
-   这是官方**公开**账户接口，不消耗推理额度、不占请求次数，返回
+   这是官方**公开**账户接口，不消耗推理额度、不占请求次数，返回裸 JSON
    ``is_available`` + ``balance_infos[]``（total / topped_up / granted）。
 2. 近 30 天消费、API 请求次数、Tokens、累计消费：``platform.deepseek.com``
    后台「用量信息」页的私有面板接口，**官方没有公开用量 API**（api.deepseek.com
@@ -15,8 +15,18 @@
    ``DEEPSEEK_PLATFORM_TOKEN``，不是 API key。私有接口随时可能变；登录态失效
    时返回 ``code`` 40002/40003，这里降级成可读提示，绝不影响余额显示。
 
+★平台响应是双层外壳，别再按单层解析（11-16 实测踩过）：
+
+    {"code":0,"msg":"","data":{"biz_code":0,"biz_msg":"","biz_data":{...}}}
+
+业务体在 ``data.biz_data``；``code`` 与 ``biz_code`` 任一非 0 都算失败。
+``/usage/by_api_key/amount`` 的 ``biz_data.series[]`` 按 api_key × model 分组，
+``/usage/by_api_key/cost`` 的 ``biz_data.data[].series[]`` 亦然，请求参数只有
+``start`` / ``end``（秒级 epoch）/ ``tz``（时区偏移秒），**没有 bucket 参数**。
+
 展示口径：窗口与时间一律北京时间 UTC+8（与后台一致），后台数据约 5 分钟延迟。
-所有请求只在页面手动点「查询额度」时触发，不做 cron、不缓存。
+页面加载时自动查一次，不做 cron、不缓存；金额/Tokens 同时给出账户合计与
+按 API Key 的明细（``usage.keys[]``）。
 """
 
 from __future__ import annotations
@@ -34,6 +44,7 @@ _BJ = timezone(timedelta(hours=8))
 _TIMEOUT = 20.0
 _WINDOW_DAYS = 30
 _TOKEN_KEYS = ("PROMPT_CACHE_HIT_TOKEN", "PROMPT_CACHE_MISS_TOKEN", "RESPONSE_TOKEN")
+_OK_CODES = (None, 0, "0", 200, "200")
 
 
 def _now() -> str:
@@ -53,7 +64,10 @@ def _num(value) -> float:
 
 
 def _get_json(url: str, *, headers: dict, params: dict | None = None) -> dict:
-    """GET 并拆掉平台响应外壳；业务码非 0 视为失败（含登录态过期）。"""
+    """GET 并拆掉平台双层响应外壳；code / biz_code 非 0 视为失败。
+
+    官方 /user/balance 是裸 JSON（无 code/data 外壳），原样返回，别硬套平台格式。
+    """
     resp = httpx.get(url, headers=headers, params=params, timeout=_TIMEOUT)
     if resp.status_code >= 400:
         raise RuntimeError(f"HTTP {resp.status_code}")
@@ -65,15 +79,27 @@ def _get_json(url: str, *, headers: dict, params: dict | None = None) -> dict:
         raise RuntimeError("响应结构异常")
 
     code = data.get("code")
-    if code not in (None, 0, "0", 200, "200"):
+    if code not in _OK_CODES:
         msg = data.get("msg") or data.get("message") or ""
         raise RuntimeError(
             f"平台返回 code={code} {msg}（登录态可能已失效，需重新取 userToken）")
 
-    body = data.get("biz_data")
-    if not isinstance(body, dict):
-        body = data.get("data") if isinstance(data.get("data"), dict) else data
-    return body
+    envelope = data.get("data")
+    if isinstance(envelope, dict):
+        biz_code = envelope.get("biz_code")
+        if biz_code not in _OK_CODES:
+            msg = envelope.get("biz_msg") or envelope.get("msg") or ""
+            raise RuntimeError(
+                f"平台返回 biz_code={biz_code} {msg}（登录态可能已失效，需重新取 userToken）")
+        inner = envelope.get("biz_data")
+        if isinstance(inner, dict):
+            return inner
+        return envelope                       # 兼容早期扁平结构
+
+    inner = data.get("biz_data")                # 兼容更老的单层外壳
+    if isinstance(inner, dict):
+        return inner
+    return data                                # 官方余额接口：裸 JSON
 
 
 def _balance() -> dict:
@@ -116,42 +142,60 @@ def _window() -> tuple[int, int]:
     return int(start.timestamp()), int(end.timestamp())
 
 
-def _sum_amount(payload: dict) -> tuple[float, float]:
-    """/usage/by_api_key/amount：按 key × model 的天桶累加 tokens 与请求次数。"""
-    tokens = 0.0
-    requests = 0.0
+def _key_name(series: dict) -> str:
+    """series 的 api_key 可能是名称字符串，也可能是对象；统一成展示名。"""
+    raw = series.get("api_key") or series.get("api_key_name") \
+        or series.get("key_name") or series.get("name")
+    if isinstance(raw, dict):
+        raw = raw.get("name") or raw.get("api_key") or raw.get("id")
+    return str(raw or "未命名 key")
+
+
+def _sum_amount(payload: dict) -> dict[str, dict]:
+    """/usage/by_api_key/amount：按 API Key 累加 tokens 与请求次数。"""
+    keys: dict[str, dict] = {}
     for series in payload.get("series") or []:
         if not isinstance(series, dict):
             continue
+        slot = keys.setdefault(_key_name(series), {"tokens": 0.0, "requests": 0.0})
         for bucket in series.get("buckets") or []:
             usage = (bucket or {}).get("usage") or {}
             if not isinstance(usage, dict):
                 continue
-            requests += _num(usage.get("REQUEST"))
+            slot["requests"] += _num(usage.get("REQUEST"))
             hits = [_num(usage[k]) for k in _TOKEN_KEYS if k in usage]
             if hits:
-                tokens += sum(hits)
+                slot["tokens"] += sum(hits)
             else:  # 字段命名变了也别静默归零：除 REQUEST 外的数值都算 token
-                tokens += sum(_num(v) for k, v in usage.items() if k != "REQUEST")
-    return tokens, requests
+                slot["tokens"] += sum(_num(v) for k, v in usage.items() if k != "REQUEST")
+    return keys
 
 
-def _sum_cost(payload: dict) -> tuple[float, str]:
-    """/usage/by_api_key/cost：data[] 按币种，series[].buckets[].cost 累加。"""
-    total = 0.0
+def _sum_cost(payload: dict) -> tuple[dict[str, float], str]:
+    """/usage/by_api_key/cost：data[].series[].buckets[].cost 按 API Key 累加。"""
+    costs: dict[str, float] = {}
     currency = ""
-    for entry in payload.get("data") or payload.get("series") or []:
+    entries = payload.get("data")
+    if not isinstance(entries, list):
+        entries = payload.get("series") or []
+    for entry in entries:
         if not isinstance(entry, dict):
             continue
         cur = entry.get("currency")
         if cur and not currency:
             currency = str(cur)
-        for series in entry.get("series") or []:
+        series_list = entry.get("series")
+        if not isinstance(series_list, list):
+            series_list = [entry]             # 兼容扁平结构
+        for series in series_list:
+            if not isinstance(series, dict):
+                continue
+            name = _key_name(series)
             for bucket in series.get("buckets") or []:
-                total += _num((bucket or {}).get("cost"))
-        if "series" not in entry and "cost" in entry:
-            total += _num(entry.get("cost"))
-    return total, currency
+                costs[name] = costs.get(name, 0.0) + _num((bucket or {}).get("cost"))
+            if "buckets" not in series and "cost" in series:
+                costs[name] = costs.get(name, 0.0) + _num(series.get("cost"))
+    return costs, currency
 
 
 def _summary_total_cost(summary: dict):
@@ -178,18 +222,18 @@ def _platform_usage() -> dict:
                 "reason": "未配置 DEEPSEEK_PLATFORM_TOKEN：消费/请求数/Tokens 需平台登录态"}
 
     start, end = _window()
-    params = {"start": start, "end": end, "tz": 8 * 3600, "bucket": 86400}
+    params = {"start": start, "end": end, "tz": 8 * 3600}
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     out: dict = {"ok": False, "window_days": _WINDOW_DAYS, "currency": "CNY",
                  "note": "北京时间，后台数据约 5 分钟延迟"}
     errors: dict[str, str] = {}
+    amount_by_key: dict[str, dict] = {}
+    cost_by_key: dict[str, float] = {}
 
     try:
         amount = _get_json(_PLATFORM_BASE + "/api/v0/usage/by_api_key/amount",
                            headers=headers, params=params)
-        tokens, requests = _sum_amount(amount)
-        out["tokens"] = int(tokens)
-        out["requests"] = int(requests)
+        amount_by_key = _sum_amount(amount)
         amount_ok = True
     except Exception as exc:
         errors["amount"] = str(exc)
@@ -198,8 +242,7 @@ def _platform_usage() -> dict:
     try:
         cost = _get_json(_PLATFORM_BASE + "/api/v0/usage/by_api_key/cost",
                          headers=headers, params=params)
-        total, currency = _sum_cost(cost)
-        out["cost"] = round(total, 4)
+        cost_by_key, currency = _sum_cost(cost)
         if currency:
             out["currency"] = currency
         cost_ok = True
@@ -216,12 +259,28 @@ def _platform_usage() -> dict:
     except Exception as exc:
         errors["summary"] = str(exc)
 
-    out["ok"] = bool(amount_ok and cost_ok)
+    names = set(amount_by_key) | set(cost_by_key)
+    keys = [{
+        "name": name,
+        "cost": round(cost_by_key.get(name, 0.0), 4),
+        "requests": int(amount_by_key.get(name, {}).get("requests", 0)),
+        "tokens": int(amount_by_key.get(name, {}).get("tokens", 0)),
+    } for name in names]
+    keys.sort(key=lambda k: (-k["cost"], -k["requests"], k["name"]))
+    out["keys"] = keys
+    out["cost"] = round(sum(cost_by_key.values()), 4)
+    out["requests"] = sum(k["requests"] for k in keys)
+    out["tokens"] = sum(k["tokens"] for k in keys)
+
+    out["ok"] = bool(amount_ok and cost_ok and keys)
     if errors:
         out["errors"] = errors
     if not out["ok"]:
-        out["reason"] = "平台用量查询失败：" + "；".join(
-            f"{k}:{v}" for k, v in errors.items())
+        if errors:
+            out["reason"] = "平台用量查询失败：" + "；".join(
+                f"{k}:{v}" for k, v in errors.items())
+        else:
+            out["reason"] = "平台返回空用量数据（登录态可能已失效，或窗口内确实无调用）"
     return out
 
 
