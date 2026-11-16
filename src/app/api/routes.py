@@ -73,7 +73,11 @@ def health() -> dict:
 
 @api.get("/llm-quota")
 def llm_quota() -> dict:
-    """LLM 剩余额度（读推理响应头）；页面上手动点击才查，每次消耗 1 次请求额度。"""
+    """DeepSeek 余额与用量：官方 /user/balance 零消耗查询 + 可选的平台用量面板。
+
+    配了 DEEPSEEK_PLATFORM_TOKEN 才查近 30 天消费 / 请求次数 / Tokens / 累计消费；
+    未配时 usage.ok=False 并给出提示，余额照常返回。只在页面手动点击时触发。
+    """
     return check_quota()
 
 

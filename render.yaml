@@ -43,6 +43,11 @@ services:
         sync: false
       - key: LLM_MODEL
         sync: false        # GitHub Models 要求 publisher/model 全名，如 openai/gpt-4o-mini
+      # 可选：DeepSeek 后台「用量信息」登录态 userToken（不是 API key）。
+      # 留空 = /agent 页只显示官方余额；填了才查消费 / 请求次数 / Tokens / 累计消费。
+      # 取法见 .env.example；等同只读账单权限，只在 Render Secret 里填，勿入仓库。
+      - key: DEEPSEEK_PLATFORM_TOKEN
+        sync: false
       # LangSmith 追踪（可选）：TRACING=true 且 API_KEY 非空才真正上报，
       # 任一缺失按关闭处理，不影响 /run 主流程（上报失败只打 warning）。
       - key: LANGSMITH_TRACING

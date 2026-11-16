@@ -165,3 +165,12 @@ LLM_MODEL = env("LLM_MODEL", "deepseek-flash")
 # DeepSeek 思考模式默认开启：reasoning_content 会先吃掉 max_tokens，导致正文为空。
 # auto（默认）= 仅当 base_url 指向 DeepSeek 时自动关闭；off = 强制关闭；on = 保留思考。
 LLM_THINKING = env("LLM_THINKING", "auto")
+
+# DeepSeek 平台后台「用量信息」页的登录态 token（可选，不是 API key）。
+# 官方公开的账户接口只有 /user/balance（余额），消费 / 请求次数 / Tokens / 累计消费
+# 只在 platform.deepseek.com 的私有面板接口里，需要浏览器 localStorage.userToken
+# 的 value。拿到方式：登录后台 → DevTools Console 执行
+#   copy(JSON.parse(localStorage.getItem('userToken')).value)
+# 该 token 等同只读账单权限，按密码对待，绝不写进仓库；会过期，失效时
+# /llm-quota 会降级成提示，余额仍照常显示。留空 = 只显示官方余额。
+DEEPSEEK_PLATFORM_TOKEN = env("DEEPSEEK_PLATFORM_TOKEN", "")
