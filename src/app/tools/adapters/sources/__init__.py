@@ -11,6 +11,7 @@
 
 外部取数：
     gsc.py / reddit.py / scrape_serp.py / scrape_trend.py
+    source_errors.py  抓取层↔业务层的异常契约（SourceUnavailable：源级不可用 vs 单词降级）
 
 重依赖（google-api-python-client）一律在模块内延迟导入，导入本包不需要凭据。
 """

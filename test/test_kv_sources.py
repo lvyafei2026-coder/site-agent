@@ -17,7 +17,7 @@ from src.app.tools.adapters.cloudflare import kv as kvmod
 from src.app.tools.adapters.sources import scrape_serp as ss
 from src.app.tools.adapters.sources import scrape_trend as st
 from src.app.tools.adapters.sources import curation as cur
-from src.app.tools.adapters.sources.errors import SourceUnavailable
+from src.app.tools.adapters.sources.source_errors import SourceUnavailable
 
 
 @pytest.fixture(autouse=True)

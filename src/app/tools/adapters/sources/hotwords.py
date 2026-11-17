@@ -50,7 +50,7 @@ from src.app.tools.adapters.cloudflare.kv import (
     SAVED_KEY, REJECTED_KEY, TAGS_KEY, COMPETITION_KEY, INTERESTS_KEY, HINTS_KEY,
 )
 from . import scrape_serp, scrape_trend
-from .errors import SourceUnavailable
+from .source_errors import SourceUnavailable
 from .curation import upsert_saved, upsert_rejected, set_hint_override
 
 log = logging.getLogger(__name__)
