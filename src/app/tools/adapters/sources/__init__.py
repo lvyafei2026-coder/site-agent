@@ -5,8 +5,8 @@
 """热词业务的数据通道 + 外部取数（按业务域划分，不是按存储资源划分）。
 
 数据通道与业务读写（都落在共享 KV 上；KV 操作实现统一在 ../cloudflare/kv.py）：
-    candidates.py 候选词快照读取（只读 candidates / meta / interests 表）。
-    curation.py   收藏 / 「不做」表的写侧口径（与 console store.js 对齐）。
+    curation.py   词库整理域：候选池只读快照（candidates / meta / interests）
+                  + 收藏 / 「不做」表写侧口径（与 console store.js 对齐）。
     hotwords.py   热词分析业务：SERP / 趋势抓取 + LLM 分析 + 结论回写 KV。
 
 外部取数：
@@ -15,6 +15,6 @@
 重依赖（google-api-python-client）一律在模块内延迟导入，导入本包不需要凭据。
 """
 
-from . import gsc, candidates, reddit
+from . import gsc, reddit
 
-__all__ = ["gsc", "candidates", "reddit"]
+__all__ = ["gsc", "reddit"]

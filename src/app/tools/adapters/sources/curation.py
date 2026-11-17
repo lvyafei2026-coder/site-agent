@@ -2,11 +2,19 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""整理侧写侧口径：从 console/src/store.js 原样移植。
+"""词库整理域：候选池只读快照 + 整理写侧口径（candidates / curation 合并于此）。
 
-agent 现在直写共享 KV，必须和 console 人工操作落在同一套键、同一套状态枚举上——
-否则 agent 写的 saved 和人工点的收藏对不上。这里只动数据结构，不碰网络
-（网络与键名契约在 ../cloudflare/kv.py，全项目唯一的 KV 模块）。
+读侧（原 candidates.py）：
+    直读共享 KV 的 candidates / meta / interests，不调 radar 的 App 接口——radar 把
+    抓取结果写进同一个 KV（见 google-trend-radar/src/index.js runRefresh），agent
+    直接读这份共享数据。Snapshot 原样透出 meta（updatedMs / geosOk / raw / failed）：
+    判断「有没有新热词」看 meta.updatedMs，不能看 candidates 是否非空——累计词库
+    几乎永远非空。
+
+写侧（与 console/src/store.js 原样对齐）：
+    agent 直写共享 KV，必须和 console 人工操作落在同一套键、同一套状态枚举上——
+    否则 agent 写的 saved 和人工点的收藏对不上。这里只动数据结构，不碰网络
+    （网络与键名契约在 ../cloudflare/kv.py，全项目唯一的 KV 模块）。
 
 saved 表：[{key, term, status, at, updatedAt, ...}]，status ∈ STATUSES。
 rejected 表：[{key, term, reason, source, at, updatedAt}]。
@@ -15,12 +23,17 @@ aihints：{ termKey: [信号名] }。
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Optional
 
-from src.app.enums import CurationStatus, HintName, RejectSource
+from src.app.enums import CandidateStatus, CurationStatus, HintName, RejectSource
 
-from src.app.tools.adapters.cloudflare.kv import term_key
+from src.app.tools.adapters.cloudflare.kv import (
+    CANDIDATES_KEY, INTERESTS_KEY, CloudflareKV, get_kv, term_key,
+)
+
+log = logging.getLogger(__name__)
 
 # 与 console/src/store.js 完全一致；todo = Agent 分析后判定「可以做」自动置入
 STATUSES = [s.value for s in CurationStatus]
@@ -28,6 +41,45 @@ STATUSES = [s.value for s in CurationStatus]
 SAVED_FIELDS = ["term", "related", "hints", "geos", "geoCount", "traffic", "count", "score", "verdict"]
 HINT_NAMES = [h.value for h in HintName]
 
+
+# ---- 读侧：候选池快照 ----
+
+def _read(kv: CloudflareKV, status: str, limit: int, light: bool) -> dict[str, Any]:
+    # ★形状兜底：这三张表由 radar / console 写，形状漂移时不能让整个工具调用失败
+    candidates = kv.get_json(CANDIDATES_KEY, [])
+    if not isinstance(candidates, list):
+        log.warning("KV 键 %s 期望数组，实际 %s，按空处理", CANDIDATES_KEY, type(candidates).__name__)
+        candidates = []
+    meta = kv.get_json("meta", {})
+    if not isinstance(meta, dict):
+        meta = {}
+    interests = {} if light else kv.get_json(INTERESTS_KEY, {})
+    if not isinstance(interests, dict):
+        interests = {}
+
+    items = candidates if not limit else candidates[:limit]
+    # 候选条目一般不带 status 字段（status 在 saved/rejected/tags 里），按原 radar.py 语义
+    # 默认都算 doing；老条目没有 status 时不能全丢。
+    if status:
+        filtered = [i for i in items if isinstance(i, dict)
+                    and i.get("status", CandidateStatus.DOING.value) == status]
+        items = filtered or items
+
+    return {"items": items, "meta": meta, "interests": interests}
+
+
+def snapshot(status: str = CandidateStatus.DOING.value, limit: int = 40, light: bool = False,
+             kv: Optional[CloudflareKV] = None) -> dict[str, Any]:
+    """给 Agent 的完整快照：候选 + meta + interests。status 由调用方按需过滤（radar 不解析该参数）。"""
+    kv = kv or get_kv()
+    try:
+        return _read(kv, status, limit, light)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("candidates 读取失败：%s", exc)
+        return {"items": [], "meta": {}, "error": str(exc), "interests": {}}
+
+
+# ---- 写侧：saved / rejected / aihints ----
 
 def _pick_saved(item: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}

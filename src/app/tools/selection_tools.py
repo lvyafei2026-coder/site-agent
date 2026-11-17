@@ -9,7 +9,8 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from src.app.enums import CandidateStatus, ToolKind
-from src.app.tools.adapters.sources import hotwords, candidates
+from src.app.tools.adapters.sources import hotwords
+from src.app.tools.adapters.sources import curation as candidates
 from src.app.tools.base import RuntimeTool
 
 

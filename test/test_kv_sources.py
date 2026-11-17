@@ -17,7 +17,6 @@ from src.app.tools.adapters.cloudflare import kv as kvmod
 from src.app.tools.adapters.sources import scrape_serp as ss
 from src.app.tools.adapters.sources import scrape_trend as st
 from src.app.tools.adapters.sources import curation as cur
-from src.app.tools.adapters.sources import candidates as cand
 from src.app.tools.adapters.sources.errors import SourceUnavailable
 
 
@@ -336,25 +335,25 @@ def test_set_hint_override_filters_names():
 
 
 # ---------------------------------------------------------------------------
-# candidates.py：只读快照（直读 KV，不调 radar /api/candidates）
+# curation.py（候选快照部分）：只读（直读 KV，不调 radar /api/candidates）
 # ---------------------------------------------------------------------------
 def test_snapshot_reads_kv(fake_kv):
     fake_kv.put_json("candidates", [{"term": "a"}, {"term": "b"}])
     fake_kv.put_json("meta", {"updatedMs": 123, "geosOk": 5, "raw": 2907})
     fake_kv.put_json("interests", {"a": {"summary": "x"}})
-    snap = cand.snapshot(kv=fake_kv)
+    snap = cur.snapshot(kv=fake_kv)
     assert len(snap["items"]) == 2
     assert snap["meta"]["geosOk"] == 5
     assert snap["interests"]["a"]["summary"] == "x"
     # light=True 仍回 interests 字段，只是代码路径里不读 KV（保证调用方契约稳定）
-    snap2 = cand.snapshot(light=True, kv=fake_kv)
+    snap2 = cur.snapshot(light=True, kv=fake_kv)
     assert "interests" in snap2
 
     # 异常兜底：KV 抛错返回空结构不崩溃
     class BoomKV:
         def get_json(self, *a, **k):
             raise RuntimeError("boom")
-    failed = cand.snapshot(kv=BoomKV())
+    failed = cur.snapshot(kv=BoomKV())
     assert failed["items"] == [] and "error" in failed
 
 
@@ -363,7 +362,7 @@ def test_snapshot_survives_shape_drift(fake_kv):
     fake_kv.put_json("candidates", {"a": {"term": "a"}})   # 期望数组
     fake_kv.put_json("meta", ["x"])                         # 期望对象
     fake_kv.put_json("interests", "垃圾")                   # 期望对象
-    snap = cand.snapshot(kv=fake_kv)
+    snap = cur.snapshot(kv=fake_kv)
     assert snap["items"] == [] and snap["meta"] == {} and snap["interests"] == {}
 
 
@@ -373,7 +372,7 @@ def test_snapshot_status_filter_keeps_default_doing(fake_kv):
         {"term": "b", "status": "live"},
         {"term": "c"},  # 无 status 视为 doing
     ])
-    snap = cand.snapshot(status="doing", kv=fake_kv)
+    snap = cur.snapshot(status="doing", kv=fake_kv)
     terms = {i["term"] for i in snap["items"]}
     assert terms == {"a", "c"}  # 默认 doing；b(live) 被过滤，但 c 无字段不丢
 

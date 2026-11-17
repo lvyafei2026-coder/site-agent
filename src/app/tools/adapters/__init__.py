@@ -14,7 +14,7 @@
     CloudflareKV = 共享业务表（saved / rejected / ai:v3: 等），fail-open（读失败
       返回默认值并留痕），带进程锁 + atomic_update + 键名契约 + transport 注入。
     WorkersKV = agent 私有状态标记（键带 `agent:` 前缀），fail-fast（出错抛异常）。
-  candidates / curation / hotwords 是业务读写逻辑，都经由这两个门面落 KV。
+  curation / hotwords 是业务读写逻辑，都经由这两个门面落 KV。
 
 子包按需 import，这里不做再导出——避免任一适配器被用到时把四组全拉起来。
 """
