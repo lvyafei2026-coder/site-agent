@@ -5,9 +5,13 @@
 """热词业务的数据通道 + 外部取数（按业务域划分，不是按存储资源划分）。
 
 数据通道与业务读写（都落在共享 KV 上；KV 操作实现统一在 ../cloudflare/kv.py）：
-    curation.py   词库整理域：候选池只读快照（candidates / meta / interests）
-                  + 收藏 / 「不做」表写侧口径（与 console store.js 对齐）。
-    hotwords.py   热词分析业务：SERP / 趋势抓取 + LLM 分析 + 结论回写 KV。
+    curation.py          词库整理域：候选池只读快照（candidates / meta / interests）
+                         + 收藏 / 「不做」表写侧口径（与 console store.js 对齐）。
+    hotwords.py          热词分析编排：候选筛选 → SERP/趋势补数 → LLM → 结论回写。
+    hotword_criteria.py  纯判据：提示词拼装、结论/红线/信号标签解析（无 IO）。
+    hotword_llm.py       LLM 调用与空正文诊断。
+    hotword_kv_io.py     KV 写账本（_WriteLog）+ 形状兜底读取。
+    hotword_backfill.py  状态回填 backfill_states。
 
 外部取数：
     gsc.py / reddit.py / scrape_serp.py / scrape_trend.py

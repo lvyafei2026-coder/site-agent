@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""热词分析：批量取「未跟进」候选 → 补竞争度/趋势 → LLM 出站点方案 → 直写共享 KV。
+"""热词分析编排层：批量取「未跟进」候选 → 补竞争度/趋势 → LLM 出站点方案 → 直写共享 KV。
 
 2026-11-12 去接口化改造：本模块**不再调用** site-console 的 /api/hotwords 与
 google-trend-radar 的 /api/serp、/api/trend、/api/candidates。它直接读写三方共用的共享 KV
@@ -18,34 +18,35 @@ google-trend-radar 的 /api/serp、/api/trend、/api/candidates。它直接读�
   结论「做」  → 直写 KV `saved`（status=todo，待开发）
   结论「观望」→ 只留正文与标签，状态仍为未跟进
 
+★本文件按层拆分（2026-11-17，原 1200+ 行）：
+    hotword_criteria.py  纯判据：提示词拼装、结论/红线/信号标签解析（无 IO）
+    hotword_llm.py       LLM 调用与空正文诊断
+    hotword_kv_io.py     KV 写账本（_WriteLog）+ 形状兜底读取
+    hotword_backfill.py  状态回填 backfill_states
+  下面用 `from .hotword_xxx import ...` 把公开名字原样再导出——tests / runbook /
+  api/routes.py 都按 `hotwords.<name>` 引用，门面名不变。
+
 ★2026-11-17：发给 LLM 的 system 与 user 模板唯一真源 = radar-rules D1 的 prompts 表
-  （由 /rules/prompts 页面维护，本地 versions/*.txt 已删除）。本文件只保留「拼数据」
-  的逻辑与结论/红线/信号标签判据，不再放提示词正文。
+  （由 /rules/prompts 页面维护，本地 versions/*.txt 已删除）。判据层只「拼数据」。
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from functools import lru_cache
 from typing import Any, Optional
 
 from src.app.config import settings
 from src.app.enums import (
-    AnalysisPhase, BackfillAction, CurationStatus, HintName, LlmThinking,
-    PromptTask, RejectSource, Verdict,
+    AnalysisPhase, CurationStatus, RejectSource, Verdict,
 )
 from src.app.observability.langsmith import run_traced, trace_tool, tracing_enabled
-# ★adapters 不能反向依赖 services（见 test_architecture.py），所以走 prompts 包的纯加载函数，
-#   而不是 services/prompt_service.py 那个带日志的节点入口。
-from src.app.prompts import load_prompt
 
 from src.app.tools.adapters.cloudflare.kv import (
-    CloudflareKV, get_kv, term_key, atomic_update, table_lock,
+    CloudflareKV, get_kv, term_key,
     AI_CACHE_PREFIX, SERP_PREFIX, TREND_PREFIX,
     SAVED_KEY, REJECTED_KEY, TAGS_KEY, COMPETITION_KEY, INTERESTS_KEY, HINTS_KEY,
 )
@@ -53,90 +54,24 @@ from . import scrape_serp, scrape_trend
 from .source_errors import SourceUnavailable
 from .curation import upsert_saved, upsert_rejected, set_hint_override
 
+# ---- 判据层（再导出，保持 hotwords.<name> 门面）----
+from .hotword_criteria import (  # noqa: F401  (HINT_NAMES/EXAMPLE_LIMIT 供测试与外部按门面引用)
+    EXAMPLE_LIMIT, _prompt_pair, pick_examples, examples_line,
+    HINT_NAMES, WORK_TITLE_RX, build_messages,
+    serp_brief, work_signal, verdict_of, redline_of, signals_of, decide,
+)
+# ---- LLM 层 ----
+from .hotword_llm import (
+    MAX_TOKENS, LLMEmptyContent, _field, _thinking_kwargs,
+    _empty_content_diag, _llm,
+)
+# ---- KV 写账本层 ----
+from .hotword_kv_io import _WriteLog, _kv_list, _kv_dict  # noqa: F401 (_io_size 留在 kv_io)
+# ---- 状态回填（api/routes.py 经 hotwords.backfill_states 引用）----
+from .hotword_backfill import backfill_states
+
 log = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# 提示词：正文全部在 D1 的 prompts 表（hotwords / hotwords_user 两 task）。
-#   这里只做「加载 + 进程内缓存」：一批 20 个词不能每词都拉一次 D1。
-#   ★换措辞在 /rules/prompts 页面新增 vN 并切默认，最多 60 秒生效、不用重启。
-# ---------------------------------------------------------------------------
-@lru_cache(maxsize=8)
-def _prompt_pair(version: Optional[str] = None) -> tuple[str, str]:
-    """返回 (system, user 模板)。version 由 /run 的 prompt_versions.hotwords 透传。"""
-    v = version or (settings.default_prompt_versions or {}).get(PromptTask.HOTWORDS.value, "v1")
-    return load_prompt(PromptTask.HOTWORDS.value, v), load_prompt(PromptTask.HOTWORDS_USER.value, v)
-
-# 判例反馈：从人工「不做」标记里挑少量真实词例喂回 AI，让它对同类词倾向判不做。
-# ★v2 提示词已固化高频规则（非工具意图/时效资讯/热度下降/真人/作品），这里的判例
-#   只取「人工判定 + 有泛化价值理由」的词，避开已固化的占位理由，防止提示词与判例重复。
-EXAMPLE_LIMIT = 8
-# 这些理由已写进 v2 提示词的硬规则，再当判例注入只是重复占位、浪费 token。
-_EXAMPLE_SKIP_RX = __import__("re").compile(
-    r"搜索意图不是找工具|热度下降|趋势下降|未填原因|旧版本本地标记"
-)
-
-
-def pick_examples(rejected: list, limit: int = EXAMPLE_LIMIT) -> list[dict[str, str]]:
-    """从 rejected 表挑判例：只人工标记、理由有泛化价值、按理由去重。
-
-    - 排除 `source=ai`（AI 自己的判定不是「学习素材」）与无/占位理由；
-    - 理由过短（<4 字，多是「世界末日」这类纯释义）或无信息量则跳过；
-    - 同一理由只留最新一条，避免 8 条「搜索意图不是找工具」刷屏；
-    - 按 updatedAt/at 倒序取最近 ``limit`` 条。
-    """
-    import re as _re
-
-    if not isinstance(rejected, list):
-        return []
-    seen_reason: set[str] = set()
-    out: list[dict[str, str]] = []
-    # 先按时间倒序（最新在前），同理由去重时自然保留最新一条。
-    for row in sorted(
-        (x for x in rejected if isinstance(x, dict)),
-        key=lambda x: (x.get("updatedAt") or x.get("at") or 0),
-        reverse=True,
-    ):
-        if row.get("source") != "manual":
-            continue
-        term = str(row.get("term") or "").strip()
-        reason = str(row.get("reason") or "").strip()
-        if not term or len(reason) < 4 or _EXAMPLE_SKIP_RX.search(reason):
-            continue
-        # 理由归一化去重：去掉首尾标点与空白，同类理由只留一条。
-        norm = _re.sub(r"[\s，。；、,.;:：]+$", "", reason)
-        if norm in seen_reason:
-            continue
-        seen_reason.add(norm)
-        out.append({"term": term[:60], "reason": reason[:120]})
-        if len(out) >= max(0, min(int(limit), 20)):
-            break
-    return out
-
-
-def examples_line(examples: list[dict[str, str]]) -> str:
-    """把判例拼成 user 模板的 ``{examples_line}`` 占位内容；无判例返回空串。"""
-    if not examples:
-        return ""
-    head = "以下是你过去判定「不做」的真实案例，遇到同类词请优先判不做："
-    rows = [f"· {e['term']} — {e['reason']}" for e in examples]
-    return head + "\n" + "\n".join(rows)
-
-
-HINT_NAMES = tuple(h.value for h in HintName)
-
-WORK_TITLE_RX = __import__("re").compile(
-    r"(\(\s*(19|20)\d{2}\s*(film|movie|tv series|web series|series|album|song|novel|book|game)\s*\)"
-    r"|\b(imdb|letterboxd|rottentomatoes|rotten tomatoes|fandom)\b"
-    r"|\b(film|movie|web series|tv series|box office|trailer|soundtrack|full movie)\b)",
-    __import__("re").I,
-)
-
-# 逐词分析要输出 8 小节、450 字以内的中文正文（约 600-900 token）。
-# ★DeepSeek 思考模式默认开启（effort=high），reasoning_content 单独返回且计入
-#   max_tokens：实测 2000 全被推理吃光 → finish_reason=length、content 为空。
-#   所以逐词调用会关掉思考模式（见 _thinking_kwargs），让这 2000 全给正文；
-#   若手动设 LLM_THINKING=on 保留思考，需自行把这里调大。
-MAX_TOKENS = 2000
 BATCH_WORKERS = 4           # 20 条逐条分析，并发压住外部 LLM 超时
 BATCH_OK_MIN_RATE = 0.5     # 整批成功判定：成功率低于此值即视为失败（不再「1 条成功就算成功」）
 SERP_GAP_SEC = 1.5          # 全局串行 + 最小间隔；202 的根因是请求头，见 scrape_serp.py
@@ -165,188 +100,6 @@ _serp_lock = threading.Lock()
 _last_serp_at = 0.0
 
 
-# ---------------------------------------------------------------------------
-# 纯判据（无 IO，单测直接喂文本；口径与 console/public/assets/app.js 一致）
-# ---------------------------------------------------------------------------
-def build_messages(body: dict[str, Any], *, prompt_version: Optional[str] = None,
-                   system: Optional[str] = None,
-                   user_template: Optional[str] = None,
-                   examples: Optional[list[dict[str, str]]] = None) -> list[dict[str, str]]:
-    """拼 system + user；**措辞全部来自 D1 的 hotwords 提示词**，这里只填数据。
-
-    SERP 前 6 的「域名 — 标题」是 AI 辨形的主要线索。system / user_template 可注入
-    （单测固定模板用）；生产由 _prompt_pair() 一次性加载并缓存，20 个词只读一次磁盘。
-
-    ``examples`` 是人工判例反馈（见 :func:`pick_examples`）：仅当 user 模板含
-    ``{examples_line}`` 占位符（v2+）时注入；v1 模板无此占位符则输出逐字不变。
-    """
-    if system is None or user_template is None:
-        default_system, default_tpl = _prompt_pair(prompt_version)
-        system = default_system if system is None else system
-        user_template = default_tpl if user_template is None else user_template
-
-    term = str(body.get("term") or "")[:120]
-    related = [str(x) for x in (body.get("related") or [])][:6]
-    hints = "、".join(str(x) for x in (body.get("hints") or []))
-    geo_count = body.get("geoCount") or 0
-    traffic = body.get("traffic") or 0
-
-    serp = [x for x in (body.get("serp") or []) if x][:6]
-    lines = []
-    for item in serp:
-        if isinstance(item, str):
-            lines.append("· " + item)
-            continue
-        domain = str(item.get("domain") or "")
-        title = __import__("re").sub(r"\s+", " ", str(item.get("title") or ""))[:90]
-        lines.append("· " + domain + (" — " + title if title else ""))
-    serp_line = "现有搜索结果前几名（域名 — 页面标题）：\n" + "\n".join(lines) if lines else ""
-    related_line = "关联查询：" + " / ".join(related) if related else "关联查询：（无）"
-    hints_line = "命中的常青信号：" + hints if hints else "未命中明显常青信号"
-
-    # 模板里没有 SERP 时是一整行空占位，过滤空行后与原拼装结果一致。
-    fields = dict(term=term, related_line=related_line, serp_line=serp_line,
-                  hints_line=hints_line, geo_count=geo_count, traffic=traffic)
-    # ★只有模板真的含 {examples_line} 才传该字段：v1 模板没有它，传了会 KeyError。
-    #   build_messages 的输出格式与 D1 模板占位符对应，见 test_prompts.py。
-    if "{examples_line}" in user_template:
-        fields["examples_line"] = examples_line(examples or [])
-    user = "\n".join(x for x in user_template.format(**fields).split("\n") if x)
-    return [{"role": "system", "content": system},
-            {"role": "user", "content": user}]
-
-
-def serp_brief(data: dict[str, Any] | None) -> list[dict[str, str]]:
-    """只把前 6 名的域名 + 标题交给 AI；完整前 10 与竞争度由 KV 的 serp:v1: 提供。"""
-    items = (data or {}).get("items") or []
-    if not items:
-        comp = (data or {}).get("competition") or {}
-        return [{"domain": str(d), "title": ""} for d in (comp.get("domains") or [])][:6]
-    return [{"domain": str(x.get("domain") or ""),
-             "title": str(x.get("title") or "")}
-            for x in items if isinstance(x, dict)][:6]
-
-
-def work_signal(items: list[dict[str, str]]) -> str:
-    """SERP 标题里的作品信号：前 6 名至少 2 条命中才算硬证据（不依赖 AI 认不认得）。"""
-    hits = [x for x in items[:6] if x.get("title") and WORK_TITLE_RX.search(str(x["title"]))]
-    if len(hits) < 2:
-        return ""
-    title = __import__("re").sub(r"\s+", " ", hits[0]["title"])[:46]
-    return "SERP 标题显示这是具体作品（" + title + "）"
-
-
-def verdict_of(text: str) -> str:
-    """最后一节「结论」：做 / 观望 / 不做；小节号可能变，不写死数字。"""
-    s = str(text or "")
-    m = __import__("re").search(r"\d+\)\s*结论[：:]\s*(不做|观望|做)", s)
-    if m:
-        return m.group(1)
-    if __import__("re").search(r"结论[：:][^\n]*不做", s):
-        return Verdict.SKIP.value
-    return ""
-
-
-def redline_of(text: str) -> str:
-    """AI 漏写「不做」时的兜底：真人姓名 / 影视作品，宁可错杀。"""
-    s = str(text or "")
-    if __import__("re").search(r"(真人姓名|姓名权|肖像权|侵犯.{0,4}权|侵权风险)", s):
-        return "真人姓名，涉姓名权/肖像权"
-    if (__import__("re").search(r"(影视作品|电影|剧集|作品名|专辑|小说|番剧)", s)
-            and __import__("re").search(r"(版权|侵权|合规|盗版)", s)):
-        return "影视/作品名，涉版权与合规风险"
-    return ""
-
-
-def signals_of(text: str) -> list[str] | None:
-    """第 8 节信号标签；解析不出返回 None（保持原样），写「无」返回空列表。"""
-    m = __import__("re").search(r"(?:^|\n)\s*8\)\s*信号标签[：:]\s*([^\n]+)", str(text or ""))
-    if not m:
-        return None
-    line = m.group(1).strip()
-    if line.startswith("无"):
-        return []
-    out = [h for h in HINT_NAMES if h in line][:3]
-    return out or None
-
-
-def decide(text: str, signal: str = "") -> tuple[str, str]:
-    """结论 + 理由。红线与 SERP 作品硬证据都能把结论压成「不做」。"""
-    verdict = verdict_of(text)
-    reason = ""
-    risk = redline_of(text)
-    if verdict != Verdict.SKIP.value and risk:
-        verdict, reason = Verdict.SKIP.value, risk
-    if verdict != Verdict.SKIP.value and signal:
-        verdict, reason = Verdict.SKIP.value, signal
-    return verdict, reason
-
-
-# ---------------------------------------------------------------------------
-# 外部 IO（只允许在这一层发生，且全部走 KV / 外部 LLM / 外部抓取，不调 console/radar 接口）
-# ---------------------------------------------------------------------------
-class _WriteLog:
-    """单词级写入账本：这个词的每一次 put_* 都记结果，失败则汇总成 error。
-
-    以前 `kv.put_json(...)` 的返回值被丢掉，Cloudflare 返回 401/5xx 时进程内
-    仍以为写成功了，于是「正文有了、状态表没有」，而 _select_pending 又会因为
-    正文存在把这个词永久剔除。现在每次写都检查，失败清单会进 items[].error。
-    """
-
-    def __init__(self, term: str = "") -> None:
-        self.term = term
-        self.failed: list[str] = []
-        # 每次写的明细（供 LangSmith 的 tool:kv.write / tool:serp / tool:trend 输出）。
-        # 关闭追踪时只记 key/kind/phase/ok 四个小字段，不算体积，零额外开销。
-        self.records: list[dict[str, Any]] = []
-        self.phase = AnalysisPhase.ANALYSIS.value   # serp / trend / analysis
-        self.capture = False      # tracing 开启时才计算写入字节数
-
-    def _record(self, key: str, ok: bool, kind: str, value: Any = None) -> bool:
-        rec: dict[str, Any] = {"key": key, "kind": kind,
-                               "phase": self.phase, "ok": bool(ok)}
-        if self.capture:
-            rec["bytes"] = _io_size(value)
-        self.records.append(rec)
-        if not ok:
-            self.failed.append(key)
-            log.warning("KV 写入失败 term=%s key=%s", self.term, key)
-        return ok
-
-    def text(self, kv: Any, key: str, value: str, ttl: Optional[int] = None) -> bool:
-        try:
-            ok = bool(kv.put_text(key, value, ttl=ttl))
-        except Exception as exc:  # noqa: BLE001 - 单词级写失败不拖垮其它词
-            log.warning("KV 写入异常 term=%s key=%s: %s", self.term, key, exc)
-            ok = False
-        return self._record(key, ok, "put_text", value)
-
-    def json(self, kv: Any, key: str, obj: Any, ttl: Optional[int] = None) -> bool:
-        try:
-            ok = bool(kv.put_json(key, obj, ttl=ttl))
-        except Exception as exc:  # noqa: BLE001
-            log.warning("KV 写入异常 term=%s key=%s: %s", self.term, key, exc)
-            ok = False
-        return self._record(key, ok, "put_json", obj)
-
-    def table(self, kv: Any, key: str, mutator, *, reader, ttl: Optional[int] = None) -> bool:
-        ok, updated = atomic_update(kv, key, mutator, reader=reader, ttl=ttl)
-        return self._record(key, ok, "atomic_update", updated)
-
-    def error(self) -> str:
-        return "KV 写入失败：" + "、".join(self.failed) if self.failed else ""
-
-
-def _io_size(value: Any) -> int:
-    """只在 tracing 开启时调用：给 span 里的「写了多大」一个可解释的量级。"""
-    if isinstance(value, str):
-        return len(value)
-    try:
-        return len(json.dumps(value, ensure_ascii=False, default=str))
-    except Exception:  # noqa: BLE001
-        return 0
-
-
 def _tool_step(name: str, call, *, inputs: dict[str, Any], outputs,
                parent, term: str):
     """逐词内部的一步 IO = 一条 `tool:*` span，显式挂在词 span 下。
@@ -364,131 +117,10 @@ def _tool_step(name: str, call, *, inputs: dict[str, Any], outputs,
         outputs=outputs,
     )
 
-    def error(self) -> str:
-        return "KV 写入失败：" + "、".join(self.failed) if self.failed else ""
 
-
-class LLMEmptyContent(Exception):
-    """LLM 调用已完成但没有可用正文。message 是准确的、可操作的失败说明。
-
-    与「LLM 调用失败」（连接/鉴权异常）分开：这类是本词没产出内容，不代表整批
-    模型不可用，调用方不应据此中止整批。
-    """
-
-    def __init__(self, message: str, diag: dict[str, Any]) -> None:
-        super().__init__(message)
-        self.diag = diag
-
-
-def _field(obj: Any, key: str, default: Any = None) -> Any:
-    """响应可能是标准对象、wrap_openai 的 dict、或 None，统一取值。"""
-    return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
-
-
-def _thinking_kwargs() -> dict[str, Any]:
-    """DeepSeek 思考模式默认开启，逐词分析这类固定格式的文案任务需要关掉。
-
-    auto（默认）：仅当 LLM_BASE_URL 指向 DeepSeek 时注入 extra_body，换用别的
-      OpenAI 兼容服务不会误传这个 DeepSeek 专属参数；
-    off：强制注入；on：保留思考（此时要自行调大 MAX_TOKENS）。
-    """
-    from src.app.config import LLM_BASE_URL, LLM_THINKING
-
-    mode = (LLM_THINKING or LlmThinking.AUTO.value).strip().lower()
-    if mode == LlmThinking.ON.value:
-        return {}
-    if mode == LlmThinking.OFF.value or (
-            mode == LlmThinking.AUTO.value and "deepseek" in (LLM_BASE_URL or "").lower()):
-        return {"extra_body": {"thinking": {"type": "disabled"}}}
-    return {}
-
-
-def _empty_content_diag(resp: Any) -> dict[str, Any]:
-    """把「正文为空」的现场读全，并给出与真实原因一致的错误说明。
-
-    实测线上场景：finish_reason=length、content=""、reasoning_tokens=2000、
-    completion_tokens=2000 —— 是输出预算被思考推理吃光，绝不是 API Key 没配。
-    """
-    from src.app.config import LLM_MODEL
-
-    choices = _field(resp, "choices") or []
-    first = choices[0] if choices else None
-    finish = _field(first, "finish_reason")
-    usage = _field(resp, "usage") or {}
-    details = _field(usage, "completion_tokens_details") or {}
-    reasoning = _field(details, "reasoning_tokens")
-    if reasoning is None:                       # 兼容扁平 usage / LangSmith 形态
-        reasoning = _field(usage, "reasoning_tokens")
-    if reasoning is None:
-        out_details = _field(_field(resp, "usage_metadata") or {},
-                             "output_token_details") or {}
-        reasoning = _field(out_details, "reasoning")
-    completion = _field(usage, "completion_tokens")
-    model = _field(resp, "model") or LLM_MODEL
-
-    if finish == "length" and reasoning:
-        reason = "输出预算耗尽（思考推理吃光 max_tokens，正文未生成）"
-        hint = "关闭思考模式（LLM_THINKING=off/auto）或调大 MAX_TOKENS"
-    elif finish == "length":
-        # 已经没在思考却还是 length，说明是正文自己超了预算，不能赖到推理头上
-        reason = "输出预算耗尽（正文超出 MAX_TOKENS，本次未产生推理 token）"
-        hint = "调大 MAX_TOKENS（当前 2000）"
-    elif not choices:
-        reason = "响应中没有 choices"
-        hint = "检查 LLM_API_KEY / LLM_BASE_URL / LLM_MODEL 与响应形态"
-    elif _field(first, "message") is None:
-        reason = "响应形态异常（choice 缺 message）"
-        hint = "检查 LLM_API_KEY / LLM_BASE_URL / LLM_MODEL 与响应形态"
-    else:
-        reason = "模型返回空 content"
-        hint = "检查 LLM_API_KEY / LLM_BASE_URL / LLM_MODEL 与响应形态"
-
-    diag = {
-        "reason": reason, "hint": hint, "model": model,
-        "finish_reason": finish, "reasoning_tokens": reasoning,
-        "completion_tokens": completion, "max_tokens": MAX_TOKENS,
-        "resp_type": type(resp).__name__, "choices": len(choices),
-    }
-    diag["message"] = (
-        f"LLM 返回空正文：{reason}；finish_reason={finish}, "
-        f"max_tokens={MAX_TOKENS}, reasoning_tokens={reasoning}, "
-        f"completion_tokens={completion}, model={model}, "
-        f"resp_type={type(resp).__name__}, choices={len(choices)}；建议：{hint}"
-    )
-    return diag
-
-
-def _llm(messages: list[dict[str, str]]) -> tuple[str, str]:
-    """逐词分析的非流式 LLM 调用；正文为空抛 LLMEmptyContent（带准确诊断）。
-
-    ★走统一的 get_llm()：与 extract_fields 共用同一客户端（含 LangSmith trace 与
-      LLM_DEBUG 的 HTTP 钩子），逐词调用不再是 trace/日志的盲区。响应经
-      content_from_response 归一——wrap_openai 会把 ChatCompletion 转成 dict，
-      裸写 resp.choices[0].message.content 在这条路径上会直接抛 AttributeError。
-    """
-    from src.app.config import LLM_API_KEY, LLM_MODEL
-    from src.app.llm.provider import content_from_response, get_llm
-
-    if not LLM_API_KEY:
-        diag = {"reason": "LLM_API_KEY 未配置，未发起调用", "no_key": True,
-                "hint": "在 Render 配好 LLM_API_KEY", "finish_reason": None,
-                "reasoning_tokens": None, "max_tokens": MAX_TOKENS}
-        diag["message"] = "LLM 未配置 API Key（LLM_API_KEY 为空），本次未发起调用；建议在 Render 配好该变量"
-        raise LLMEmptyContent(diag["message"], diag)
-
-    resp = get_llm().chat.completions.create(
-        model=LLM_MODEL, messages=messages,
-        max_tokens=MAX_TOKENS, temperature=0, timeout=60,
-        **_thinking_kwargs(),
-    )
-    text = (content_from_response(resp) or "").strip()
-    if not text:
-        diag = _empty_content_diag(resp)
-        log.warning("hotwords_llm_empty_content %s", diag["message"])
-        raise LLMEmptyContent(diag["message"], diag)
-    return text, LLM_MODEL
-
-
+# ---------------------------------------------------------------------------
+# 外部抓取（SERP / Trends）：读缓存 / 现抓 / 写回 + 全局节流
+# ---------------------------------------------------------------------------
 def _throttled_serp(term: str, kv: CloudflareKV,
                     writes: Optional[_WriteLog] = None,
                     diag: Optional[dict[str, Any]] = None) -> tuple[dict[str, Any] | None, str]:
@@ -575,26 +207,6 @@ def _trend(term: str, kv: CloudflareKV,
 # ---------------------------------------------------------------------------
 # 编排：一次 20 条，逐条走完「补数据 → 分析 → 回写状态」；全部读写共享 KV
 # ---------------------------------------------------------------------------
-def _kv_list(kv: CloudflareKV, key: str) -> list:
-    """读一个「应该是数组」的 KV 键；形状不对当空并 warn，不抛。"""
-    val = kv.get_json(key, [])
-    if isinstance(val, list):
-        return val
-    if val is not None and val != []:
-        log.warning("KV 键 %s 期望数组，实际 %s，按空处理", key, type(val).__name__)
-    return []
-
-
-def _kv_dict(kv: CloudflareKV, key: str) -> dict:
-    """读一个「应该是对象」的 KV 键；形状不对当空并 warn，不抛。"""
-    val = kv.get_json(key, {})
-    if isinstance(val, dict):
-        return val
-    if val is not None and val != {}:
-        log.warning("KV 键 %s 期望对象，实际 %s，按空处理", key, type(val).__name__)
-    return {}
-
-
 def _select_pending(kv: CloudflareKV, limit: int) -> list[dict[str, Any]]:
     """读 KV 候选池，剔除已跟进/打标签/已分析的词，返回前 limit 条未跟进候选。
 
@@ -691,7 +303,7 @@ def _finalize(out: dict[str, Any], writes: _WriteLog) -> dict[str, Any]:
 
 
 def _analyze_one(item: dict[str, Any], kv: CloudflareKV,
-                 state: Optional["_BatchAbort"] = None,
+                 state: Optional[_BatchAbort] = None,
                  parent_run=None,
                  prompt_version: Optional[str] = None,
                  examples: Optional[list[dict[str, str]]] = None) -> dict[str, Any]:
@@ -1072,139 +684,3 @@ def _run_batch(limit: int, kv: Optional[CloudflareKV], batch_run,
     if degraded:
         out["note"] = "；".join(degraded) + "；其余词仍照常分析并回写"
     return out
-
-
-# ---------------------------------------------------------------------------
-# 状态回填：把「正文已写、状态表丢了」的词补回去（否则永远不会被重跑，也看不见）
-# ---------------------------------------------------------------------------
-def backfill_states(kv: Optional[CloudflareKV] = None, *, limit: int = 200,
-                    dry_run: bool = False) -> dict[str, Any]:
-    """从已落库的 `ai:v3:<key>` 正文反推结论，补写缺失的 saved / rejected / aihints。
-
-    触发场景：正文写成功、但 5 张整表里某次 put_json 失败（或历史上并发 lost update），
-    于是 `_select_pending` 因「已有正文」永久剔除该词，saved/rejected 里却查不到它——
-    既不会重跑、前端也看不见。这里重解析正文第 7/8 节，**不调 LLM、不重抓 SERP/Trends**，
-    把状态与标签按同一套 `upsert_*` / `set_hint_override` 口径补回去。
-
-    dry_run=True 只出报告不写，建议先跑一次核对。结论「观望」按设计不写状态（只补标签）；
-    正文为空 / 结论解析不出且状态缺失的词会列进 items（action=unresolved）——要重跑它们
-    得先删掉对应的 `ai:v3:` 正文，因为 _select_pending 只认正文存在与否。
-    """
-    kv = kv or get_kv()
-    limit = max(1, min(int(limit or 200), 1000))
-    report: dict[str, Any] = {
-        "ok": True, "dryRun": bool(dry_run), "scanned": 0, "repaired": 0,
-        "hintsRepaired": 0, "alreadyCurated": 0, "unresolved": 0,
-        "writeErrors": [], "items": [],
-    }
-    try:
-        cache_keys = [k for k in kv.list_keys(AI_CACHE_PREFIX)
-                      if k.startswith(AI_CACHE_PREFIX)]
-        saved = _kv_list(kv, SAVED_KEY)
-        rejected = _kv_list(kv, REJECTED_KEY)
-        tags = _kv_dict(kv, TAGS_KEY)
-        hints_map = _kv_dict(kv, HINTS_KEY)
-        cand_map: dict[str, dict[str, Any]] = {}
-        for c in _kv_list(kv, "candidates"):
-            if isinstance(c, dict) and c.get("term"):
-                cand_map[term_key(c.get("key") or c["term"])] = c
-    except Exception as exc:  # noqa: BLE001
-        log.warning("状态回填读取 KV 失败：%s", exc)
-        report["ok"] = False
-        report["error"] = "状态回填读取 KV 失败：" + str(exc)[:200]
-        return report
-
-    def curated_now() -> set[str]:
-        """锁内复核：回填期间可能正好有一批分析写完状态，别覆盖人工/新结论。"""
-        cur: set[str] = set()
-        for row in _kv_list(kv, SAVED_KEY) + _kv_list(kv, REJECTED_KEY):
-            if isinstance(row, dict) and row.get("key"):
-                cur.add(term_key(row["key"]))
-        cur.update(term_key(k) for k, v in _kv_dict(kv, TAGS_KEY).items() if v)
-        return cur
-
-    curated: set[str] = set()
-    for row in saved + rejected:
-        if isinstance(row, dict) and row.get("key"):
-            curated.add(term_key(row["key"]))
-    curated.update(term_key(k) for k, v in tags.items() if v)
-
-    for cache_key in cache_keys[:limit]:
-        key = cache_key[len(AI_CACHE_PREFIX):]
-        if not key:
-            continue
-        report["scanned"] += 1
-        text = kv.get_text(cache_key) or ""
-        if not text.strip():
-            report["unresolved"] += 1
-            report["items"].append({"key": key, "action": BackfillAction.UNRESOLVED.value,
-                                    "reason": "正文为空"})
-            continue
-
-        verdict, reason = decide(text)
-        hints = signals_of(text)
-        need_state = key not in curated and verdict in (Verdict.DO.value, Verdict.SKIP.value)
-        # 「信号标签：无」解析成 []，写成空覆盖没有意义，回填时跳过
-        need_hints = bool(hints) and key not in hints_map
-
-        if not need_state and not need_hints:
-            # 结论「观望」本来就没有状态，和「已整理」一样不算缺口；
-            # 只有结论解析不出、状态也没补上的才算真卡住。
-            if verdict:
-                report["alreadyCurated"] += 1
-            else:
-                report["unresolved"] += 1
-                report["items"].append({
-                    "key": key, "action": BackfillAction.UNRESOLVED.value,
-                    "reason": "正文解析不出结论且状态缺失；要重跑需先删除该词的 ai:v3: 正文",
-                })
-            continue
-
-        action = (BackfillAction.REPAIRED.value if not dry_run
-                  else BackfillAction.PREVIEW.value)
-        entry: dict[str, Any] = {
-            "key": key, "action": action, "verdict": verdict or Verdict.UNDECIDED.value,
-            "state": verdict if need_state else "", "hints": bool(need_hints),
-        }
-        report["items"].append(entry)
-        if dry_run:
-            continue
-
-        writes = _WriteLog(key)
-        cand = cand_map.get(key, {})
-        # 与正在跑的 batch 共用同一把 RLock（可重入）：状态 + 标签一起改完再放开，
-        # 避免回填到一半被另一个词插进来读到半套数据。
-        with table_lock():
-            if need_state and key in curated_now():
-                # 回填扫描期间刚被整理过 → 不再覆盖，保证幂等、不抢人工标记
-                need_state = False
-                report["alreadyCurated"] += 1
-                entry["state"] = ""
-            need_hints = bool(hints) and key not in _kv_dict(kv, HINTS_KEY)
-            entry["hints"] = bool(need_hints)
-            if not need_state and not need_hints:
-                entry["action"] = BackfillAction.SKIPPED.value
-            if need_state and verdict == Verdict.SKIP.value:
-                payload = {"term": cand.get("term") or key,
-                           "reason": reason or "AI 判定不做", "source": RejectSource.AI.value}
-                if writes.table(kv, REJECTED_KEY,
-                                lambda arr: upsert_rejected(arr, payload), reader=_kv_list):
-                    report["repaired"] += 1
-            elif need_state and verdict == Verdict.DO.value:
-                fields = ("term", "related", "hints", "geos", "geoCount", "traffic", "count", "score")
-                payload = {**{f: cand.get(f) for f in fields},
-                           "term": cand.get("term") or key,
-                           "status": CurationStatus.TODO.value, "verdict": Verdict.DO.value}
-                if writes.table(kv, SAVED_KEY,
-                                lambda arr: upsert_saved(arr, payload), reader=_kv_list):
-                    report["repaired"] += 1
-            if need_hints:
-                if writes.table(kv, HINTS_KEY,
-                                lambda m: set_hint_override(m, key, hints), reader=_kv_dict):
-                    report["hintsRepaired"] += 1
-        report["writeErrors"].extend(writes.failed)
-
-    if report["writeErrors"]:
-        report["ok"] = False
-        report["error"] = "部分状态回填写入失败：" + "、".join(dict.fromkeys(report["writeErrors"]))
-    return report

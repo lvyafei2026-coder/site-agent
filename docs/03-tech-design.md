@@ -183,7 +183,7 @@ class GetHotwordsTool(RuntimeTool):
 | | `kv` | ★KV 唯一模块：`CloudflareKV`（共享表，fail-open，atomic_update+锁）+ `WorkersKV`（`agent:` 前缀，fail-fast）+ 键名契约；`__init__` 里 `keyvalue` 是 WorkersKV 单例 |
 | | `sql` | `Sql` / `PAGE_QUERIES` / `LEDGER_TABLES` / `SqlBuilder` |
 | `sources/` | `curation` | `snapshot(status, limit)` → `{items, meta, interests}`（只读共享 KV）+ `upsert_saved / upsert_rejected / set_hint_override`（与 console store.js 对齐的写侧口径） |
-| | `hotwords` | 热词分析业务：SERP/趋势抓取 + LLM 分析 + 结论回写 |
+| | `hotwords` | 热词分析编排（run_batch / _analyze_one / backfill_states 门面）；判据=hotword_criteria、LLM=hotword_llm、KV 写账本=hotword_kv_io、回填=hotword_backfill |
 | | `gsc` | `search_analytics(days, dimensions)`；无凭据返回 `[]` |
 | | `reddit` | `search(query, limit, timeframe)` 只读 |
 | | `scrape_serp` / `scrape_trend` | DDG SERP / Google Trends 抓取 |

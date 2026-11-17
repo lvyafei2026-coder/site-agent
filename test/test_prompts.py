@@ -23,6 +23,7 @@ from pathlib import Path
 from src.app.config import settings
 from src.app.prompts import PROMPT_TASKS, available_versions, load_prompt
 from src.app.tools.adapters.sources import hotwords as hw
+from src.app.tools.adapters.sources import hotword_criteria as hwc  # _prompt_pair 真身所在
 
 APP = Path(__file__).resolve().parents[1] / "src" / "app"
 
@@ -123,14 +124,14 @@ def test_prompt_pair_is_cached():
     """一批 20 词只读一次 D1 快照：system + user 各一次，之后全走缓存。"""
     hw._prompt_pair.cache_clear()
     calls = {"n": 0}
-    real = hw.load_prompt
+    real = hwc.load_prompt
 
     def counting(task, version=None):
         calls["n"] += 1
         return real(task, version)
 
     from unittest.mock import patch
-    with patch.object(hw, "load_prompt", counting):
+    with patch.object(hwc, "load_prompt", counting):
         hw._prompt_pair()
         hw._prompt_pair()
     assert calls["n"] == 2
