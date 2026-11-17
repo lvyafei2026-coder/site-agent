@@ -69,7 +69,9 @@ src/app/
 │   ├── *_tools.py           6 个业务域：<Domain>Ops 实现 + 工具类
 │   └── adapters/            cloudflare · sources · hosting · publishing
 ├── models/                  ExtractionSchema · WorkflowResult
-├── prompts/versions/        <task>/vN.txt：所有发给 LLM 的文本唯一存放处
+├── prompts/                 提示词：运行时真源 = radar-rules D1（d1_source.py 读库+60s 缓存）
+│   ├── d1_source.py         D1 全表快照 + 失败回退；未配 CF 凭据时纯走本地文件
+│   └── versions/            <task>/vN.txt：D1 读不到时的回退种子 + 逐字 SHA 迁移基线
 │                            intent(v1/v2) · extraction · intent_user · extraction_user
 │                            hotwords（逐词 8 小节 system）· hotwords_user（逐词入参模板）
 ├── memory/checkpointer.py   memory / sqlite

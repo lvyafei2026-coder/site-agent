@@ -1,14 +1,17 @@
-"""发给 LLM 的所有文本，唯一存放处 = ``versions/<task>/vN.txt``。
+"""发给 LLM 的所有文本：唯一真源 = radar-rules D1 的 prompts / prompt_defaults 表。
 
-★2026-11-13（用户定）：原先 ``tools/adapters/sources/hotwords.py`` 里硬编码的
-  ``AI_SYSTEM``（1600 余字）与逐词 user 模板、两个节点里的 human 字面量，全部收拢到这里。
+★2026-11-17（用户定）：提示词迁到 D1，由 site-console 的 /rules/prompts 页面维护。
+  运行时 PromptRegistry 先读 D1（60 秒缓存），读不到才回退本地 versions/<task>/vN.txt。
+  本地 txt 从「唯一真源」降级为「回退种子 / 迁移基线」，日常改提示词不用发版。
+  最初（2026-11-13）这些文本原本散落在 hotwords.py 的 AI_SYSTEM 等处，收拢到本目录；
+  现在目录仍在，作为 D1 不可用时的兜底 + test_prompts.py 的逐字 SHA 基线。
   业务代码只允许调用 :func:`load_prompt`，**不允许再出现整段提示词字面量**
   （``test/test_prompts.py`` 会静态扫描守着）。
 
 约定：
-  - 一个 task 一个目录，一个版本一个 ``vN.txt``；加载时缺版本自动回退 v1（见 registry.py）。
-  - 改措辞 = **新增一个版本文件**，不要直接改已上线的 vN.txt；再切默认版本
-    （``config.default_prompt_versions``）或在 ``/run`` 里传 ``prompt_versions``。
+  - 一个 task 一个目录，一个版本一个 ``vN.txt``；D1 缺失时回退本地文件（缺版本再回退 v1）。
+  - 改措辞 = 在 /rules/prompts 页面新增一个版本（如 v3）并切默认，保留历史便于回滚；
+    迁移种子 SQL 见 site-console/migrations/0002_prompts.sql。
   - ``*_user`` 是同一任务的 human 模板，与 system 分开存，方便单独调。
   - 只有 ``intent`` / ``extraction`` / ``hotwords`` 走 ``/run`` 的版本覆盖；
     ``*_user`` 固定跟随 v1（换 system 版本时 human 保持同一格式）。

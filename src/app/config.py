@@ -149,6 +149,9 @@ SITES: dict[str, SiteConfig] = load_sites()
 CF_ACCOUNT_ID = env("CF_ACCOUNT_ID", "")
 KV_NAMESPACE_ID = env("KV_NAMESPACE_ID", "")
 CF_API_TOKEN = env("CF_API_TOKEN", "")
+# 提示词真源库 radar-rules 的 D1 id（非 secret，与 console 的 RULES_DB 同一库）。
+# site-agent 经 CF REST API 读 prompts / prompt_defaults；可用 PROMPTS_DB_ID 覆盖。
+PROMPTS_DB_ID = env("PROMPTS_DB_ID", "dca72fb2-9090-429c-9698-d2086e6b49c8")
 CONTACT_EMAIL = env("CONTACT_EMAIL", f"hello@{FLEET_DOMAIN}")
 # /backfill 状态回填入口的令牌：配了才校验 X-Backfill-Token；留空与 /run 一样裸奔，
 # 上线前必须填（或用网关鉴权把 /run 与 /backfill 一起挡在后面）。
