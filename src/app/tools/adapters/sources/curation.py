@@ -5,7 +5,8 @@
 """整理侧写侧口径：从 console/src/store.js 原样移植。
 
 agent 现在直写共享 KV，必须和 console 人工操作落在同一套键、同一套状态枚举上——
-否则 agent 写的 saved 和人工点的收藏对不上。这里只动数据结构，不碰网络（网络在 kv.py）。
+否则 agent 写的 saved 和人工点的收藏对不上。这里只动数据结构，不碰网络
+（网络与键名契约在 ../cloudflare/kv.py，全项目唯一的 KV 模块）。
 
 saved 表：[{key, term, status, at, updatedAt, ...}]，status ∈ STATUSES。
 rejected 表：[{key, term, reason, source, at, updatedAt}]。
@@ -19,7 +20,7 @@ from typing import Any, Optional
 
 from src.app.enums import CurationStatus, HintName, RejectSource
 
-from .kv import term_key
+from src.app.tools.adapters.cloudflare.kv import term_key
 
 # 与 console/src/store.js 完全一致；todo = Agent 分析后判定「可以做」自动置入
 STATUSES = [s.value for s in CurationStatus]

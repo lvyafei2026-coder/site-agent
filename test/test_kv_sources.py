@@ -5,14 +5,15 @@
 """sources 适配器的纯逻辑测试：KV 读写、SERP/Trend 纯函数、整理写侧、候选快照。
 
 全部走内存 FakeKV + monkeypatch 外部抓取/LLM，不碰 Cloudflare / Google / DuckDuckGo / OpenAI。
-这些模块是「agent 直读共享 KV、去除 console/radar 接口依赖」改造后的核心，必须离线可测。
+KV 实现在 adapte../cloudflare/kv.py（全项目唯一 KV 模块），这些模块是
+「agent 直读共享 KV、去除 console/radar 接口依赖」改造后的核心，必须离线可测。
 """
 
 import json
 
 import pytest
 
-from src.app.tools.adapters.sources import kv as kvmod
+from src.app.tools.adapters.cloudflare import kv as kvmod
 from src.app.tools.adapters.sources import scrape_serp as ss
 from src.app.tools.adapters.sources import scrape_trend as st
 from src.app.tools.adapters.sources import curation as cur
@@ -29,7 +30,7 @@ def _reset_serp_egress_state():
 
 
 # ---------------------------------------------------------------------------
-# kv.py：CloudflareKV 的键常量 / term_key / FakeKV 行为
+# cloudflare/kv.py：CloudflareKV 的键常量 / term_key / transport 行为
 # ---------------------------------------------------------------------------
 def test_term_key_normalizes():
     assert kvmod.term_key("  Free  Invoice  CALCULATOR ") == "free invoice calculator"

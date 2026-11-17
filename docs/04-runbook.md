@@ -279,7 +279,7 @@ Render 的 FastAPI 为准。
 
 - 20 条热词由 4 个 worker 并发分析。`saved` / `rejected` / `aihints` / `competition` /
   `interests` 这 5 张**整表**的「读 → 改 → 写 → 校验返回值」统一走
-  `sources/kv.py:atomic_update()` 的一把进程级 `threading.RLock`，不会互相覆盖。
+  `adapters/cloudflare/keyvalue.py:atomic_update()` 的一把进程级 `threading.RLock`，不会互相覆盖。
   ★只保证单进程：Cloudflare KV 无 CAS 且最终一致，多实例 / console 人工同时写仍可能
   丢更新，靠下面的 error + 回填兜底。
 - 每次 `put_text` / `put_json` 都检查返回值，失败写进 `items[].error` + `writeErrors`，

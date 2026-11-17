@@ -141,8 +141,8 @@ site-agent/
 │   │   ├── promotion_tools.py   PromotionOps + 2 个工具
 │   │   ├── publishing_tools.py  PublishingOps + 7 个工具
 │   │   └── adapters/
-│   │       ├── cloudflare/      client · database · keyvalue · sql
-│   │       ├── sources/         kv · candidates · curation · hotwords · gsc · reddit · scrape_serp · scrape_trend
+│   │       ├── cloudflare/      client · database · kv（KV 唯一模块）· sql；`keyvalue`=WorkersKV 单例
+│   │       ├── sources/         candidates · curation · hotwords · gsc · reddit · scrape_serp · scrape_trend
 │   │       ├── hosting/         github_repo · renderer · verification
 │   │       └── publishing/      devto · email
 │   ├── models/                  ExtractionSchema · WorkflowResult

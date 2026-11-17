@@ -17,7 +17,9 @@ from typing import Any, Optional
 
 from src.app.enums import CandidateStatus
 
-from .kv import CANDIDATES_KEY, INTERESTS_KEY, CloudflareKV, get_kv
+from src.app.tools.adapters.cloudflare.kv import (
+    CANDIDATES_KEY, INTERESTS_KEY, CloudflareKV, get_kv,
+)
 
 log = logging.getLogger(__name__)
 

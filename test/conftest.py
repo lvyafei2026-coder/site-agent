@@ -31,7 +31,7 @@ class FakeRuntime:
 
     # ---- 读 ----
     # 说明：生产里 SelectionOps.hotwords / analyze_hotwords 已不再委托给这里的同名方法
-    #（2026-11-12 去接口化：改由 agent 直读共享 KV，见 sources/kv.py）。但 FakeRuntime 作为
+    #（2026-11-12 去接口化：改由 agent 直读共享 KV，见 ../cloudflare/kv.py）。但 FakeRuntime 作为
     # RuntimeService 的测试替身，仍需提供 hotwords 数据桩——get_hotwords 工具经 tool_registry
     # 走到 self.ops.hotwords。真正的 KV 读写由 test/test_kv_sources.py + test_hotwords.py
     # 经 fake_kv 夹具覆盖。analyze_hotwords 现由 run_batch 直接测，这里不另立桩。

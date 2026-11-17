@@ -4,10 +4,7 @@
 
 """热词业务的数据通道 + 外部取数（按业务域划分，不是按存储资源划分）。
 
-数据通道与业务读写（都落在共享 KV 上）：
-    kv.py         共享 KV（RADAR_KV）的门面：REST 客户端 + 键名契约 + atomic_update。
-                  与 cloudflare/keyvalue.py（agent: 前缀状态标记、fail-fast）是同一
-                  命名空间的两个门面，差别见 adapters/__init__.py。
+数据通道与业务读写（都落在共享 KV 上；KV 操作实现统一在 ../cloudflare/kv.py）：
     candidates.py 候选词快照读取（只读 candidates / meta / interests 表）。
     curation.py   收藏 / 「不做」表的写侧口径（与 console store.js 对齐）。
     hotwords.py   热词分析业务：SERP / 趋势抓取 + LLM 分析 + 结论回写 KV。

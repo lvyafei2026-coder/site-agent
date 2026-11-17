@@ -2,23 +2,21 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""Agent 与共享 KV（RADAR_KV）的唯一通道。
+"""★KV 操作的唯一模块：连接、读写、列举、原子更新、锁、两种语义门面全在这里。
 
-架构约束（2026-11-12 定）：三个项目之间只允许「存储介质依赖」，不允许「服务接口依赖」。
-radar / console / agent 共用同一个 Cloudflare KV 命名空间（radar 侧叫 RADAR_KV），所以
-agent 直接经 Cloudflare KV REST API 读写这个 KV，既不调 console 的 /api/hotwords，
-也不调 radar 的 /api/serp、/api/trend、/api/candidates——这些 App 接口一律不碰。
+指向**同一个 KV 命名空间**（KV_NAMESPACE_ID）的两个门面，差别只在键前缀与错误语义：
+    CloudflareKV  共享业务表（RADAR_KV：saved / rejected / ai:v3: / serp:v1: 等，
+                  键名与 console/src/store.js、radar/src/store.js 严格对齐，见下方常量）。
+                  fail-open：读失败返回默认值并留痕，绝不因 KV 抖动中断一批词。
+                  自带 transport 注入，测试可完全离线。
+    WorkersKV     agent 私有状态标记（键统一带 `agent:` 前缀）。
+                  fail-fast：出错直接抛异常，状态标记写不进去必须让人知道。
+                  建立在同一个 CloudflareKV 底层请求之上。
 
-★与 cloudflare/keyvalue.py（WorkersKV）的关系：同一个 KV 命名空间的两个门面。
-  本类管**共享业务表**（saved / rejected / ai:v3: / serp:v1: 等，无前缀），
-  fail-open（读失败返回默认值并留痕），带进程锁 + atomic_update；
-  WorkersKV 管 agent 私有状态标记（`agent:` 前缀），fail-fast。
-  差异与设计说明见 tools/adapters/__init__.py。
+架构约束（2026-11-12 定）：radar / console / agent 共用这个 KV 命名空间，agent 直接经
+REST API 读写，不调任何 App 接口；写侧口径在 sources/curation.py 复刻 store.js。
 
-键名与 console/radar 完全对齐（见下方常量 + term_key），写侧口径在 curation.py 复刻
-store.js，保证 agent 直写 KV 与 console 人工操作落在同一套键、同一套状态枚举上。
-
-transport 可注入：生产走 requests 打 Cloudflare；测试注入内存实现（见 test/ 里的 FakeKV），
+transport 可注入：生产走 requests 打 Cloudflare；测试注入内存实现（test/ 里的 FakeKV），
 不联网、不依赖 Cloudflare 凭据。
 """
 
@@ -77,7 +75,7 @@ def _api_base(account_id: str, namespace_id: str) -> str:
 
 
 class CloudflareKV:
-    """Cloudflare KV REST 客户端。transport 为 None 时走 requests 打真实 API。
+    """Cloudflare KV REST 客户端（fail-open）。transport 为 None 时走 requests 打真实 API。
 
     transport 签名：(method: str, url: str, headers: dict, body: Optional[str]) -> (status: int, text: str)
     注入假 transport 即可在单测里完全离线验证读写逻辑。
@@ -108,7 +106,7 @@ class CloudflareKV:
     def configured(self) -> bool:
         return bool(self.account_id and self.namespace_id and self.api_token)
 
-    # ---- 底层请求 ----
+    # ---- 底层请求（两个门面共用这一条路径）----
     def _request(self, method: str, key: Optional[str], *, params=None, body=None) -> tuple[int, str]:
         # ★键名必须百分号编码：我们的键是 "ai:v3:free invoice calculator" 这种含冒号/空格/可能含
         #   # ? % 的自然语言词组，裸拼进路径会被 URL 解析截断或改写（Cloudflare 文档明确要求编码）。
@@ -221,6 +219,45 @@ class CloudflareKV:
             if not cursor:
                 break
         return out
+
+
+class WorkersKV:
+    """agent 私有状态标记的门面：键统一带 `agent:` 前缀，fail-fast。
+
+    与 CloudflareKV（共享业务表、fail-open）的差异见模块 docstring。
+    建立在同一 CloudflareKV 的底层请求上——全项目只有一条 KV HTTP 路径。
+    出错抛 RuntimeError（而不是吞成默认值）：状态标记写不进去必须让人知道。
+    """
+
+    PREFIX = "agent:"
+
+    def __init__(self, kv: CloudflareKV):
+        self._kv = kv
+
+    def _name(self, key: str) -> str:
+        return key if key.startswith(self.PREFIX) else self.PREFIX + key
+
+    def get(self, key: str, default: Any = None) -> Any:
+        status, text = self._kv._request("GET", self._name(key))
+        if status == 404:
+            return default
+        if status != 200:
+            raise RuntimeError(f"KV 读取失败 {self._name(key)}: HTTP {status} {str(text)[:120]}")
+        try:
+            return json.loads(text)
+        except (ValueError, TypeError):
+            return text
+
+    def put(self, key: str, value: Any, ttl_sec: int | None = None) -> None:
+        params = {"expiration_ttl": ttl_sec} if ttl_sec else None
+        try:
+            body = json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"KV 写入 {self._name(key)} 序列化失败: {exc}") from exc
+        status, text = self._kv._request(
+            "PUT", self._name(key), params=params, body=body)
+        if status not in (200, 201):
+            raise RuntimeError(f"KV 写入失败 {self._name(key)}: HTTP {status} {str(text)[:120]}")
 
 
 def table_lock() -> threading.RLock:

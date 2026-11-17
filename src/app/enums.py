@@ -96,14 +96,25 @@ class MemoryBackend(StrEnum):
 # 二、候选词 / 热词整理（与 console / radar 共享 KV 口径）
 # ---------------------------------------------------------------------------
 class CandidateStatus(StrEnum):
-    """候选池（KV candidates）过滤状态：get_hotwords 的 status 参数。"""
+    """候选池（KV candidates）过滤状态：get_hotwords 的 status 参数。
+
+    ★与 CurationStatus 的关系：两者是**同一个「词的跟进进展」在两个存储阶段的投影**，
+    不是重复定义——candidates 表由 radar 每轮重建（原始候选快照，还没进整理流程，
+    只有 doing / live 两种过滤态有意义），saved 表才是完整生命周期（CurationStatus）。
+    不要合并成一个宽枚举：合了之后 candidates 过滤会出现永远匹配不到的
+    saved/todo/wip/parked，saved 表也会出现无意义的 doing。
+    """
 
     DOING = "doing"  # 未跟进 / 待处理；老条目无 status 字段时按 doing 处理，不能丢
-    LIVE = "live"    # 已上线成站，过滤掉
+    LIVE = "live"    # 已上线成站，过滤掉（与 CurationStatus.LIVE 同义）
 
 
 class CurationStatus(StrEnum):
-    """收藏表（KV saved）的跟进状态，人工按钮循环切换。与 console/src/store.js 一致。"""
+    """收藏表（KV saved）的跟进状态，人工按钮循环切换。与 console/src/store.js 一致。
+
+    ★与 CandidateStatus 的关系：saved 表接管 candidates 池里判定「可以做」的词之后
+    的完整生命周期（见 CandidateStatus docstring 的投影说明）。
+    """
 
     SAVED = "saved"    # 先收藏
     TODO = "todo"      # 待开发：Agent 判定「可以做」后自动置入，等人工开工

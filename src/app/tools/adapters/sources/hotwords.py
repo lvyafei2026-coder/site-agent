@@ -6,7 +6,7 @@
 
 2026-11-12 去接口化改造：本模块**不再调用** site-console 的 /api/hotwords 与
 google-trend-radar 的 /api/serp、/api/trend、/api/candidates。它直接读写三方共用的共享 KV
-（Cloudflare KV REST API，见 kv.py），数据链路只有「存储介质依赖」，没有「服务接口依赖」：
+（Cloudflare KV REST API，见 ../cloudflare/kv.py），数据链路只有「存储介质依赖」，没有「服务接口依赖」：
 
   候选池    → 读 KV `candidates`
   未跟进判定 → 读 KV `saved` / `rejected` / `tags` + 列举 `ai:v3:` 前缀
@@ -44,7 +44,7 @@ from src.app.observability.langsmith import run_traced, trace_tool, tracing_enab
 #   而不是 services/prompt_service.py 那个带日志的节点入口。
 from src.app.prompts import load_prompt
 
-from .kv import (
+from src.app.tools.adapters.cloudflare.kv import (
     CloudflareKV, get_kv, term_key, atomic_update, table_lock,
     AI_CACHE_PREFIX, SERP_PREFIX, TREND_PREFIX,
     SAVED_KEY, REJECTED_KEY, TAGS_KEY, COMPETITION_KEY, INTERESTS_KEY, HINTS_KEY,
