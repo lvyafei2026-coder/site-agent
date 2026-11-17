@@ -24,7 +24,7 @@ def intent_node(state: WorkflowState) -> WorkflowState:
     else:
         versions = state.get("prompt_versions", {}) or {}
         system = prompt_service.load_prompt("intent", version=versions.get("intent"))
-        # human 模板同样在 prompts/versions/ 下，代码里不留任何提示词字面量
+        # human 模板同样在 D1 的 prompts 表，代码里不留任何提示词字面量
         user = prompt_service.load_prompt("intent_user", version=versions.get("intent_user"))
         template = ChatPromptTemplate.from_messages(
             [("system", system), ("human", user)])

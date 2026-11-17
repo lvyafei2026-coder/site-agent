@@ -31,7 +31,8 @@ src/app/
 ├── nodes/             intent · processing · validation · output · error
 ├── services/          llm · prompt · tool · evaluation · versioning
 ├── tools/             BaseTool + registry + calculator / retriever / db_query / http
-├── prompts/versions/  intent/v1+v2 · extraction/v1 · validation/v1
+├── prompts/           d1_source.py（D1 快照+缓存）+ registry.py + __init__.py（纯加载）
+│                      唯一真源在 D1；本地 versions/*.txt 已于 2026-11-17 删除
 ├── models/            ExtractionSchema · WorkflowResult
 ├── storage/           workflow_store · prompt_store · cache（进程内单例）
 ├── memory/            MemorySaver / SqliteSaver / PostgresSaver
@@ -53,7 +54,7 @@ src/app/
 | `tools/` 四个 demo（calculator / retriever / db_query / http） | 换成 6 个业务域 `*_tools.py` + `adapters/`，26 个工具 | demo 没有业务含义；能力清单见 `05-tools.md` |
 | `observability/` 的 `@traceable` | 真 `langsmith.traceable` + `wrap_openai`，另加 `trace.py` | 模板装饰器只打日志不上报；图轨迹要随 `/run` 返回 |
 | `llm/provider.py` 四家 provider | 只留 OpenAI 兼容 + 无 key 确定性回退 | 站群只用一家兼容接口，node 里不做 SDK 分支 |
-| `prompts/versions/` | 保留 `intent/v1,v2`、`extraction/v1`；删 `validation/v1`；★2026-11-13 新增 `intent_user` / `extraction_user` / `hotwords` / `hotwords_user` | 校验是确定性代码，不需要 prompt；所有发给 LLM 的文本（含原 hardcode 在 `hotwords.py` 的 `AI_SYSTEM`）统一进版本目录 |
+| `prompts/versions/` | （历史）11-13 收拢全部 LLM 文本到版本目录；★11-17 已整体迁入 D1 并**删除本地 versions/** | 校验是确定性代码，不需要 prompt；现由 site-console `/rules/prompts` 页面维护真源，改措辞不发版 |
 | `config.py` | 保留并扩展 `FLEET_DOMAIN` / `SITES` / `INTENTS` | 模板只有通用 Settings |
 | `models/` · `api/` · `main.py` · `memory/` · `utils/` | 保留，按需加字段 | — |
 
@@ -104,7 +105,7 @@ src/app/
 | `tools/base.py` | 契约叶子 | `BaseTool` / `RuntimeTool` / `ToolOutput` / `stable_key`，不 import 任何 `src.app.*` | 保留 |
 | `tools/registry.py` | 装配 | `RuntimeService` 组合 6 个域 Ops + `ToolRegistry.bind()` | 保留 |
 | `models/` | 跨层数据契约 | `ExtractionSchema`、`WorkflowResult` | 保留 |
-| `prompts/` | **所有 LLM 文本的唯一存放处** | `registry.py` 版本解析（缺失回退 v1）、`__init__.py` 的纯加载函数供工具层用、`versions/<task>/vN.txt` | 保留 + 扩充 6 个 task |
+| `prompts/` | **所有 LLM 文本的唯一真源（D1）** | `d1_source.py` 全表快照 + 60s 缓存 + 失败旧快照兜底；`registry.py` 版本解析（缺失回退默认版本）；`__init__.py` 的纯加载函数供工具层用。★11-17 删除 `versions/*.txt`，正文由 `/rules/prompts` 页面维护 | 保留 + 迁 D1 |
 | `llm/provider.py` | 模型客户端 | OpenAI 兼容构造、无 key 返回 `None`、`wrap_openai` | 改造 |
 | `memory/` | checkpointer | memory / sqlite 选择与连接参数 | 改造 |
 | `observability/` | 观测 | metrics、LangSmith 开关、图轨迹采集 | 保留 + 新增 |
@@ -127,7 +128,7 @@ site-agent/
 │   ├── nodes/                   classify_intent · run_processing · validate_result · build_output · handle_error
 │   ├── services/
 │   │   ├── llm_service.py       意图分类 + 字段抽取（含无 key 回退）
-│   │   ├── prompt_service.py    prompt 加载（版本可指定、缺失回退 v1）
+│   │   ├── prompt_service.py    prompt 加载（版本可指定、缺失回退默认版本，真源在 D1）
 │   │   ├── tool_service.py      意图 → 工具集（INTENT_TOOLS / TOOL_ARGS）
 │   │   └── evaluation_service.py 覆盖率与综合分（阈值是同文件常量）
 │   ├── tools/
@@ -145,9 +146,8 @@ site-agent/
 │   │       ├── hosting/         repository · renderer · verification
 │   │       └── publishing/      devto · email
 │   ├── models/                  ExtractionSchema · WorkflowResult
-│   ├── prompts/                 registry.py + __init__.py（纯加载）+ versions/<task>/vN.txt
-│   │                            intent · intent_user · extraction · extraction_user
-│   │                            hotwords（逐词 system）· hotwords_user（逐词 human）
+│   ├── prompts/                 d1_source.py（D1 快照+缓存）+ registry.py + __init__.py
+│   │                            唯一真源在 radar-rules D1，由 /rules/prompts 页面维护
 │   ├── memory/checkpointer.py   memory / sqlite
 │   ├── llm/provider.py          OpenAI 兼容客户端
 │   ├── observability/           metrics · langsmith(@traceable) · trace(图轨迹)

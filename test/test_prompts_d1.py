@@ -1,11 +1,11 @@
 # Copyright (c) 2026 lvyafei · https://toolara.dev
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-# 非商业授权：可学习、研究、修改、非商业使用。详见 LICENSE.
+# 非商业授权：可学习、研究、修改、非商业使用；详见 LICENSE.
 
 """提示词 D1 数据源回归（2026-11-17 迁移）：D1 优先 / 缓存 / 失败降级 / 默认版本。
 
 不碰网络：注入 fake fetcher；配置开关用 monkeypatch 改 configured。
-test_prompts.py 仍守本地文件的逐字 SHA；本文件守「读库链路 + 各种降级」。
+本地 versions/*.txt 已删除：D1 读不到且无旧快照时注册表抛错（不再回退文件）。
 """
 
 from __future__ import annotations
@@ -45,9 +45,11 @@ def test_d1_content_and_default_version(monkeypatch):
     store, _ = make_store(FAKE_DATA)
     monkeypatch.setattr(D1PromptStore, "configured", staticmethod(lambda: True))
     assert store.load("hotwords", "v2") == "D1 系统提示词 v2"      # 去首尾空白
-    assert store.load("hotwords", "v999") is None                  # D1 无此版本 → 回退
+    assert store.load("hotwords", "v999") is None                  # D1 无此版本
     assert store.resolve_version("hotwords", "v1") == "v2"         # D1 默认覆盖 config
     assert store.resolve_version("unknown", "v1") == "v1"          # 无默认 → 用 config 值
+    assert store.versions("hotwords") == ["v1", "v2"]
+    assert store.versions("unknown") == []
 
 
 def test_cache_one_fetch_per_ttl(monkeypatch):
@@ -71,14 +73,14 @@ def test_ttl_expiry_refetches(monkeypatch):
 
 def test_stale_on_error_then_empty(monkeypatch):
     # 先成功缓存，再失败 → 用旧快照
-    data = {"ok": FAKE_DATA}
-    store, calls = make_store(FAKE_DATA)
+    calls = {"n": 0}
 
     def flaky(a, t, d):
         calls["n"] += 1
         if calls["n"] >= 2:
             raise RuntimeError("D1 down")
         return FAKE_DATA
+
     store = D1PromptStore(fetcher=flaky)
     monkeypatch.setattr(D1PromptStore, "configured", staticmethod(lambda: True))
     assert store.load("hotwords", "v2") == "D1 系统提示词 v2"
@@ -87,7 +89,7 @@ def test_stale_on_error_then_empty(monkeypatch):
     assert store.load("hotwords", "v2") == "D1 系统提示词 v2", "失败时应退回旧快照"
     assert calls["n"] == 2
 
-    # 从未成功过 + 失败 → 空，交给注册表回退本地文件
+    # 从未成功过 + 失败 → 空，注册表据此抛错
     empty, _ = make_store(RuntimeError("D1 never up"))
     assert empty.load("hotwords", "v2") is None
     assert empty.resolve_version("hotwords", "v1") == "v1"
@@ -98,33 +100,42 @@ def test_not_configured_never_touches_fetch(monkeypatch):
     monkeypatch.setattr(D1PromptStore, "configured", staticmethod(lambda: False))
     assert store.load("hotwords", "v2") is None
     assert store.resolve_version("hotwords", "v1") == "v1"
+    assert store.versions("hotwords") == []
     assert calls["n"] == 0, "未配置 CF 凭据时绝不发网络请求"
 
 
-def test_registry_prefers_d1_then_falls_back_to_file(monkeypatch, tmp_path):
-    """注册表：D1 命中用 D1；D1 空则读本地 txt（逐字，含换行）。"""
-    root = tmp_path
-    (root / "hotwords").mkdir()
-    (root / "hotwords" / "v2.txt").write_text("本地文件提示词 v2\n", encoding="utf-8")
-
-    monkeypatch.setattr("src.app.prompts.registry.prompt_store", make_store(FAKE_DATA)[0])
+def test_registry_prefers_d1(monkeypatch):
+    store, _ = make_store(FAKE_DATA)
+    monkeypatch.setattr("src.app.prompts.registry.prompt_store", store)
     monkeypatch.setattr(D1PromptStore, "configured", staticmethod(lambda: True))
     reg = PromptRegistry()
-    reg.root = root
-    assert reg.load("hotwords", "v2") == "D1 系统提示词 v2"      # D1 优先
-
-    monkeypatch.setattr("src.app.prompts.registry.prompt_store", make_store({"prompts": [], "defaults": []})[0])
-    assert reg.load("hotwords", "v2") == "本地文件提示词 v2"      # D1 空 → 本地文件
+    assert reg.load("hotwords", "v2") == "D1 系统提示词 v2"      # D1 命中
+    assert reg.available_versions("hotwords") == ["v1", "v2"]
 
 
-def test_registry_default_version_from_d1(monkeypatch, tmp_path):
-    root = tmp_path
-    (root / "hotwords").mkdir()
-    (root / "hotwords" / "v2.txt").write_text("本地 v2", encoding="utf-8")
-
-    monkeypatch.setattr("src.app.prompts.registry.prompt_store", make_store(FAKE_DATA)[0])
+def test_registry_missing_version_falls_back_to_default(monkeypatch):
+    store, _ = make_store(FAKE_DATA)
+    monkeypatch.setattr("src.app.prompts.registry.prompt_store", store)
     monkeypatch.setattr(D1PromptStore, "configured", staticmethod(lambda: True))
     reg = PromptRegistry()
-    reg.root = root
+    # 请求不存在的 v999 → 回退 hotwords 的 D1 默认 v2
+    assert reg.load("hotwords", "v999") == "D1 系统提示词 v2"
+
+
+def test_registry_raises_when_d1_has_nothing(monkeypatch):
+    """D1 空且无旧快照 → 明确抛错，不再静默降级（避免空提示词让 LLM 乱答）。"""
+    store, _ = make_store({"prompts": [], "defaults": []})
+    monkeypatch.setattr("src.app.prompts.registry.prompt_store", store)
+    monkeypatch.setattr(D1PromptStore, "configured", staticmethod(lambda: True))
+    reg = PromptRegistry()
+    with pytest.raises(RuntimeError, match="/rules/prompts"):
+        reg.load("hotwords", "v2")
+
+
+def test_registry_default_version_from_d1(monkeypatch):
+    store, _ = make_store(FAKE_DATA)
+    monkeypatch.setattr("src.app.prompts.registry.prompt_store", store)
+    monkeypatch.setattr(D1PromptStore, "configured", staticmethod(lambda: True))
+    reg = PromptRegistry()
     # 不传版本：resolve_version 读 D1 默认 v2，再加载 D1 的 v2 正文
     assert reg.load("hotwords") == "D1 系统提示词 v2"

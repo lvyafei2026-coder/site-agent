@@ -71,7 +71,7 @@
 | `select_pages` | `get_hotwords` + `get_page_inventory` + `get_reflections` |
 | `plan_promo` | `get_latest_plan` + `get_page_inventory` + `get_pending_events` |
 | `find_backlinks` | `get_backlink_ledger` + `search_reddit` + `list_devto_articles` |
-| `review_metrics` | `get_click_stats` + `get_search_analytics` + `get_page_inventory` | `get_click_stats` 现按站点×事件类型聚合；取数后 `run_processing` 再调 LLM `analyze_metrics`（提示词 `prompts/versions/review_metrics/v1.txt`）比对各站 PV/UV/点击/搜索，输出「表现好的站点」排名与理由，并入 `output` 报告 |
+| `review_metrics` | `get_click_stats` + `get_search_analytics` + `get_page_inventory` | `get_click_stats` 现按站点×事件类型聚合；取数后 `run_processing` 再调 LLM `analyze_metrics`（提示词在 D1 的 `review_metrics` task）比对各站 PV/UV/点击/搜索，输出「表现好的站点」排名与理由，并入 `output` 报告 |
 | **`analyze_hotwords`** | **`analyze_hotwords`**（★唯一的默认集里带 write 工具的意图：这个意图的业务本身就是「分析并改状态」，LLM 分类到它即会执行，无需显式传 `tools`） |
 | `general` | `get_pending_events` + `get_reflections` |
 
@@ -137,4 +137,4 @@
 
 1. `config.INTENTS` 加枚举值；
 2. `INTENT_TOOLS` 加映射；
-3. 需要的话加 `prompts/versions/intent/vN.txt`，请求里传 `prompt_versions` 使用。
+3. 需要的话到 `/rules/prompts` 加 `intent` 的新版本并切默认，请求里传 `prompt_versions` 使用。

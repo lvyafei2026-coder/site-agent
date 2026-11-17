@@ -17,8 +17,7 @@ from src.app.memory.checkpointer import get_checkpointer
 def test_settings_contract():
     assert isinstance(settings, Settings)
     assert settings.project_name == "site-agent"
-    assert settings.prompt_root.name == "versions"
-    # 默认版本清单与 prompts/versions 目录一一对应（双向校验在 test_prompts.py）
+    # 提示词真源在 D1，config 只保留各 task 的兜底默认版本号
     from src.app.prompts import PROMPT_TASKS
     assert set(settings.default_prompt_versions) == set(PROMPT_TASKS)
 

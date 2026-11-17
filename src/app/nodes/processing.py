@@ -37,7 +37,7 @@ def processing_node(state: WorkflowState) -> WorkflowState:
     intent = state.get("intent", "general")
     versions = state.get("prompt_versions", {}) or {}
     system = prompt_service.load_prompt("extraction", version=versions.get("extraction"))
-    # human 模板同样在 prompts/versions/ 下，代码里不留任何提示词字面量
+    # human 模板同样在 D1 的 prompts 表，代码里不留任何提示词字面量
     user = prompt_service.load_prompt("extraction_user",
                                      version=versions.get("extraction_user"))
     template = ChatPromptTemplate.from_messages(

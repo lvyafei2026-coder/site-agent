@@ -81,11 +81,12 @@ START → classify_intent → run_processing → validate_result
 
 ### 4.2 `prompt_service`：版本可指定、缺失回退
 
-- 根目录 `src/app/prompts/versions/<task>/vN.txt`，**所有发给 LLM 的文本唯一存放处**：
+- D1 的 `prompts` / `prompt_defaults` 两表（radar-rules 库），**所有发给 LLM 的文本唯一存放处**，由 site-console `/rules/prompts` 页面维护：
   `intent`（v1/v2）、`intent_user`、`extraction`、`extraction_user`、
   `hotwords`（逐词 8 小节 system，原 `AI_SYSTEM`）、`hotwords_user`（逐词入参模板）。
-  `*_user` 是同一任务的 human 模板，与 system 分文件存放。
-  ★2026-11-13 起业务代码里不允许再出现整段提示词字面量（`test_prompts.py` 静态守着）。
+  `*_user` 是同一任务的 human 模板，与 system 分 task 存放。本地 `versions/*.txt` 已于 2026-11-17 删除。
+  `d1_source.py` 读全表快照 + 60s 缓存 + 失败旧快照兜底；读不到且无快照时抛错。
+  ★业务代码里不允许再出现整段提示词字面量（`test_prompts.py` 静态守着）。
 - 解析顺序：请求 `prompt_versions[task]` → `settings.default_prompt_versions[task]` → `v1`；
   文件不存在时回退 `v1.txt`。默认版本清单在 `config.py`，与目录一一对应。
 - 工具层（adapters）不能反向依赖 `services`，所以热词逐词分析走 `prompts/__init__.py`

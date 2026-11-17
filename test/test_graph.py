@@ -41,7 +41,7 @@ def test_review_metrics_runs_llm_analysis(graph, fake, monkeypatch):
                       "retry_count": 0, "messages": [], "tool_results": {}},
                      config={"configurable": {"thread_id": "t-rm"}})
     assert captured, "review_metrics 应触发 analyze_metrics"
-    # 提示词来自 prompts/versions/review_metrics/v1.txt，且数据里含各站统计
+    # 提示词来自 D1 prompts 表（桩由 conftest 注入），且数据里含各站统计
     assert "review_metrics" in captured["system"] or "表现较好" in captured["system"]
     assert "music.example" in captured["data"]
     assert r["metrics_analysis"]
@@ -182,8 +182,9 @@ def test_processing_network_tool_timeout_retries(graph, fake, monkeypatch):
 def test_prompt_version_fallback_and_explicit():
     reg = PromptRegistry()
     assert reg.resolve_version("intent") == "v1"
-    assert "意图分类器" in reg.load("intent", "v99")   # 不存在的版本回退 v1
-    assert "显式动词" in reg.load("intent", "v2")      # 显式指定版本直读
+    # 不存在的版本回退默认 v1；显式指定直读 v2（文案由 D1 桩提供，只验版本选择逻辑）
+    assert reg.load("intent", "v99") == reg.load("intent", "v1")
+    assert reg.load("intent", "v2") == "意图分类 system 桩 v2"
 
 
 def test_workflow_result_shape():

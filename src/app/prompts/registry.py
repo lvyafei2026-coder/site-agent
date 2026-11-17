@@ -1,22 +1,21 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from src.app.config import settings
 from src.app.prompts.d1_source import prompt_store
 
 
 class PromptRegistry:
-    """提示词加载：D1 优先（唯一真源），失败/未配置回退本地 versions/*.txt。
+    """提示词加载：D1 唯一真源（radar-rules 库 prompts / prompt_defaults 表）。
 
-    ★2026-11-17：运行时正文与默认版本都先问 D1（radar-rules 库），本地文件降级为
-     种子副本。这样 /rules/prompts 页面改完最多 60 秒生效、不用发版；D1 抖动时
-     本地文件顶上，线上 LLM 调用不受影响。测试环境无 CF 凭据 → 纯本地，逐字 SHA
-     基线照旧校验本地文件。
+    ★2026-11-17：本地 versions/*.txt 已全部删除，正文与默认版本都只读 D1。
+      /rules/prompts 页面改完最多 60 秒生效、不用发版；读库失败时用进程内旧快照
+      （stale-while-error）兜住瞬时抖动。只有「首次拉取就失败且没有任何快照」才
+      抛错——这时应去 /rules/prompts 检查库与 CF_API_TOKEN，而不是静默用空提示词
+      让 LLM 乱答。
     """
 
     def __init__(self) -> None:
-        self.root = Path(settings.prompt_root)
+        pass
 
     def resolve_version(self, task: str, version: str | None = None) -> str:
         if version:
@@ -26,10 +25,21 @@ class PromptRegistry:
 
     def load(self, task: str, version: str | None = None) -> str:
         selected = self.resolve_version(task, version)
-        remote = prompt_store.load(task, selected)
-        if remote is not None:
-            return remote
-        prompt_path = self.root / task / f"{selected}.txt"
-        if not prompt_path.exists():
-            prompt_path = self.root / task / "v1.txt"
-        return prompt_path.read_text(encoding="utf-8").strip()
+        text = prompt_store.load(task, selected)
+        if text is not None:
+            return text
+        # 显式指定了版本但 D1 里没有：回退到该 task 的默认版本（容错，不因版本号写错崩批）
+        if version:
+            default = self.resolve_version(task, None)
+            if default != selected:
+                text = prompt_store.load(task, default)
+                if text is not None:
+                    return text
+        raise RuntimeError(
+            f"提示词 {task}/{selected} 无法从 D1 读取；"
+            "请在 /rules/prompts 检查 prompts / prompt_defaults 表与 CF_API_TOKEN 的 D1 读权限"
+        )
+
+    def available_versions(self, task: str) -> list[str]:
+        """列出某 task 在 D1 里已有的版本（按 vN 数字排序）。"""
+        return prompt_store.versions(task)

@@ -248,3 +248,85 @@ def fake():
 def graph(fake):
     from src.app.graph.builder import build_graph
     return build_graph()
+
+
+# ---------------------------------------------------------------------------
+# 提示词 D1 桩（2026-11-17：本地 versions/*.txt 删除后，测试不再读真实文案）
+# ---------------------------------------------------------------------------
+# 真源在 radar-rules D1、由 /rules/prompts 页面维护，内容随时可变；测试只验证
+# 「拼装逻辑 + 结构契约」（8 小节、结论格式、占位符），不再锁真实文案逐字 SHA。
+# 桩文本放在 test/ 下（test_prompts.py 的 FORBIDDEN_IN_CODE 只扫 src/app/**/*.py，
+# 不扫测试目录），这样生产代码里依然没有任何提示词字面量。
+_PROMPT_STUB_SYSTEM_V1 = (
+    "热词分析 system 桩 v1\n"
+    "⓪ 先辨形 · ③ 其余情况\n"
+    "1) 词义 2) 信号 7) 结论\n"
+    "7) 结论：做 / 观望 / 不做\n"
+    "8) 信号标签：工具查询、日程日期\n"
+)
+_PROMPT_STUB_SYSTEM_V2 = (
+    "热词分析 system 桩 v2\n"
+    "非工具意图 · 时效资讯 · 热度走弱 · 专名释义\n"
+    "观望」是稀缺档\n"
+    "1) 词义 2) 信号 7) 结论\n"
+    "7) 结论：做 / 观望 / 不做\n"
+    "8) 信号标签：工具查询、日程日期\n"
+)
+_PROMPT_STUB_USER_V1 = (
+    "关键词：{term}\n"
+    "{related_line}\n"
+    "{serp_line}\n"
+    "{hints_line}\n"
+    "覆盖地区数：{geo_count} 个\n"
+    "热度：{traffic}\n"
+)
+_PROMPT_STUB_USER_V2 = _PROMPT_STUB_USER_V1 + "{examples_line}\n"
+
+PROMPT_STUB_DATA = {
+    "prompts": [
+        {"task": "intent", "version": "v1", "content": "意图分类 system 桩 v1"},
+        {"task": "intent", "version": "v2", "content": "意图分类 system 桩 v2"},
+        {"task": "intent_user", "version": "v1", "content": "请求：{input_text}"},
+        {"task": "extraction", "version": "v1", "content": "字段抽取 system 桩"},
+        {"task": "extraction_user", "version": "v1", "content": "文本：{input_text}"},
+        {"task": "hotwords", "version": "v1", "content": _PROMPT_STUB_SYSTEM_V1},
+        {"task": "hotwords", "version": "v2", "content": _PROMPT_STUB_SYSTEM_V2},
+        {"task": "hotwords_user", "version": "v1", "content": _PROMPT_STUB_USER_V1},
+        {"task": "hotwords_user", "version": "v2", "content": _PROMPT_STUB_USER_V2},
+        {"task": "review_metrics", "version": "v1",
+         "content": "review_metrics 站点表现分析桩：找出表现较好的站点并排名"},
+    ],
+    "defaults": [
+        {"task": "intent", "version": "v1"},
+        {"task": "intent_user", "version": "v1"},
+        {"task": "extraction", "version": "v1"},
+        {"task": "extraction_user", "version": "v1"},
+        {"task": "hotwords", "version": "v2"},
+        {"task": "hotwords_user", "version": "v2"},
+        {"task": "review_metrics", "version": "v1"},
+    ],
+}
+
+
+@pytest.fixture(autouse=True)
+def fake_prompt_store(monkeypatch):
+    """每个测试都把全局提示词单例指向 D1 桩：无 CF 凭据也能测拼装逻辑。
+
+    只替换 fetcher + 打开 configured 开关，不动 registry 的对象引用（它 import 的
+    是同一个单例）。测试内部若自行 monkeypatch configured / prompt_store，优先级更高。
+    """
+    from src.app.prompts.d1_source import D1PromptStore, prompt_store
+    from src.app.tools.adapters.sources import hotwords as hw
+
+    def fetch(_account, _token, _db):
+        # 深拷贝，避免某测试改动桩数据污染其它测试
+        import copy
+        return copy.deepcopy(PROMPT_STUB_DATA)
+
+    monkeypatch.setattr(D1PromptStore, "configured", staticmethod(lambda: True))
+    monkeypatch.setattr(prompt_store, "_fetcher", fetch)
+    prompt_store.clear()
+    hw._prompt_pair.cache_clear()
+    yield
+    prompt_store.clear()
+    hw._prompt_pair.cache_clear()

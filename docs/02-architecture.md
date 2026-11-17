@@ -177,7 +177,7 @@ cron 心跳保活由 site-console 的 `*/10 1-15 * * *`（UTC）负责）。
 | 一个新业务域 | 新建 `xxx_tools.py`（Ops + 工具类），在 `registry.py` 的 `RuntimeService` 基类列表里加一项 | `TOOL_CLASSES` 同步登记 |
 | 一个新站 | 只改 `config/sites.json` | 前提：仓库是资产目录布局、能套 `templates/site-page.html`、有 Contents 写权限 |
 | 一个新意图 | `config.INTENTS` + `INTENT_TOOLS` + 需要时加 prompt 版本 | 意图是枚举，非法值会被回退成 `general` |
-| 换一段 prompt | 新增 `prompts/versions/<task>/vN.txt`，请求里传 `prompt_versions` | 文件缺失回退 v1 |
+| 换一段 prompt | 到 `/rules/prompts` 新增版本 + 切默认，请求里可传 `prompt_versions` 覆盖 | 真源在 D1，不发版；版本缺失回退该 task 默认版本 |
 | 新节点 | `graph/constants.Names` + `nodes/` + `builder.py` | 节点名必须带动词前缀，不能与 state 字段同名 |
 
 ## 8. 关键决策

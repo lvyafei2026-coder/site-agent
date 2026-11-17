@@ -91,7 +91,7 @@ class LLMService:
         """对采集到的站点埋点 / GSC / 页面数据做自然语言分析，识别表现好的站点。
 
         返回 markdown 文本（结论 + 表现好的站点排名 + 理由）；无 key 或调用失败返回
-        空串（上层走确定性回退，不阻塞整轮）。提示词来自 prompts/versions/review_metrics，
+        空串（上层走确定性回退，不阻塞整轮）。提示词来自 D1 的 review_metrics task，
         不在代码里硬编码（test/test_prompts.py 守着）。
         """
         if not LLM_API_KEY:

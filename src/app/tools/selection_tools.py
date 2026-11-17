@@ -44,4 +44,4 @@ class AnalyzeHotwordsTool(RuntimeTool):
     class Input(BaseModel):
         limit: int = Field(20, description="一次捞取并逐条分析的条数，默认 20")
         prompt_version: str | None = Field(
-            None, description="提示词版本，对应 prompts/versions/hotwords/vN.txt；留空走默认 v1")
+            None, description="提示词版本，对应 D1 prompts 表的 hotwords/vN；留空走默认版本")

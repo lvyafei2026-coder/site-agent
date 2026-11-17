@@ -31,8 +31,8 @@ class WorkflowState(TypedDict, total=False):
     未传入时 = intent 节点产出的中间结果，供 processing 选工具集（INTENT_TOOLS）。"""
 
     prompt_versions: dict[str, str]
-    """可选输入。按任务指定 prompt 版本，形如 {"intent": "v1", "extraction": "v1", "validation": "v1"}；
-    三个节点各取自己那份；缺省时回退 settings.default_prompt_versions（PromptRegistry 再回退 v1）。"""
+    """可选输入。按任务指定 prompt 版本，形如 {"intent": "v1", "extraction": "v1", "hotwords": "v2"}；
+    三个节点各取自己那份；缺省时回退 settings.default_prompt_versions（D1 无默认再回退此值）。"""
 
     requested_tools: list[str] | None
     """可选输入。显式指定本轮调用的工具名列表，覆盖 INTENT_TOOLS 默认集。

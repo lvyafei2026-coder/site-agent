@@ -18,9 +18,9 @@ google-trend-radar 的 /api/serp、/api/trend、/api/candidates。它直接读�
   结论「做」  → 直写 KV `saved`（status=todo，待开发）
   结论「观望」→ 只留正文与标签，状态仍为未跟进
 
-★2026-11-13：发给 LLM 的 system 与 user 模板已全部收拢到 `src/app/prompts/versions/`
-  （`hotwords/v1.txt` = 原 radar/src/ai.js 的 AI_SYSTEM，逐字未改；`hotwords_user/v1.txt`
-  = 逐词入参模板）。本文件只保留「拼数据」的逻辑与结论/红线/信号标签判据，不再放提示词正文。
+★2026-11-17：发给 LLM 的 system 与 user 模板唯一真源 = radar-rules D1 的 prompts 表
+  （由 /rules/prompts 页面维护，本地 versions/*.txt 已删除）。本文件只保留「拼数据」
+  的逻辑与结论/红线/信号标签判据，不再放提示词正文。
 """
 
 from __future__ import annotations
@@ -52,11 +52,9 @@ from .curation import upsert_saved, upsert_rejected, set_hint_override
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# 提示词：正文全部在 `src/app/prompts/versions/hotwords/` 与 `hotwords_user/`
-#   （唯一真源，v1 逐字对齐 radar 原 src/ai.js 的 AI_SYSTEM；v2 加了固化的
-#   人工判定规则与收紧后的观望口径，见 v2.txt）。这里只做「加载 + 进程内缓存」：
-#   一批 20 个词不能每词都读一次磁盘。
-#   ★改了 .txt 要重启进程；换措辞请新增 vN.txt 并切 config 默认版本。
+# 提示词：正文全部在 D1 的 prompts 表（hotwords / hotwords_user 两 task）。
+#   这里只做「加载 + 进程内缓存」：一批 20 个词不能每词都拉一次 D1。
+#   ★换措辞在 /rules/prompts 页面新增 vN 并切默认，最多 60 秒生效、不用重启。
 # ---------------------------------------------------------------------------
 @lru_cache(maxsize=8)
 def _prompt_pair(version: Optional[str] = None) -> tuple[str, str]:
@@ -170,7 +168,7 @@ def build_messages(body: dict[str, Any], *, prompt_version: Optional[str] = None
                    system: Optional[str] = None,
                    user_template: Optional[str] = None,
                    examples: Optional[list[dict[str, str]]] = None) -> list[dict[str, str]]:
-    """拼 system + user；**措辞全部来自 prompts/versions/hotwords***，这里只填数据。
+    """拼 system + user；**措辞全部来自 D1 的 hotwords 提示词**，这里只填数据。
 
     SERP 前 6 的「域名 — 标题」是 AI 辨形的主要线索。system / user_template 可注入
     （单测固定模板用）；生产由 _prompt_pair() 一次性加载并缓存，20 个词只读一次磁盘。
@@ -202,11 +200,11 @@ def build_messages(body: dict[str, Any], *, prompt_version: Optional[str] = None
     related_line = "关联查询：" + " / ".join(related) if related else "关联查询：（无）"
     hints_line = "命中的常青信号：" + hints if hints else "未命中明显常青信号"
 
-    # 模板里没有 SERP 时是一整行空占位，过滤空行后与原拼装结果逐字一致。
+    # 模板里没有 SERP 时是一整行空占位，过滤空行后与原拼装结果一致。
     fields = dict(term=term, related_line=related_line, serp_line=serp_line,
                   hints_line=hints_line, geo_count=geo_count, traffic=traffic)
     # ★只有模板真的含 {examples_line} 才传该字段：v1 模板没有它，传了会 KeyError。
-    #   test_prompts 的逐字一致回归因此继续成立。
+    #   build_messages 的输出格式与 D1 模板占位符对应，见 test_prompts.py。
     if "{examples_line}" in user_template:
         fields["examples_line"] = examples_line(examples or [])
     user = "\n".join(x for x in user_template.format(**fields).split("\n") if x)

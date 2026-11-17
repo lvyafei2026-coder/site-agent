@@ -49,19 +49,14 @@ class Settings:
 
     def __post_init__(self) -> None:
         if self.default_prompt_versions is None:
-            # ★与 src/app/prompts/versions/ 的目录一一对应（test_prompts.py 双向校验）。
-            #   所有发给 LLM 的文本都在那里，包括热词逐词分析；这里只记各 task 的默认版本。
-            #   改默认版本 = 改这里；改措辞 = 新增 vN.txt（见 prompts/__init__.py）。
+            # ★D1 读不到默认版本时的兜底版本号（不是提示词正文）。唯一真源在 radar-rules
+            #   库的 prompt_defaults 表，由 /rules/prompts 页面维护；这里只作最后一次兜底。
             self.default_prompt_versions = {
                 "intent": "v1", "intent_user": "v1",
                 "extraction": "v1", "extraction_user": "v1",
                 "hotwords": "v2", "hotwords_user": "v2",
                 "review_metrics": "v1",
             }
-
-    @property
-    def prompt_root(self) -> Path:
-        return Path(__file__).resolve().parent / "prompts" / "versions"
 
 
 settings = Settings()
