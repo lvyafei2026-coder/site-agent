@@ -182,10 +182,14 @@ class GetHotwordsTool(RuntimeTool):
 | | `database` | `D1Database.query / execute` |
 | | `keyvalue` | `WorkersKV.get / put`（键统一 `agent:` 前缀） |
 | | `sql` | `Sql` / `PAGE_QUERIES` / `LEDGER_TABLES` / `SqlBuilder` |
-| `sources/` | `radar` | `snapshot(status, limit)` → `{items, meta, interests}` |
+| `sources/` | `candidates` | `snapshot(status, limit)` → `{items, meta, interests}`（只读共享 KV） |
+| | `kv` | 共享 KV 门面：`CloudflareKV`（get/put/list）+ `atomic_update` + 键名契约 |
+| | `curation` | `upsert_saved / upsert_rejected`（与 console store.js 对齐的写侧口径） |
+| | `hotwords` | 热词分析业务：SERP/趋势抓取 + LLM 分析 + 结论回写 |
 | | `gsc` | `search_analytics(days, dimensions)`；无凭据返回 `[]` |
 | | `reddit` | `search(query, limit, timeframe)` 只读 |
-| `hosting/` | `repository` | `ensure_repo / push_files / head_sha / has_staged_changes` |
+| | `scrape_serp` / `scrape_trend` | DDG SERP / Google Trends 抓取 |
+| `hosting/` | `github_repo` | `ensure_repo / push_files / head_sha / has_staged_changes`（GitHub 仓库 git 操作） |
 | | `renderer` | `render_page / render_files`（写 `<asset_dir>/<slug>.html`） |
 | | `verification` | `check_runs / wait_build / verify_live` |
 | `publishing/` | `devto` | `publish(payload)` |

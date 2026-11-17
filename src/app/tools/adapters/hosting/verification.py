@@ -14,7 +14,7 @@ from typing import Any
 import requests
 
 from src.app.config import SiteConfig, env
-from .repository import git, head_sha
+from .github_repo import git, head_sha
 
 log = logging.getLogger(__name__)
 

@@ -2,7 +2,13 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""Git 仓库操作：clone / fetch / add / commit / push，集中管理子进程调用。"""
+"""GitHub 仓库资源操作：clone / fetch / add / commit / push。
+
+★资源只有一个：站群的 GitHub 仓库（config/sites.json 的 site.repo / site.branch）。
+所有 git 子进程调用集中在本文件，clone 走 `x-access-token:<GITHUB_TOKEN>`；
+对上层（renderer / verification / publishing_tools）只暴露 ensure_repo / push_files
+/ head_sha / has_staged_changes 四个原子步骤。
+"""
 
 from __future__ import annotations
 

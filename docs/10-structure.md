@@ -142,8 +142,8 @@ site-agent/
 │   │   ├── publishing_tools.py  PublishingOps + 7 个工具
 │   │   └── adapters/
 │   │       ├── cloudflare/      client · database · keyvalue · sql
-│   │       ├── sources/         radar · gsc · reddit
-│   │       ├── hosting/         repository · renderer · verification
+│   │       ├── sources/         kv · candidates · curation · hotwords · gsc · reddit · scrape_serp · scrape_trend
+│   │       ├── hosting/         github_repo · renderer · verification
 │   │       └── publishing/      devto · email
 │   ├── models/                  ExtractionSchema · WorkflowResult
 │   ├── prompts/                 d1_source.py（D1 快照+缓存）+ registry.py + __init__.py

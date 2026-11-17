@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from src.app.config import TEMPLATE_DIR, SiteConfig
-from .repository import ensure_repo, git, has_staged_changes
+from .github_repo import ensure_repo, git, has_staged_changes
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,60}$")
 

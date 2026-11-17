@@ -9,6 +9,12 @@ radar / console / agent 共用同一个 Cloudflare KV 命名空间（radar 侧�
 agent 直接经 Cloudflare KV REST API 读写这个 KV，既不调 console 的 /api/hotwords，
 也不调 radar 的 /api/serp、/api/trend、/api/candidates——这些 App 接口一律不碰。
 
+★与 cloudflare/keyvalue.py（WorkersKV）的关系：同一个 KV 命名空间的两个门面。
+  本类管**共享业务表**（saved / rejected / ai:v3: / serp:v1: 等，无前缀），
+  fail-open（读失败返回默认值并留痕），带进程锁 + atomic_update；
+  WorkersKV 管 agent 私有状态标记（`agent:` 前缀），fail-fast。
+  差异与设计说明见 tools/adapters/__init__.py。
+
 键名与 console/radar 完全对齐（见下方常量 + term_key），写侧口径在 curation.py 复刻
 store.js，保证 agent 直写 KV 与 console 人工操作落在同一套键、同一套状态枚举上。
 
