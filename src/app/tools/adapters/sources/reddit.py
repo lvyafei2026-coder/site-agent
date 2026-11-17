@@ -15,6 +15,7 @@ from typing import Any
 import requests
 
 from src.app.config import CONTACT_EMAIL
+from src.app.enums import SearchTimeframe
 
 log = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ def _ua() -> str:
 UA = _ua()
 
 
-def search(query: str, limit: int = 15, timeframe: str = "week") -> list[dict[str, Any]]:
+def search(query: str, limit: int = 15, timeframe: str = SearchTimeframe.WEEK.value) -> list[dict[str, Any]]:
     try:
         resp = requests.get(
             "https://www.reddit.com/search.json",

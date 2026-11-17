@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from src.app.enums import Intent, WorkflowStatus
+
 
 class WorkflowResult(BaseModel):
     intent: str
@@ -25,9 +27,10 @@ class WorkflowResult(BaseModel):
         errors = [f"{k}: {v.get('error')}" for k, v in results.items()
                   if isinstance(v, dict) and not v.get("ok", True)]
         return cls(
-            intent=state.get("intent", "general"),
+            intent=state.get("intent", Intent.GENERAL.value),
             confidence=float(state.get("confidence", 0.0)),
-            status="success" if validation.get("is_valid") else "failed",
+            status=(WorkflowStatus.SUCCESS.value if validation.get("is_valid")
+                    else WorkflowStatus.FAILED.value),
             validation_reason=validation.get("reason", "No validation result."),
             tool_results=results,
             tool_errors=errors,

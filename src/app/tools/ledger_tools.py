@@ -12,6 +12,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from src.app.enums import EventKind, EventStatus, LedgerStrategy, ToolKind
 from src.app.tools.adapters.cloudflare import database, keyvalue
 from src.app.tools.adapters.cloudflare.sql import LEDGER_TABLES, Sql, SqlBuilder
 from src.app.tools.adapters.publishing import email
@@ -41,7 +42,7 @@ class LedgerOps:
             raise ValueError(f"{table} 没有可写字段")
         key = [row.get(c) for c in spec.unique]
 
-        if spec.strategy == "lookup" and all(c in row for c in spec.unique):
+        if spec.strategy == LedgerStrategy.LOOKUP.value and all(c in row for c in spec.unique):
             unique_values = [row[c] for c in spec.unique]
             found = database.query(
                 SqlBuilder.select_by_unique(table, spec.unique), unique_values)
@@ -68,7 +69,7 @@ class LedgerOps:
         return self.ledger_upsert("agent_events", {
             "event_key": key, "kind": kind,
             "payload": json.dumps(payload, ensure_ascii=False),
-            "status": "pending", "created_at": int(time.time()),
+            "status": EventStatus.PENDING.value, "created_at": int(time.time()),
         })
 
     def event_consume(self, event_key, thread_id):
@@ -124,7 +125,7 @@ class WriteLedgerTool(RuntimeTool):
 
     tool_name = "write_ledger"
     method = "ledger_upsert"
-    kind = "ledger"
+    kind = ToolKind.LEDGER.value
 
     class Input(BaseModel):
         table: str = Field(..., description="agent_pages|agent_reports|agent_backlinks|agent_events|...")
@@ -136,7 +137,7 @@ class SetFlagTool(RuntimeTool):
 
     tool_name = "set_flag"
     method = "flag_set"
-    kind = "ledger"
+    kind = ToolKind.LEDGER.value
 
     class Input(BaseModel):
         key: str = Field(..., description="键")
@@ -149,10 +150,10 @@ class EmitEventTool(RuntimeTool):
 
     tool_name = "emit_event"
     method = "event_emit"
-    kind = "ledger"
+    kind = ToolKind.LEDGER.value
 
     class Input(BaseModel):
-        kind: str = Field(..., description="hotwords-ready|pages-deployed|promo-scheduled|backlinks-found|metrics-ready|reflection")
+        kind: str = Field(..., description="|".join(k.value for k in EventKind))
         payload: dict[str, Any] = Field(..., description="事件内容")
         key: str = Field(..., description="幂等键")
 
@@ -162,7 +163,7 @@ class RecordReflectionTool(RuntimeTool):
 
     tool_name = "record_reflection"
     method = "reflection_add"
-    kind = "ledger"
+    kind = ToolKind.LEDGER.value
 
     class Input(BaseModel):
         slot: str = Field(..., description="来源标识：哪个能力写入的")
@@ -176,7 +177,7 @@ class ConsumeEventTool(RuntimeTool):
 
     tool_name = "consume_event"
     method = "event_consume"
-    kind = "ledger"
+    kind = ToolKind.LEDGER.value
 
     class Input(BaseModel):
         event_key: str = Field(..., description="事件幂等键")
@@ -188,7 +189,7 @@ class SendNoticeTool(RuntimeTool):
 
     tool_name = "send_notice"
     method = "send_notice"
-    kind = "ledger"
+    kind = ToolKind.LEDGER.value
 
     class Input(BaseModel):
         subject: str = Field(..., description="标题")

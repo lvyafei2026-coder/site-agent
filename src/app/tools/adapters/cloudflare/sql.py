@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from src.app.enums import LedgerStrategy, PageQueryMode
+
 
 class Sql:
     """固定语句。events 表真实 schema：ts(ms) / site / event(page_view|...) / path / sid。"""
@@ -85,21 +87,21 @@ class PageQuery:
 
 
 PAGE_QUERIES: dict[str, PageQuery] = {
-    "all": PageQuery(
+    PageQueryMode.ALL.value: PageQuery(
         "SELECT site, slug, keyword, status FROM agent_pages WHERE status != 'failed'"
     ),
-    "recent": PageQuery(
+    PageQueryMode.RECENT.value: PageQuery(
         "SELECT site, slug, keyword, created_at FROM agent_pages "
         "WHERE status IN ('deployed','indexed','verified') "
         "ORDER BY created_at DESC"
     ),
-    "new": PageQuery(
+    PageQueryMode.NEW.value: PageQuery(
         "SELECT site, slug, keyword, created_at FROM agent_pages "
         "WHERE status IN ('deployed','indexed','verified') "
         "AND created_at >= ? ORDER BY created_at DESC",
         window_days=30,
     ),
-    "review": PageQuery(
+    PageQueryMode.REVIEW.value: PageQuery(
         "SELECT site, slug, keyword, status, created_at, gsc_clicks "
         "FROM agent_pages WHERE created_at <= ? ORDER BY created_at DESC",
         window_days=7,
@@ -113,14 +115,14 @@ class LedgerSpec:
 
     cols     允许写入的列（白名单，挡住调用方多传的键）
     unique   唯一键，upsert 的 ON CONFLICT 目标
-    strategy upsert  冲突即覆盖
+        strategy upsert  冲突即覆盖
              ignore  冲突即丢弃（重复通知不把已 consumed 的事件改回 pending）
              lookup  先 SELECT 再决定 UPDATE / INSERT（给 0001 老表补登）
     """
 
     cols: tuple[str, ...]
     unique: tuple[str, ...]
-    strategy: str = "upsert"
+    strategy: str = LedgerStrategy.UPSERT.value
 
 
 LEDGER_TABLES: dict[str, LedgerSpec] = {
@@ -137,13 +139,13 @@ LEDGER_TABLES: dict[str, LedgerSpec] = {
         cols=("channel", "target_url", "source_url", "anchor_text", "status",
               "score", "created_at", "checked_at", "event_key"),
         unique=("event_key",),
-        strategy="lookup",
+        strategy=LedgerStrategy.LOOKUP.value,
     ),
     "agent_events": LedgerSpec(
         cols=("event_key", "kind", "payload", "status", "created_at",
               "consumed_at", "thread_id"),
         unique=("event_key",),
-        strategy="ignore",
+        strategy=LedgerStrategy.IGNORE.value,
     ),
     "agent_reflections": LedgerSpec(
         cols=("event_key", "slot", "action_key", "reason", "detail", "created_at"),
@@ -194,7 +196,7 @@ class SqlBuilder:
         """按策略生成「插入或冲突时更新 / 忽略」语句。"""
         head = cls.insert(table, cols)
         conflict = f"ON CONFLICT({', '.join(spec.unique)})"
-        if spec.strategy == "ignore":
+        if spec.strategy == LedgerStrategy.IGNORE.value:
             return f"{head} {conflict} DO NOTHING"
         updates = [c for c in cols if c not in spec.unique]
         if not updates:  # 全列都是唯一键，没有可覆盖的字段

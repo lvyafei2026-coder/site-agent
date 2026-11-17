@@ -15,6 +15,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
+from src.app.enums import CandidateStatus
+
 from .kv import CANDIDATES_KEY, INTERESTS_KEY, CloudflareKV, get_kv
 
 log = logging.getLogger(__name__)
@@ -37,13 +39,14 @@ def _read(kv: CloudflareKV, status: str, limit: int, light: bool) -> dict[str, A
     # 候选条目一般不带 status 字段（status 在 saved/rejected/tags 里），按原 radar.py 语义
     # 默认都算 doing；老条目没有 status 时不能全丢。
     if status:
-        filtered = [i for i in items if isinstance(i, dict) and i.get("status", "doing") == status]
+        filtered = [i for i in items if isinstance(i, dict)
+                    and i.get("status", CandidateStatus.DOING.value) == status]
         items = filtered or items
 
     return {"items": items, "meta": meta, "interests": interests}
 
 
-def snapshot(status: str = "doing", limit: int = 40, light: bool = False,
+def snapshot(status: str = CandidateStatus.DOING.value, limit: int = 40, light: bool = False,
              kv: Optional[CloudflareKV] = None) -> dict[str, Any]:
     """给 Agent 的完整快照：候选 + meta + interests。status 由调用方按需过滤（radar 不解析该参数）。"""
     kv = kv or get_kv()

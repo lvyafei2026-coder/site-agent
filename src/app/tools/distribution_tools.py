@@ -11,6 +11,7 @@ from typing import Any
 import requests
 from pydantic import BaseModel, Field
 
+from src.app.enums import BacklinkChannel, ToolKind
 from src.app.tools.adapters.cloudflare import database
 from src.app.tools.adapters.cloudflare.sql import Sql
 from src.app.tools.adapters.publishing import devto
@@ -39,7 +40,7 @@ class DistributionOps:
                     continue
                 for art in resp.json():
                     out.append({
-                        "channel": "devto", "title": art.get("title", ""),
+                        "channel": BacklinkChannel.DEVTO.value, "title": art.get("title", ""),
                         "url": art.get("url", ""), "tags": art.get("tag_list", []),
                         "reactions": art.get("public_reactions_count", 0),
                     })
@@ -87,7 +88,7 @@ class PublishDevtoArticleTool(RuntimeTool):
 
     tool_name = "publish_devto_article"
     method = "publish_devto"
-    kind = "write"
+    kind = ToolKind.WRITE.value
 
     class Input(BaseModel):
         payload: dict[str, Any] = Field(..., description="文章字段：title/draft/target_url/...")

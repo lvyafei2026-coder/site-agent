@@ -25,6 +25,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from src.app.enums import GraphNode, RouteTag
+
 # 每步只抽这些「有语义」的字段做 diff；大对象（tool_results / extracted_data）
 # 一律降维成计数，避免把几 MB 数据塞进 trace。
 _MAX_TEXT = 120
@@ -89,7 +91,8 @@ def run_traced(graph, state: dict, config: dict) -> tuple[dict, dict]:
         "path": " → ".join(s["node"] for s in steps),
         "nodes": steps,
         "totalMs": int((time.perf_counter() - started) * 1000),
-        "route": "error" if last == "handle_error" else "complete",
-        "retried": sum(1 for s in steps if s["node"] == "run_processing") > 1,
+        "route": (RouteTag.ERROR.value if last == GraphNode.ERROR.value
+                  else RouteTag.COMPLETE.value),
+        "retried": sum(1 for s in steps if s["node"] == GraphNode.PROCESSING.value) > 1,
     }
     return acc, trace

@@ -8,12 +8,14 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from src.app.enums import Intent
+
 
 class ExtractionSchema(BaseModel):
     """processing_node 从一轮运营请求里抽出的结构化事实。"""
 
     target_site: str = Field(default="", description="目标子站名，空表示全站群")
-    intent: str = Field(default="general", description="本轮意图")
+    intent: str = Field(default=Intent.GENERAL.value, description="本轮意图")
     keywords: list[str] = Field(default_factory=list, description="候选热词 / 关键词")
     pages: list[str] = Field(default_factory=list, description="相关页面 slug")
     notes: str = Field(default="", description="补充约束")

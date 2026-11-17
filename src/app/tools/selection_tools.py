@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from src.app.enums import CandidateStatus, ToolKind
 from src.app.tools.adapters.sources import hotwords, candidates
 from src.app.tools.base import RuntimeTool
 
@@ -15,7 +16,7 @@ from src.app.tools.base import RuntimeTool
 class SelectionOps:
     """selection 域的实现：只碰 sources 适配器。"""
 
-    def hotwords(self, status="doing", limit=40):
+    def hotwords(self, status=CandidateStatus.DOING.value, limit=40):
         return candidates.snapshot(status=status, limit=limit)
 
     def analyze_hotwords(self, limit=20, prompt_version=None):
@@ -30,7 +31,7 @@ class GetHotwordsTool(RuntimeTool):
     method = "hotwords"
 
     class Input(BaseModel):
-        status: str = Field('doing', description="候选状态，默认 doing")
+        status: str = Field(CandidateStatus.DOING.value, description="候选状态，默认 doing")
         limit: int = Field(40, description="最多返回几条，默认 40")
 
 
@@ -39,7 +40,7 @@ class AnalyzeHotwordsTool(RuntimeTool):
 
     tool_name = "analyze_hotwords"
     method = "analyze_hotwords"
-    kind = "write"
+    kind = ToolKind.WRITE.value
 
     class Input(BaseModel):
         limit: int = Field(20, description="一次捞取并逐条分析的条数，默认 20")

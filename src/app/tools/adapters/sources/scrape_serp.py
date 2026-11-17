@@ -31,6 +31,8 @@ from typing import Any, Optional
 
 import requests
 
+from src.app.enums import SerpEngine, SerpVerdict
+
 from .errors import SourceUnavailable
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -67,10 +69,10 @@ def _ep_www(q: str) -> str:
 #  10 条真结果。engine 只保留两种旧值，写进 KV 的 serp:v1: 口径不变。
 #  host 字段只用于失败诊断（到底哪些域名连不上），不参与抓取。
 PLAN = [
-    {"engine": "duckduckgo",      "host": "html.duckduckgo.com", "ep": _ep_html, "wait": 0},
-    {"engine": "duckduckgo",      "host": "duckduckgo.com",      "ep": _ep_main, "wait": 1200},
-    {"engine": "duckduckgo-lite", "host": "lite.duckduckgo.com", "ep": _ep_lite, "wait": 2500},
-    {"engine": "duckduckgo",      "host": "www.duckduckgo.com",  "ep": _ep_www,  "wait": 4000},
+    {"engine": SerpEngine.DUCKDUCKGO.value,       "host": "html.duckduckgo.com", "ep": _ep_html, "wait": 0},
+    {"engine": SerpEngine.DUCKDUCKGO.value,       "host": "duckduckgo.com",      "ep": _ep_main, "wait": 1200},
+    {"engine": SerpEngine.DUCKDUCKGO_LITE.value,  "host": "lite.duckduckgo.com", "ep": _ep_lite, "wait": 2500},
+    {"engine": SerpEngine.DUCKDUCKGO.value,       "host": "www.duckduckgo.com",  "ep": _ep_www,  "wait": 4000},
 ]
 
 # 直连 4 发全没拿到真结果时的「换出口」兜底：公共 Reader 云端中转，取回的是**原始
@@ -107,17 +109,22 @@ RE_NO_RESULT = re.compile(r"no-results|No results found|没有找到", re.I)
 def serp_verdict(status: int, html: str, limit: int = 10):
     body = str(html or "")
     if status != 200:
-        kind = "challenge" if status in (202, 429) or status >= 500 else "error"
+        kind = (SerpVerdict.CHALLENGE.value
+                if status in (202, 429) or status >= 500 else SerpVerdict.ERROR.value)
         return {"ok": False, "kind": kind, "status": status, "items": [],
                 "note": "202 挑战页" if status == 202 else "HTTP " + str(status)}
     items = parse_ddg(body, limit)
     if items:
-        return {"ok": True, "kind": "items", "status": status, "items": items, "note": ""}
+        return {"ok": True, "kind": SerpVerdict.ITEMS.value, "status": status,
+                "items": items, "note": ""}
     if RE_BLOCK.search(body) or (len(body) < 20000 and re.search(r"<title>\s*DuckDuckGo\s*</title>", body, re.I)):
-        return {"ok": False, "kind": "challenge", "status": status, "items": [], "note": "202 挑战页"}
+        return {"ok": False, "kind": SerpVerdict.CHALLENGE.value,
+                "status": status, "items": [], "note": "202 挑战页"}
     if RE_NO_RESULT.search(body):
-        return {"ok": True, "kind": "empty", "status": status, "items": [], "note": "无结果"}
-    return {"ok": False, "kind": "challenge", "status": status, "items": [], "note": "解析为空"}
+        return {"ok": True, "kind": SerpVerdict.EMPTY.value,
+                "status": status, "items": [], "note": "无结果"}
+    return {"ok": False, "kind": SerpVerdict.CHALLENGE.value,
+            "status": status, "items": [], "note": "解析为空"}
 
 
 _ENT = {"amp": "&", "lt": "<", "gt": ">", "quot": '"', "#39": "'", "#x27": "'", "nbsp": " "}
@@ -349,7 +356,7 @@ def fetch_serp(term: str, session: Optional[Any] = None, limit: int = 10) -> dic
         try:
             v = _fetch_via_reader(q, limit, sess, proxy)
             if v["ok"]:
-                return {"engine": "duckduckgo", "items": v["items"],
+                return {"engine": SerpEngine.DUCKDUCKGO.value, "items": v["items"],
                         "attempts": [], "via": "reader", "skipped_direct": True}
         except Exception:  # noqa: BLE001
             pass
@@ -387,7 +394,7 @@ def fetch_serp(term: str, session: Optional[Any] = None, limit: int = 10) -> dic
             v = _fetch_via_reader(q, limit, sess, proxy)
             if v["ok"]:
                 _STATE["direct_down_until"] = time.monotonic() + DIRECT_RETRY_SEC
-                return {"engine": "duckduckgo", "items": v["items"],
+                return {"engine": SerpEngine.DUCKDUCKGO.value, "items": v["items"],
                         "attempts": attempts, "via": "reader"}
             fallback_note = f"Reader 中转 {v['kind']}"
         except Exception as exc:  # noqa: BLE001 - 兜底也挂就按源级不可用上报
@@ -403,4 +410,4 @@ def fetch_serp(term: str, session: Optional[Any] = None, limit: int = 10) -> dic
         note = f"DuckDuckGo 连续 {len(attempts)} 发未返回可用结果（最后一次：{last_note}）"
     if fallback_note:
         note += f"；{fallback_note}"
-    raise SourceUnavailable("duckduckgo", note + "，过几分钟再试", attempts)
+    raise SourceUnavailable(SerpEngine.DUCKDUCKGO.value, note + "，过几分钟再试", attempts)

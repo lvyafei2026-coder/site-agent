@@ -24,6 +24,8 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
+from src.app.enums import ToolKind
+
 # requests 是硬依赖，但 base 作为叶子模块不宜在顶层强绑。包一层 try，缺失时
 # 网络型异常判定退化为只用标准库集合（极罕见，仅防导入崩溃）。
 try:
@@ -106,7 +108,7 @@ class RuntimeTool(BaseTool):
 
     tool_name: ClassVar[str] = ""
     method: ClassVar[str] = ""
-    kind: ClassVar[str] = "read"
+    kind: ClassVar[str] = ToolKind.READ.value
     tool_desc: ClassVar[str] = ""  # 留空即取类 docstring，一般不用写
     fixed: ClassVar[dict[str, Any]] = {}  # 补进调用的固定参数
     Input: ClassVar[type[BaseModel]]

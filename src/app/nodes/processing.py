@@ -10,6 +10,7 @@ import json
 
 from langchain_core.prompts import ChatPromptTemplate
 
+from src.app.enums import Intent, PromptTask
 from src.app.graph.state import WorkflowState
 from src.app.services.llm_service import llm_service
 from src.app.services.prompt_service import prompt_service
@@ -34,12 +35,13 @@ def processing_node(state: WorkflowState) -> WorkflowState:
     工具级成功/失败的判定由 RuntimeTool.run 在捕获异常时按异常类型打 retryable 标记。
     """
     text = state.get("input_text", "")
-    intent = state.get("intent", "general")
+    intent = state.get("intent", Intent.GENERAL.value)
     versions = state.get("prompt_versions", {}) or {}
-    system = prompt_service.load_prompt("extraction", version=versions.get("extraction"))
+    system = prompt_service.load_prompt(PromptTask.EXTRACTION.value,
+                                        version=versions.get(PromptTask.EXTRACTION.value))
     # human 模板同样在 D1 的 prompts 表，代码里不留任何提示词字面量
-    user = prompt_service.load_prompt("extraction_user",
-                                     version=versions.get("extraction_user"))
+    user = prompt_service.load_prompt(PromptTask.EXTRACTION_USER.value,
+                                      version=versions.get(PromptTask.EXTRACTION_USER.value))
     template = ChatPromptTemplate.from_messages(
         [("system", system), ("human", user)])
 
@@ -79,11 +81,12 @@ def processing_node(state: WorkflowState) -> WorkflowState:
     # review_metrics 专属：取数后让 LLM 比对各站表现，识别「表现好的站点」。
     # 无 LLM key 时 analyze_metrics 返回空串，本段整体跳过，不阻塞整轮。
     metrics_analysis = ""
-    if intent == "review_metrics" and results and not fatal:
+    if intent == Intent.REVIEW_METRICS.value and results and not fatal:
         try:
             versions = state.get("prompt_versions", {}) or {}
             system = prompt_service.load_prompt(
-                "review_metrics", version=versions.get("review_metrics"))
+                PromptTask.REVIEW_METRICS.value,
+                version=versions.get(PromptTask.REVIEW_METRICS.value))
             metrics_analysis = llm_service.analyze_metrics(
                 system, _compact_metrics_payload(results))
         except Exception:  # noqa: BLE001 - 分析失败不影响取数与出报告

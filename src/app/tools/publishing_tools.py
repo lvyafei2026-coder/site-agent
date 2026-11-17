@@ -13,6 +13,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from src.app.config import SITES
+from src.app.enums import EventKind, EventStatus, PageQueryMode, ToolKind
 from src.app.tools.adapters import hosting
 from src.app.tools.adapters.cloudflare import database
 from src.app.tools.adapters.cloudflare.sql import PAGE_QUERIES
@@ -26,8 +27,8 @@ class PublishingOps:
     不额外 import 其它域的 Ops——换实现只换门面，一处生效。
     """
 
-    def page_inventory(self, mode="all", limit=200):
-        query = PAGE_QUERIES.get(mode) or PAGE_QUERIES["all"]
+    def page_inventory(self, mode=PageQueryMode.ALL.value, limit=200):
+        query = PAGE_QUERIES.get(mode) or PAGE_QUERIES[PageQueryMode.ALL.value]
         params = ([int(time.time()) - query.window_days * 86400]
                   if query.window_days else [])
         return database.query(f"{query.sql} LIMIT ?", [*params, limit])
@@ -54,8 +55,8 @@ class PublishingOps:
     def queue_indexing(self, url):
         # 普通内容页 Indexing API 不生效；sitemap 已在 render_files 阶段写入。
         return self.ledger_upsert("agent_events", {
-            "event_key": stable_key("indexing", url), "kind": "indexing-queued",
-            "payload": json.dumps({"url": url}), "status": "pending",
+            "event_key": stable_key("indexing", url), "kind": EventKind.INDEXING_QUEUED.value,
+            "payload": json.dumps({"url": url}), "status": EventStatus.PENDING.value,
             "created_at": int(time.time()),
         })
 
@@ -67,7 +68,7 @@ class GetPageInventoryTool(RuntimeTool):
     method = "page_inventory"
 
     class Input(BaseModel):
-        mode: str = Field('all', description="all|recent|new|review")
+        mode: str = Field(PageQueryMode.ALL.value, description="all|recent|new|review")
         limit: int = Field(200, description="最多返回几条")
 
 
@@ -99,7 +100,7 @@ class RenderFilesTool(RuntimeTool):
 
     tool_name = "render_files"
     method = "render_files"
-    kind = "ledger"
+    kind = ToolKind.LEDGER.value
 
     class Input(BaseModel):
         site_name: str = Field(..., description="SITES 里的站点名")
@@ -111,7 +112,7 @@ class WaitBuildTool(RuntimeTool):
 
     tool_name = "wait_build"
     method = "wait_build"
-    kind = "ledger"
+    kind = ToolKind.LEDGER.value
 
     class Input(BaseModel):
         repo: str = Field(..., description="owner/repo")
@@ -125,7 +126,7 @@ class QueueIndexingTool(RuntimeTool):
 
     tool_name = "queue_indexing"
     method = "queue_indexing"
-    kind = "ledger"
+    kind = ToolKind.LEDGER.value
 
     class Input(BaseModel):
         url: str = Field(..., description="线上完整 URL")
@@ -136,7 +137,7 @@ class GitPushTool(RuntimeTool):
 
     tool_name = "git_push"
     method = "git_push"
-    kind = "write"
+    kind = ToolKind.WRITE.value
 
     class Input(BaseModel):
         site_name: str = Field(..., description="SITES 里的站点名")

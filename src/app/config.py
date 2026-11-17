@@ -2,10 +2,13 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""集中配置：Settings 单例（全部来自 .env）+ 站群清单 + 意图枚举。
+"""集中配置：Settings 单例（全部来自 .env）+ 站群清单 + 意图兼容别名。
 
 所有模块只 import `settings` 或本文件的常量，不各自读 .env。
 站群清单在 config/sites.json（SITES_FILE 可覆盖），域名只有 FLEET_DOMAIN 一处。
+
+★2026-11-17：意图/提示词 task 等枚举的唯一真源已移到 src.app.enums；本文件的
+INTENTS 是「由 Intent 派生」的兼容别名，供既有 `if x in INTENTS` 引用。
 """
 
 from __future__ import annotations
@@ -16,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+from src.app.enums import Intent, LlmThinking, MemoryBackend, PromptTask
 
 load_dotenv()
 
@@ -36,7 +41,7 @@ class Settings:
 
     project_name: str = "site-agent"
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
-    memory_backend: str = os.getenv("MEMORY_BACKEND", "memory").lower()
+    memory_backend: str = os.getenv("MEMORY_BACKEND", MemoryBackend.MEMORY.value).lower()
     database_url: str = os.getenv("DATABASE_URL", "")
     langsmith_tracing: bool = os.getenv("LANGSMITH_TRACING", "false").lower() == "true"
     langsmith_endpoint: str = os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
@@ -52,21 +57,18 @@ class Settings:
             # ★D1 读不到默认版本时的兜底版本号（不是提示词正文）。唯一真源在 radar-rules
             #   库的 prompt_defaults 表，由 /rules/prompts 页面维护；这里只作最后一次兜底。
             self.default_prompt_versions = {
-                "intent": "v1", "intent_user": "v1",
-                "extraction": "v1", "extraction_user": "v1",
-                "hotwords": "v2", "hotwords_user": "v2",
-                "review_metrics": "v1",
+                PromptTask.INTENT.value: "v1", PromptTask.INTENT_USER.value: "v1",
+                PromptTask.EXTRACTION.value: "v1", PromptTask.EXTRACTION_USER.value: "v1",
+                PromptTask.HOTWORDS.value: "v2", PromptTask.HOTWORDS_USER.value: "v2",
+                PromptTask.REVIEW_METRICS.value: "v1",
             }
 
 
 settings = Settings()
 
-# 一轮运营的意图枚举（唯一真源）：llm 负责分类、tool_service 负责映射工具。
+# 一轮运营的意图：唯一真源 = enums.Intent，这里派生出 tuple 供 `in INTENTS` 使用。
 # analyze_hotwords：批量分析候选池里「未跟进」的热词并回写结论状态（有副作用）。
-INTENTS: tuple[str, ...] = (
-    "select_pages", "plan_promo", "find_backlinks", "review_metrics",
-    "analyze_hotwords", "general",
-)
+INTENTS: tuple[str, ...] = tuple(i.value for i in Intent)
 
 # ---- 站群唯一真源 ----
 FLEET_DOMAIN = env("FLEET_DOMAIN", "toolara.dev")
@@ -161,8 +163,8 @@ LLM_API_KEY = env("LLM_API_KEY", "")
 LLM_BASE_URL = env("LLM_BASE_URL", "")
 LLM_MODEL = env("LLM_MODEL", "deepseek-flash")
 # DeepSeek 思考模式默认开启：reasoning_content 会先吃掉 max_tokens，导致正文为空。
-# auto（默认）= 仅当 base_url 指向 DeepSeek 时自动关闭；off = 强制关闭；on = 保留思考。
-LLM_THINKING = env("LLM_THINKING", "auto")
+# 取值语义见 enums.LlmThinking（auto/off/on）。
+LLM_THINKING = env("LLM_THINKING", LlmThinking.AUTO.value)
 
 # DeepSeek 平台后台「用量信息」页的登录态 token（可选，不是 API key）。
 # 官方公开的账户接口只有 /user/balance（余额），消费 / 请求次数 / Tokens / 累计消费

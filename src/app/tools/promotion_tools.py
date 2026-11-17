@@ -12,6 +12,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from src.app.enums import PlanStatus, ReportKind, ToolKind
 from src.app.tools.adapters.cloudflare import database
 from src.app.tools.adapters.cloudflare.sql import Sql
 from src.app.tools.base import RuntimeTool, ToolOutput
@@ -44,7 +45,7 @@ class WritePromoSlotTool(RuntimeTool):
     """把一条推广排期写进 agent_reports(kind='plan')，带同日同渠道查重。"""
 
     tool_name = "write_promo_slot"
-    kind = "ledger"
+    kind = ToolKind.LEDGER.value
 
     class Input(BaseModel):
         item: dict[str, Any] = Field(..., description="排期条目")
@@ -57,16 +58,17 @@ class WritePromoSlotTool(RuntimeTool):
             if any(p.get("date") == item.get("date")
                    and p.get("channel") == item.get("channel") for p in current):
                 return ToolOutput(tool=self.name,
-                                  result={"status": "skipped", "detail": "排期已存在"}).model_dump()
+                                  result={"status": PlanStatus.SKIPPED.value,
+                                          "detail": "排期已存在"}).model_dump()
             current.append(item)
             self.ops.ledger_upsert("agent_reports", {
-                "report_date": time.strftime("%Y-%m-%d"), "kind": "plan",
+                "report_date": time.strftime("%Y-%m-%d"), "kind": ReportKind.PLAN.value,
                 "summary": f"下周排期（{len(current)} 条）", "anomalies": "[]",
                 "actions": json.dumps(current, ensure_ascii=False),
                 "created_at": int(time.time()),
             })
             return ToolOutput(tool=self.name,
-                              result={"status": "scheduled",
+                              result={"status": PlanStatus.SCHEDULED.value,
                                       "detail": item.get("title", "")}).model_dump()
         except Exception as exc:  # noqa: BLE001
             return ToolOutput(tool=self.name, ok=False,

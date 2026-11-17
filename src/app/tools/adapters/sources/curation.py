@@ -17,13 +17,15 @@ from __future__ import annotations
 import time
 from typing import Any, Optional
 
+from src.app.enums import CurationStatus, HintName, RejectSource
+
 from .kv import term_key
 
 # 与 console/src/store.js 完全一致；todo = Agent 分析后判定「可以做」自动置入
-STATUSES = ["saved", "todo", "wip", "live", "parked"]
+STATUSES = [s.value for s in CurationStatus]
 
 SAVED_FIELDS = ["term", "related", "hints", "geos", "geoCount", "traffic", "count", "score", "verdict"]
-HINT_NAMES = ["工具查询", "价格规格", "日程日期", "资格政策", "用法教程", "对比评测"]
+HINT_NAMES = [h.value for h in HintName]
 
 
 def _pick_saved(item: dict[str, Any]) -> dict[str, Any]:
@@ -58,7 +60,7 @@ def upsert_saved(list_: Optional[list], item: dict[str, Any], now: Optional[int]
     prev = next((x for x in (list_ or []) if isinstance(x, dict) and x.get("key") == key), None)
     status = item.get("status")
     if status not in STATUSES:
-        status = (prev.get("status") if prev else "saved")
+        status = (prev.get("status") if prev else CurationStatus.SAVED.value)
     merged = {**_pick_saved(prev or {}), **_pick_saved(item), "key": key, "status": status}
     merged["at"] = (prev.get("at") if prev else now)
     merged["updatedAt"] = now
@@ -76,14 +78,14 @@ def upsert_rejected(list_: Optional[list], item: dict[str, Any], now: Optional[i
     arr = [x for x in (list_ or []) if isinstance(x, dict) and x.get("key") != key]
     prev = next((x for x in (list_ or []) if isinstance(x, dict) and x.get("key") == key), None)
     incoming = str(item.get("reason") or "").strip()[:300]
-    source = "ai" if item.get("source") == "ai" else "manual"
-    keep_manual = bool(prev and prev.get("source") == "manual" and source == "ai")
+    source = RejectSource.AI.value if item.get("source") == RejectSource.AI.value else RejectSource.MANUAL.value
+    keep_manual = bool(prev and prev.get("source") == RejectSource.MANUAL.value and source == RejectSource.AI.value)
     reason = (str(prev.get("reason") or "")[:300] if keep_manual else (incoming or (prev.get("reason") or "")))
     arr.append({
         "key": key,
         "term": str(item.get("term") or (prev and prev.get("term")) or "").strip()[:120],
         "reason": reason,
-        "source": "manual" if keep_manual else source,
+        "source": RejectSource.MANUAL.value if keep_manual else source,
         "at": (prev.get("at") if prev else now),
         "updatedAt": now,
     })

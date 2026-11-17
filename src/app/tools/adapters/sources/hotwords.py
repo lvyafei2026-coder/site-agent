@@ -35,6 +35,10 @@ from functools import lru_cache
 from typing import Any, Optional
 
 from src.app.config import settings
+from src.app.enums import (
+    AnalysisPhase, BackfillAction, CurationStatus, HintName, LlmThinking,
+    PromptTask, RejectSource, Verdict,
+)
 from src.app.observability.langsmith import run_traced, trace_tool, tracing_enabled
 # ★adapters 不能反向依赖 services（见 test_architecture.py），所以走 prompts 包的纯加载函数，
 #   而不是 services/prompt_service.py 那个带日志的节点入口。
@@ -59,8 +63,8 @@ log = logging.getLogger(__name__)
 @lru_cache(maxsize=8)
 def _prompt_pair(version: Optional[str] = None) -> tuple[str, str]:
     """返回 (system, user 模板)。version 由 /run 的 prompt_versions.hotwords 透传。"""
-    v = version or (settings.default_prompt_versions or {}).get("hotwords", "v1")
-    return load_prompt("hotwords", v), load_prompt("hotwords_user", v)
+    v = version or (settings.default_prompt_versions or {}).get(PromptTask.HOTWORDS.value, "v1")
+    return load_prompt(PromptTask.HOTWORDS.value, v), load_prompt(PromptTask.HOTWORDS_USER.value, v)
 
 # 判例反馈：从人工「不做」标记里挑少量真实词例喂回 AI，让它对同类词倾向判不做。
 # ★v2 提示词已固化高频规则（非工具意图/时效资讯/热度下降/真人/作品），这里的判例
@@ -118,7 +122,7 @@ def examples_line(examples: list[dict[str, str]]) -> str:
     return head + "\n" + "\n".join(rows)
 
 
-HINT_NAMES = ("工具查询", "价格规格", "日程日期", "资格政策", "用法教程", "对比评测")
+HINT_NAMES = tuple(h.value for h in HintName)
 
 WORK_TITLE_RX = __import__("re").compile(
     r"(\(\s*(19|20)\d{2}\s*(film|movie|tv series|web series|series|album|song|novel|book|game)\s*\)"
@@ -239,7 +243,7 @@ def verdict_of(text: str) -> str:
     if m:
         return m.group(1)
     if __import__("re").search(r"结论[：:][^\n]*不做", s):
-        return "不做"
+        return Verdict.SKIP.value
     return ""
 
 
@@ -271,10 +275,10 @@ def decide(text: str, signal: str = "") -> tuple[str, str]:
     verdict = verdict_of(text)
     reason = ""
     risk = redline_of(text)
-    if verdict != "不做" and risk:
-        verdict, reason = "不做", risk
-    if verdict != "不做" and signal:
-        verdict, reason = "不做", signal
+    if verdict != Verdict.SKIP.value and risk:
+        verdict, reason = Verdict.SKIP.value, risk
+    if verdict != Verdict.SKIP.value and signal:
+        verdict, reason = Verdict.SKIP.value, signal
     return verdict, reason
 
 
@@ -295,7 +299,7 @@ class _WriteLog:
         # 每次写的明细（供 LangSmith 的 tool:kv.write / tool:serp / tool:trend 输出）。
         # 关闭追踪时只记 key/kind/phase/ok 四个小字段，不算体积，零额外开销。
         self.records: list[dict[str, Any]] = []
-        self.phase = "analysis"   # serp / trend / analysis
+        self.phase = AnalysisPhase.ANALYSIS.value   # serp / trend / analysis
         self.capture = False      # tracing 开启时才计算写入字节数
 
     def _record(self, key: str, ok: bool, kind: str, value: Any = None) -> bool:
@@ -390,10 +394,11 @@ def _thinking_kwargs() -> dict[str, Any]:
     """
     from src.app.config import LLM_BASE_URL, LLM_THINKING
 
-    mode = (LLM_THINKING or "auto").strip().lower()
-    if mode == "on":
+    mode = (LLM_THINKING or LlmThinking.AUTO.value).strip().lower()
+    if mode == LlmThinking.ON.value:
         return {}
-    if mode == "off" or (mode == "auto" and "deepseek" in (LLM_BASE_URL or "").lower()):
+    if mode == LlmThinking.OFF.value or (
+            mode == LlmThinking.AUTO.value and "deepseek" in (LLM_BASE_URL or "").lower()):
         return {"extra_body": {"thinking": {"type": "disabled"}}}
     return {}
 
@@ -712,7 +717,7 @@ def _analyze_one(item: dict[str, Any], kv: CloudflareKV,
     # ---- SERP：读缓存 / 现抓 / 写回，整段是一条 tool:serp span ----
     serp_err = ""
     serp_diag: dict[str, Any] = {}
-    writes.phase = "serp"
+    writes.phase = AnalysisPhase.SERP.value
     serp_mark = len(writes.records)
 
     def serp_outputs(res):
@@ -758,7 +763,7 @@ def _analyze_one(item: dict[str, Any], kv: CloudflareKV,
     # ---- Trends：读缓存 / 现抓 / 写回，整段是一条 tool:trend span ----
     trend_ok, trend_err = False, ""
     trend_diag: dict[str, Any] = {}
-    writes.phase = "trend"
+    writes.phase = AnalysisPhase.TREND.value
     trend_mark = len(writes.records)
 
     def trend_outputs(res):
@@ -837,7 +842,7 @@ def _analyze_one(item: dict[str, Any], kv: CloudflareKV,
     # ---- 回写 KV：正文 / 标签 / 状态，整段是一条 tool:kv.write span ----
     # ★正文先写：正文写失败就直接收手，绝不写状态——否则会留下「有状态、没正文」的悬空词，
     #   _select_pending 既不会重跑它，前端也看不到方案。
-    writes.phase = "analysis"
+    writes.phase = AnalysisPhase.ANALYSIS.value
     write_mark = len(writes.records)
     stopped = {"afterTextFailure": False}
 
@@ -848,17 +853,19 @@ def _analyze_one(item: dict[str, Any], kv: CloudflareKV,
         if hints is not None:
             writes.table(kv, HINTS_KEY,
                          lambda m: set_hint_override(m, term, hints), reader=_kv_dict)
-        if verdict == "不做":
-            payload = {"term": term, "reason": reason or "AI 判定不做", "source": "ai"}
+        if verdict == Verdict.SKIP.value:
+            payload = {"term": term, "reason": reason or "AI 判定不做",
+                       "source": RejectSource.AI.value}
             if writes.table(kv, REJECTED_KEY,
                             lambda arr: upsert_rejected(arr, payload), reader=_kv_list):
                 out["status"] = "rejected"
-        elif verdict == "做":
+        elif verdict == Verdict.DO.value:
             cand = {k: item.get(k) for k in ("term", "related", "hints", "geos", "geoCount", "traffic", "count", "score")}
-            payload = {**cand, "term": term, "status": "todo", "verdict": "做"}
+            payload = {**cand, "term": term, "status": CurationStatus.TODO.value,
+                       "verdict": Verdict.DO.value}
             if writes.table(kv, SAVED_KEY,
                             lambda arr: upsert_saved(arr, payload), reader=_kv_list):
-                out["status"] = "todo"
+                out["status"] = CurationStatus.TODO.value
         # 「观望」与解析不出结论：只留正文和标签，状态保持未跟进
 
     def write_outputs(_result):
@@ -1039,7 +1046,7 @@ def _run_batch(limit: int, kv: Optional[CloudflareKV], batch_run,
 
     counts: dict[str, int] = {}
     for r in results:
-        key = r["verdict"] or "未定"
+        key = r["verdict"] or Verdict.UNDECIDED.value
         counts[key] = counts.get(key, 0) + 1
     analyzed = sum(1 for r in results if not r["error"])
     failed = len(results) - analyzed
@@ -1130,12 +1137,13 @@ def backfill_states(kv: Optional[CloudflareKV] = None, *, limit: int = 200,
         text = kv.get_text(cache_key) or ""
         if not text.strip():
             report["unresolved"] += 1
-            report["items"].append({"key": key, "action": "unresolved", "reason": "正文为空"})
+            report["items"].append({"key": key, "action": BackfillAction.UNRESOLVED.value,
+                                    "reason": "正文为空"})
             continue
 
         verdict, reason = decide(text)
         hints = signals_of(text)
-        need_state = key not in curated and verdict in ("做", "不做")
+        need_state = key not in curated and verdict in (Verdict.DO.value, Verdict.SKIP.value)
         # 「信号标签：无」解析成 []，写成空覆盖没有意义，回填时跳过
         need_hints = bool(hints) and key not in hints_map
 
@@ -1147,14 +1155,15 @@ def backfill_states(kv: Optional[CloudflareKV] = None, *, limit: int = 200,
             else:
                 report["unresolved"] += 1
                 report["items"].append({
-                    "key": key, "action": "unresolved",
+                    "key": key, "action": BackfillAction.UNRESOLVED.value,
                     "reason": "正文解析不出结论且状态缺失；要重跑需先删除该词的 ai:v3: 正文",
                 })
             continue
 
-        action = "repaired" if not dry_run else "preview"
+        action = (BackfillAction.REPAIRED.value if not dry_run
+                  else BackfillAction.PREVIEW.value)
         entry: dict[str, Any] = {
-            "key": key, "action": action, "verdict": verdict or "未定",
+            "key": key, "action": action, "verdict": verdict or Verdict.UNDECIDED.value,
             "state": verdict if need_state else "", "hints": bool(need_hints),
         }
         report["items"].append(entry)
@@ -1174,17 +1183,18 @@ def backfill_states(kv: Optional[CloudflareKV] = None, *, limit: int = 200,
             need_hints = bool(hints) and key not in _kv_dict(kv, HINTS_KEY)
             entry["hints"] = bool(need_hints)
             if not need_state and not need_hints:
-                entry["action"] = "skipped"
-            if need_state and verdict == "不做":
+                entry["action"] = BackfillAction.SKIPPED.value
+            if need_state and verdict == Verdict.SKIP.value:
                 payload = {"term": cand.get("term") or key,
-                           "reason": reason or "AI 判定不做", "source": "ai"}
+                           "reason": reason or "AI 判定不做", "source": RejectSource.AI.value}
                 if writes.table(kv, REJECTED_KEY,
                                 lambda arr: upsert_rejected(arr, payload), reader=_kv_list):
                     report["repaired"] += 1
-            elif need_state and verdict == "做":
+            elif need_state and verdict == Verdict.DO.value:
                 fields = ("term", "related", "hints", "geos", "geoCount", "traffic", "count", "score")
                 payload = {**{f: cand.get(f) for f in fields},
-                           "term": cand.get("term") or key, "status": "todo", "verdict": "做"}
+                           "term": cand.get("term") or key,
+                           "status": CurationStatus.TODO.value, "verdict": Verdict.DO.value}
                 if writes.table(kv, SAVED_KEY,
                                 lambda arr: upsert_saved(arr, payload), reader=_kv_list):
                     report["repaired"] += 1

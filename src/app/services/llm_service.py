@@ -15,6 +15,7 @@ import re
 from langchain_core.prompts import ChatPromptTemplate
 
 from src.app.config import INTENTS, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, LLM_THINKING
+from src.app.enums import Intent, LlmThinking
 from src.app.llm.provider import content_from_response, get_llm
 from src.app.observability.langsmith import traceable, tracing_enabled
 from src.app.observability.metrics import metrics
@@ -33,10 +34,11 @@ def _thinking_kwargs() -> dict:
       OpenAI 兼容服务不会误传这个 DeepSeek 专属参数；
     off：强制注入；on：保留思考（此时要自行调大 max_tokens）。
     """
-    mode = (LLM_THINKING or "auto").strip().lower()
-    if mode == "on":
+    mode = (LLM_THINKING or LlmThinking.AUTO.value).strip().lower()
+    if mode == LlmThinking.ON.value:
         return {}
-    if mode == "off" or (mode == "auto" and "deepseek" in (LLM_BASE_URL or "").lower()):
+    if mode == LlmThinking.OFF.value or (
+            mode == LlmThinking.AUTO.value and "deepseek" in (LLM_BASE_URL or "").lower()):
         return {"extra_body": {"thinking": {"type": "disabled"}}}
     return {}
 
@@ -53,7 +55,7 @@ class LLMService:
     @traceable(name="classify_intent")
     def classify_intent(self, template: ChatPromptTemplate, text: str) -> dict:
         """把请求归入 INTENTS 之一；无 key 或调用失败时回退 general。"""
-        intent, confidence = "general", DEFAULT_CONFIDENCE
+        intent, confidence = Intent.GENERAL.value, DEFAULT_CONFIDENCE
         raw, _, _ = self._complete(template.format(input_text=text), text, "intent_llm_failed") or (None, False, False)
         data = raw or {}
         if data:
@@ -63,7 +65,7 @@ class LLMService:
             except (TypeError, ValueError):
                 pass
         if intent not in INTENTS:
-            intent = "general"
+            intent = Intent.GENERAL.value
         metrics.increment("llm.classify_intent.calls")
         return {"intent": intent, "confidence": confidence}
 

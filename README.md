@@ -58,9 +58,10 @@ curl -s -X POST localhost:10000/run -H 'Content-Type: application/json' \
 
 ```
 src/app/
-├── main.py / config.py      CLI 入口 / Settings 单例 + 站群清单 + 意图枚举
+├── enums.py                 ★枚举唯一真源：29 个 StrEnum 族（意图/状态/类型/kind…），逐值注释含义
+├── main.py / config.py      CLI 入口 / Settings 单例 + 站群清单 + 意图兼容别名（派生自 enums.Intent）
 ├── api/routes.py            FastAPI /run /health
-├── graph/                   builder · state · constants(Names/Tags) · edges
+├── graph/                   builder · state · constants(Names/Tags=枚举别名) · edges
 ├── nodes/                   intent · processing · validation · output · error
 ├── services/                llm · prompt · tool · evaluation
 ├── tools/
@@ -93,11 +94,17 @@ migrations/0001_agent_tables.sql  D1 台账表
 1. 依赖单向：`api → graph → nodes → services → tools → adapters`；
    **tools 不依赖 services**，`tools/base.py` 只依赖标准库与 pydantic，
    工具层没有函数内 import。三条都由 `test/test_architecture.py` 守着。
+   `src.app.enums` 是零依赖纯数据模块，是唯一被放行给 base/sql 叶子引用的包内模块。
 2. 门面靠构造注入：`RuntimeService` 在 `registry.py` 组装后注入 26 个工具，
    测试用 `tool_registry.bind(FakeRuntime())` 整体替换。
 3. 站点信息只在 `config/sites.json`；域名只在 `FLEET_DOMAIN`。
 4. SQL 只在 `tools/adapters/cloudflare/sql.py`；表名列名只来自白名单契约。
-5. `/run` 没有鉴权，上线前必须在网关层加访问控制。
+5. **枚举值只在 `src/app/enums.py`**（29 个 `StrEnum` 族，逐值注释含义）。
+   状态 / 意图 / 类型 / kind 这类「有限取值 + 业务含义」的字段一律引用枚举成员
+   （写值时用 `.value` 保持 str 口径），禁止在业务代码里写裸字符串。
+   `config.INTENTS`、`constants.Names/Tags`、`curation.STATUSES/HINT_NAMES` 均为枚举派生的
+   兼容别名。`test/test_enums.py` 锁定取值集合与字符串兼容性，防回退成魔法值。
+6. `/run` 没有鉴权，上线前必须在网关层加访问控制。
 
 ## 文档
 

@@ -11,6 +11,11 @@ from pathlib import Path
 
 APP = Path(__file__).resolve().parents[1] / "src" / "app"
 
+# src.app.enums 是零依赖的纯数据模块（只 import 标准库 enum），不含任何 IO / 服务
+# 装配 / 循环引用风险。2026-11-17 起允许叶子模块 base.py、sql.py 引用它取枚举值，
+# 这不破坏「叶子」的实质（无副作用、无反向依赖）。
+ENUMS = "src.app.enums"
+
 
 def imports_of(package: str) -> set[str]:
     """递归收集某个包内所有 import 的模块名（含函数内局部导入）。"""
@@ -48,7 +53,7 @@ def test_base_is_a_pure_leaf():
             top_level.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             top_level.add(node.module)
-    offenders = {m for m in top_level if m.startswith("src.app")}
+    offenders = {m for m in top_level if m.startswith("src.app") and m != ENUMS}
     assert not offenders, f"base.py 顶层 import 了包内模块：{sorted(offenders)}"
 
 
@@ -78,4 +83,4 @@ def test_sql_layer_has_no_side_effects():
             imported.update(a.name for a in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module)
-    assert imported <= {"__future__", "dataclasses", "typing"}, imported
+    assert imported <= {"__future__", "dataclasses", "typing", ENUMS}, imported

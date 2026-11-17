@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from langchain_core.prompts import ChatPromptTemplate
 
+from src.app.enums import PromptTask
 from src.app.graph.state import WorkflowState
 from src.app.services.llm_service import llm_service
 from src.app.services.prompt_service import prompt_service
@@ -23,9 +24,11 @@ def intent_node(state: WorkflowState) -> WorkflowState:
         result = {"intent": forced, "confidence": 1.0}
     else:
         versions = state.get("prompt_versions", {}) or {}
-        system = prompt_service.load_prompt("intent", version=versions.get("intent"))
+        system = prompt_service.load_prompt(PromptTask.INTENT.value,
+                                            version=versions.get(PromptTask.INTENT.value))
         # human 模板同样在 D1 的 prompts 表，代码里不留任何提示词字面量
-        user = prompt_service.load_prompt("intent_user", version=versions.get("intent_user"))
+        user = prompt_service.load_prompt(PromptTask.INTENT_USER.value,
+                                          version=versions.get(PromptTask.INTENT_USER.value))
         template = ChatPromptTemplate.from_messages(
             [("system", system), ("human", user)])
         result = llm_service.classify_intent(template=template, text=text)
