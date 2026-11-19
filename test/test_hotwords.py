@@ -12,6 +12,7 @@ run_batch 经共享 KV 的端到端写回（不碰 console / radar / OpenAI / DD
 import pytest
 
 from src.app.tools.adapters.terms import hotwords as hw
+from src.app.tools.adapters.terms import hotword_llm
 from src.app.services.tool_service import INTENT_TOOLS, tool_service
 from src.app.tools.registry import tool_registry
 
@@ -180,7 +181,7 @@ def _patch_external(monkeypatch):
             return "1) 真人 7) 结论：不做，真人姓名有侵权风险\n8) 信号标签：无", "fake-model"
         return "1) 工具站 7) 结论：做，工具站能吃长尾\n8) 信号标签：工具查询", "fake-model"
 
-    monkeypatch.setattr(hw, "_llm", fake_llm)
+    monkeypatch.setattr(hotword_llm, "_llm", fake_llm)
 
 
 def test_run_batch_writes_kv(fake_kv, monkeypatch):
@@ -226,14 +227,14 @@ def test_run_batch_serp_source_down_only_skips_serp(fake_kv, monkeypatch):
         raise hw.scrape_serp.SourceUnavailable("duckduckgo", "连不上 DuckDuckGo", [])
 
     monkeypatch.setattr(hw.scrape_serp, "fetch_serp", boom)
-    monkeypatch.setattr(hw, "_llm", lambda m: ("7) 结论：观望", "fake"))
+    monkeypatch.setattr(hotword_llm, "_llm", lambda m: ("7) 结论：观望", "fake"))
 
     out = hw.run_batch(limit=20, kv=fake_kv)
 
     assert not out.get("aborted")            # 没有「整批中止」这回事了
     assert out["serpDisabled"] is True
     assert out["fetched"] == 12 and out["analyzed"] == 12
-    assert calls["n"] <= hw.BATCH_WORKERS   # 发现源挂后本批不再撞 DDG
+    assert calls["n"] <= 1   # 发现源挂后本批不再撞 DDG
     assert all(r["serp"] is False for r in out["items"])
     assert any("SERP 未取到" in (r.get("notice") or "") for r in out["items"])
     assert len(fake_kv.list_keys(hw.AI_CACHE_PREFIX)) == 12
@@ -254,13 +255,13 @@ def test_run_batch_skips_serp_but_still_writes_states(fake_kv, monkeypatch):
         raise hw.scrape_serp.SourceUnavailable("duckduckgo", "被挑战页占满", [])
 
     monkeypatch.setattr(hw.scrape_serp, "fetch_serp", boom)
-    monkeypatch.setattr(hw, "_llm", lambda m: ("7) 结论：做，工具站\n8) 信号标签：工具查询", "fake"))
+    monkeypatch.setattr(hotword_llm, "_llm", lambda m: ("7) 结论：做，工具站\n8) 信号标签：工具查询", "fake"))
 
     out = hw.run_batch(limit=20, kv=fake_kv)
 
     assert not out.get("aborted")
     assert out["analyzed"] == 5
-    assert calls["n"] <= hw.BATCH_WORKERS
+    assert calls["n"] <= 1
     assert len(fake_kv.get_json("saved", [])) == 5
     assert all(r["status"] == "todo" for r in out["items"])
 
@@ -280,7 +281,7 @@ def test_run_batch_keeps_going_when_trends_down(fake_kv, monkeypatch):
         raise hw.scrape_trend.SourceUnavailable("google-trends", "连不上 Google Trends", [])
 
     monkeypatch.setattr(hw.scrape_trend, "fetch_interest", trends_down)
-    monkeypatch.setattr(hw, "_llm", lambda m: ("7) 结论：观望", "fake"))
+    monkeypatch.setattr(hotword_llm, "_llm", lambda m: ("7) 结论：观望", "fake"))
 
     out = hw.run_batch(limit=20, kv=fake_kv)
 
@@ -288,7 +289,7 @@ def test_run_batch_keeps_going_when_trends_down(fake_kv, monkeypatch):
     assert out["fetched"] == 5
     assert out["analyzed"] == 5
     # 只撞一次超时就把趋势关掉，不是 5 个词各撞一次
-    assert trend_calls["n"] <= hw.BATCH_WORKERS
+    assert trend_calls["n"] <= 1
     assert len(fake_kv.list_keys(hw.AI_CACHE_PREFIX)) == 5
 
 
@@ -309,7 +310,7 @@ def test_run_batch_llm_failures_are_word_local(fake_kv, monkeypatch):
             raise RuntimeError("LLM 连接超时")
         return "7) 结论：做，工具站", "fake"
 
-    monkeypatch.setattr(hw, "_llm", llm)
+    monkeypatch.setattr(hotword_llm, "_llm", llm)
 
     out = hw.run_batch(limit=20, kv=fake_kv)
 
@@ -452,7 +453,7 @@ def test_analyze_one_error_matches_real_cause(fake_kv, monkeypatch):
     def fake_llm(_messages):
         raise hw.LLMEmptyContent("LLM 返回空正文：输出预算耗尽；finish_reason=length", diag)
 
-    monkeypatch.setattr(hw, "_llm", fake_llm)
+    monkeypatch.setattr(hotword_llm, "_llm", fake_llm)
     out = hw.run_batch(limit=1, kv=fake_kv)
     item = out["items"][0]
     assert "预算耗尽" in item["error"]
@@ -507,7 +508,7 @@ def test_run_batch_ok_requires_success_rate(fake_kv, monkeypatch):
             return "7) 结论：观望", "fake"
         return "", "fake"   # 空正文 → LLM 无正文
 
-    monkeypatch.setattr(hw, "_llm", one_success)
+    monkeypatch.setattr(hotword_llm, "_llm", one_success)
 
     out = hw.run_batch(limit=20, kv=fake_kv)
     assert out["analyzed"] == 1 and out["failed"] == 3
@@ -581,7 +582,7 @@ def test_status_table_write_failure_marks_error_and_is_backfillable(fake_kv, mon
     term = "free invoice calculator"
     fake_kv.put_json("candidates", [{"term": term, "traffic": 900, "geoCount": 1}])
     _patch_ok_sources(monkeypatch)
-    monkeypatch.setattr(hw, "_llm",
+    monkeypatch.setattr(hotword_llm, "_llm",
                         lambda m: ("7) 结论：做，工具站\n8) 信号标签：工具查询", "fake"))
     fake_kv.fail_keys.add(hw.SAVED_KEY)
 
@@ -611,7 +612,7 @@ def test_body_write_failure_never_writes_state(fake_kv, monkeypatch):
     key = hw.AI_CACHE_PREFIX + hw.term_key(term)
     fake_kv.put_json("candidates", [{"term": term}])
     _patch_ok_sources(monkeypatch)
-    monkeypatch.setattr(hw, "_llm",
+    monkeypatch.setattr(hotword_llm, "_llm",
                         lambda m: ("7) 结论：做，工具站\n8) 信号标签：工具查询", "fake"))
     fake_kv.fail_keys.add(key)
 
@@ -654,7 +655,7 @@ def test_concurrent_table_updates_do_not_lose_rows(fake_kv, monkeypatch):
         do_it = int(term.split()[-1]) % 2 == 0
         return (f"7) 结论：{'做' if do_it else '不做'}，工具站\n8) 信号标签：工具查询", "fake")
 
-    monkeypatch.setattr(hw, "_llm", llm)
+    monkeypatch.setattr(hotword_llm, "_llm", llm)
     out = hw.run_batch(limit=20, kv=fake_kv)
 
     assert out["analyzed"] == n

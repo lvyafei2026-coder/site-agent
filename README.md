@@ -52,7 +52,8 @@ curl -s -X POST localhost:10000/run -H 'Content-Type: application/json' \
 热词分析链路：console `/api/hotwords` 取词 → radar `/api/serp` + `/api/trend` 补竞争度与
 30 天趋势 → 外部 LLM 出 8 小节站点方案 → `/api/hotwords` 写回 `ai:v3:` 正文、`aihints`、
 `rejected`（不做）或 `saved.status=todo`（待开发）。实现与口径见
-`src/app/tools/adapters/terms/hotwords.py`（门面 → hotword_fetch/worker/batch 三层）。
+`src/app/tools/adapters/terms/hotwords.py`（公共 API 门面；内部 batch 外壳 → loop 节点
+→ worker 单词 → fetch 取数，共享规则在 hotword_contract，图结构装配在 graph/builder.py）。
 
 ## 目录
 

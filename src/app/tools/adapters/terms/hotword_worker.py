@@ -35,6 +35,7 @@ from .hotword_fetch import _throttled_serp, _trend
 from .hotword_criteria import (
     serp_brief, work_signal, build_messages, decide, signals_of,
 )
+from . import hotword_llm
 from .hotword_llm import LLMEmptyContent
 from .hotword_kv_io import _WriteLog, _kv_list, _kv_dict
 from .curation import upsert_saved, upsert_rejected, set_hint_override
@@ -43,16 +44,6 @@ from .source_errors import SourceUnavailable
 log = logging.getLogger(__name__)
 
 TOOL_TRACE_PREFIX = "tool:"
-
-
-def _resolve_llm():
-    """运行时从门面取 `_llm` —— 测试 `monkeypatch.setattr(hw, "_llm", ...)` 才能生效。
-
-    延迟 import 避开 hotwords → worker → hotwords 的加载期循环（调用时门面已加载完）；
-    adapters 子目录的延迟 import 被 test_tools_have_no_deferred_imports 明确豁免。
-    """
-    from . import hotwords as facade
-    return facade._llm
 
 
 def _tool_step(name: str, call, *, inputs: dict[str, Any], outputs,
@@ -245,7 +236,7 @@ def _analyze_one(item: dict[str, Any], kv: CloudflareKV,
     brief = serp_brief(serp_data)
     signal = work_signal(brief)
     try:
-        text, model = _resolve_llm()(build_messages(dict(item, serp=brief),
+        text, model = hotword_llm._llm(build_messages(dict(item, serp=brief),
                                                     prompt_version=prompt_version,
                                                     examples=examples))
     except LLMEmptyContent as exc:

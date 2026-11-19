@@ -4,25 +4,22 @@
 
 """热词逐词循环图的**节点逻辑**：一次读一词 → 分析 → 回环，直到词用完或达上限。
 
-★2026-11-19 架构调整：本模块只放「节点做什么」（状态 / fetch_one / analyze_one /
-  should_continue / summarize）。**图的结构装配**（StateGraph + 节点 + 条件边）已上移到
-  src/app/graph/builder.py:build_hotword_graph()，与对外用户输入的主图并列定义——
-  这样在装配层一眼能看到「用户线 / 后台线」两张图。两图彼此独立、互不嵌套。
+本模块只放「节点做什么」（状态 / fetch_one / analyze_one / should_continue / summarize），
+**不装配图、不认识 builder**：图的结构（StateGraph + 节点 + 条件边）由
+src/app/graph/builder.py:build_hotword_graph() 装配，与本模块是单向依赖（builder → 本模块），
+不与调用方 hotword_batch 相互引用。整条链单向向下：batch → builder → loop → worker。
 
 循环由**图的条件边驱动**，不是 Python 层的 while/for（结构见 builder.py）：
     START → fetch_one → analyze_one → should_continue ─┬─ fetch_one（还有词且未达上限）
                                                       └─ END（词用完 / 达上限 / KV 失败）
 
-节点名刻意用动词（fetch_one / analyze_one），State 字段用名词（queue / cursor /
+节点名刻意用动词（FETCH_NODE / ANALYZE_NODE 公开常量），State 字段用名词（queue / cursor /
 results ...）——langgraph 0.3.x 不允许 add_node 的节点名与 State 字段名同名。
 
 trace：批次 span 由 run_batch 的 run_traced 外壳创建，batch_run 经 state 显式传给
 每个节点；串行执行下 contextvar 虽不丢，仍显式传以保住「批次→词→LLM」层级契约。
 
 单词逻辑（补数/LLM/降级/回写）完全复用 hotword_worker._analyze_one，本模块不碰。
-
-get_hotword_loop() 是兼容 shim：运行时转发到 builder.get_hotword_graph()，让
-hotword_batch / 门面 / 测试的老引用零改动。
 """
 
 from __future__ import annotations
@@ -39,23 +36,19 @@ from src.app.tools.adapters.cloudflare.kv import (
 )
 from .hotword_kv_io import _kv_list
 from .hotword_criteria import pick_examples
+from .hotword_contract import (
+    _select_pending, WORD_TRACE_PREFIX, BATCH_OK_MIN_RATE,
+)
 from .hotword_worker import (
     _analyze_one, _BatchAbort, _word_outputs, _word_error, TOOL_TRACE_PREFIX,
 )
 
 log = logging.getLogger(__name__)
 
-# ★避免与 hotword_batch 循环导入：本图由 batch 驱动，batch 顶层又 import 本模块。
-#   共享符号（_select_pending / 两个常量）在**函数内部延迟导入**——调用时 batch 已加载完。
-#   WORD_TRACE_PREFIX / BATCH_OK_MIN_RATE 的真身在 batch，这里延迟取，门面契约不动。
-def _batch_symbols():
-    from . import hotword_batch as b
-    return b._select_pending, b.WORD_TRACE_PREFIX, b.BATCH_OK_MIN_RATE
-
-# 节点名（动词前缀，避开 State 字段）；should_continue 是条件边函数，不是节点。
-_FETCH = "fetch_one"
-_ANALYZE = "analyze_one"
-_RETRY = _FETCH  # 条件边回环目标
+# 节点名（动词前缀，避开 State 字段）；公开契约，供 builder 装配图时引用。
+# should_continue 是条件边函数，不是节点。回环目标就是 FETCH_NODE，无需单独的 _RETRY 常量。
+FETCH_NODE = "fetch_one"
+ANALYZE_NODE = "analyze_one"
 
 
 class HotwordLoopState(TypedDict, total=False):
@@ -72,11 +65,10 @@ class HotwordLoopState(TypedDict, total=False):
     # ——节点间流转——
     loaded: bool                     # 候选池/判例是否已懒加载（fetch_one 首次置位）
     queue: list[dict[str, Any]]      # 待分析候选
-    cursor: int                      # 已取出的下标
+    cursor: int                      # 下一个待取下标（取词时 +1，故本轮词下标 = cursor-1）
     results: list[dict[str, Any]]    # 每词分析结果
     loop_count: int                  # 已分析词数（受 limit 约束）
     current: dict[str, Any]          # 本轮 fetch 取出、待 analyze 的词
-    current_index: int               # 本轮词在批次中的下标（trace 用）
     examples: list[dict[str, str]]   # 人工判例（整批只读一次）
     load_error: str                  # 候选池读取失败信息（非空 → 直接 END）
 
@@ -90,7 +82,6 @@ def _load_once(state: HotwordLoopState) -> dict[str, Any]:
     limit = state["limit"]
     batch_run = state.get("batch_run")
     batch_id = state.get("batch_id", "")
-    _select_pending, _, _ = _batch_symbols()
 
     meta = {"batch_id": batch_id, "component": "analyze_hotwords"}
     try:
@@ -149,7 +140,6 @@ def fetch_one(state: HotwordLoopState) -> dict[str, Any]:
         updates.update({
             "current": queue[cursor],
             "cursor": cursor + 1,
-            "current_index": cursor,
         })
     else:
         updates.update({"current": None, "cursor": cursor})
@@ -169,11 +159,10 @@ def analyze_one(state: HotwordLoopState) -> dict[str, Any]:
     kv = state["kv"]
     batch_run = state.get("batch_run")
     batch_id = state.get("batch_id", "")
-    idx = state.get("current_index", loop_count)
+    idx = state.get("cursor", 0) - 1   # fetch_one 取词后已把 cursor +1，故本轮词下标 = cursor-1
     term = str(item.get("term") or "").strip()
     key = term_key(item.get("key") or term)
     abort = state.get("abort")  # type: ignore[assignment]  # _BatchAbort 实例
-    _, WORD_TRACE_PREFIX, _ = _batch_symbols()
 
     result = _span(
         lambda word_run: _analyze_one(
@@ -209,18 +198,7 @@ def should_continue(state: HotwordLoopState) -> str:
         return END
     if state.get("cursor", 0) >= len(state.get("queue", [])):
         return END
-    return _RETRY
-
-
-def get_hotword_loop():
-    """兼容 shim：图的结构装配已上移到 graph/builder.py:build_hotword_graph。
-
-    保留此名让 hotword_batch / 门面 / 老测试按 ``hotword_loop.get_hotword_loop``
-    引用时不破坏；运行时延迟导入避免与 builder 形成模块加载期循环。新代码请直接用
-    ``graph.builder.get_hotword_graph``，两条图都在那里并列装配。
-    """
-    from src.app.graph.builder import get_hotword_graph
-    return get_hotword_graph()
+    return FETCH_NODE
 
 
 def summarize(state: HotwordLoopState) -> dict[str, Any]:
@@ -235,7 +213,6 @@ def summarize(state: HotwordLoopState) -> dict[str, Any]:
                 "failed": 0, "counts": {}, "note": "没有未跟进且未分析过的候选词"}
 
     from src.app.enums import Verdict
-    _, _, BATCH_OK_MIN_RATE = _batch_symbols()
 
     counts: dict[str, int] = {}
     for r in results:

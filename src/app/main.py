@@ -60,8 +60,8 @@ def run_background(limit: int = 20,
                    prompt_version: Optional[str] = None) -> dict[str, Any]:
     """后台线：驱动热词循环图，逐词分析候选池里未跟进的热词。
 
-    走 hotwords.run_batch 复用批次 trace 外壳与结果汇总；其执行体 invoke 的正是
-    builder.get_hotword_graph()（经 hotword_loop 兼容 shim 转发到同一张图）。
+    走 hotwords.run_batch 复用批次 trace 外壳与结果汇总；其执行体经加载期边界直连
+    builder.get_hotword_graph()（热词循环图，与用户线主图并列、互不嵌套）。
     与用户线共用同一套工具/适配器，只是入口图不同。返回结构与 analyze_hotwords 一致。
 
     延迟导入：用户线不需要拉起整条热词适配器链，后台线被调度时才加载。

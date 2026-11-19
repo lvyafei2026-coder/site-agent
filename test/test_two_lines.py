@@ -34,9 +34,12 @@ def test_graphs_are_distinct_not_nested():
     assert builder.get_graph() is not builder.get_hotword_graph()
 
 
-def test_compat_shim_points_to_background_graph():
-    """老引用 hotword_loop.get_hotword_loop 转发到 builder 的后台线图，契约不破。"""
-    assert hloop.get_hotword_loop() is builder.get_hotword_graph()
+def test_background_line_uses_builder_graph_without_shim():
+    """后台线无 shim：batch 经加载期边界直连 builder 的后台图，loop 只放节点。"""
+    from src.app.tools.adapters.terms import hotword_batch as hb
+
+    assert not hasattr(hloop, "get_hotword_loop")   # shim 已删
+    assert hb._hotword_graph() is builder.get_hotword_graph()  # 直连同一图实例
 
 
 def test_main_exposes_both_entry_lines():

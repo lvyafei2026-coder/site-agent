@@ -25,6 +25,7 @@ from langsmith.run_trees import RunTree
 
 from src.app.config import settings
 from src.app.tools.adapters.terms import hotwords as hw
+from src.app.tools.adapters.terms import hotword_llm
 from src.app.tools.registry import tool_registry
 
 
@@ -61,7 +62,7 @@ def _seed(fake_kv, monkeypatch, count=6, llm=None):
                         lambda term, session=None, geo="": {
                             "points": [{"d": "2026-01-01", "v": 50}],
                             "summary": {"avg": 50}, "attempts": []})
-    monkeypatch.setattr(hw, "_llm", llm or (lambda messages: (
+    monkeypatch.setattr(hotword_llm, "_llm", llm or (lambda messages: (
         "7) 结论：观望，等长尾\n8) 信号标签：工具查询", "fake")))
 
 

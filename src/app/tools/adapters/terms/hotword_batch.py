@@ -2,21 +2,22 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""热词分析的批次入口：候选筛选规则 + 批次 trace 根 + 对外契约。
+"""热词分析的批次外壳：批次 trace 根 + 对外契约 + 循环图加载边界。
 
-拆分自 hotwords.py（2026-11-19 三层拆分）。单词内部（补数/LLM/回写）在
-hotword_worker.py，取数在 hotword_fetch.py。
+本文件是热词子系统对外的执行入口（run_batch）。单词内部（补数/LLM/回写）在
+hotword_worker.py，取数在 hotword_fetch.py，候选筛选规则与 trace 常量在
+共享叶子 hotword_contract.py。
 
-★2026-11-19 循环图改造：逐词调度**不再是本文件的 ThreadPoolExecutor 并发**，
-  而是交给独立的 hotword_loop.py——一张 StateGraph 条件边回环图（fetch_one →
-  analyze_one → should_continue 回环）。本文件只保留：候选筛选规则 _select_pending、
-  对外 run_batch 外壳（批次 trace + traceRun 回链），执行体转交循环图。
+★逐词调度由 graph/builder.py 装配的 StateGraph 回环图承担（fetch_one → analyze_one
+  → should_continue 回环）；节点逻辑在 hotword_loop.py。本文件只做三件事：
+  构造循环图 initial state → invoke → summarize；外层套批次 trace + traceRun 回链。
+  取图经 _hotword_graph() 的加载期边界（builder 顶层拉起整条主图链，不能顶层 import）。
 
 ★2026-11-13：不再有「整批中止」。每个词独立跑完并把自己的失败写进 items[].error；
   源级故障只把「取数」这一步降级（serpDisabled / trendsDisabled），其它词照常出结论。
 
-★trace：整批一条 span（run_batch 外壳），每个词一条子 span（循环图的 analyze_one
-  节点里创建），词里的 ChatOpenAI 再挂在词 span 下。批次 run 经 state 显式传给图。
+★trace：整批一条 span（本文件外壳），每个词一条子 span（循环图 analyze_one 节点），
+  词里的 ChatOpenAI 再挂在词 span 下。批次 run 经 state 显式传给图。
 """
 
 from __future__ import annotations
@@ -29,77 +30,26 @@ from typing import Any, Optional
 from src.app.config import settings
 from src.app.observability.langsmith import run_traced
 
-from src.app.tools.adapters.cloudflare.kv import (
-    CloudflareKV, get_kv, term_key,
-    AI_CACHE_PREFIX, SAVED_KEY, REJECTED_KEY, TAGS_KEY,
+from src.app.tools.adapters.cloudflare.kv import CloudflareKV, get_kv
+from .hotword_worker import _BatchAbort
+from .hotword_contract import (
+    _select_pending, BATCH_OK_MIN_RATE, BATCH_TRACE_NAME, WORD_TRACE_PREFIX,
 )
-from .hotword_kv_io import _kv_list, _kv_dict
-from .hotword_worker import _BatchAbort, TOOL_TRACE_PREFIX
-from .hotword_loop import HotwordLoopState, get_hotword_loop, summarize
+from .hotword_loop import HotwordLoopState, summarize
 
 log = logging.getLogger(__name__)
 
-# 保留为契约常量：循环图改串行，门面/测试仍按 hw.BATCH_WORKERS 取「本批最大在飞」语义，
-# 现在它只表示「一次循环图的并发度=1 的上界」，值不变以免测试断言（calls<=4）失效。
-BATCH_WORKERS = 4
-BATCH_OK_MIN_RATE = 0.5     # 整批成功判定：成功率低于此值即视为失败（不再「1 条成功就算成功」）
 
-BATCH_TRACE_NAME = "site-agent:hotword-batch"
-WORD_TRACE_PREFIX = "site-agent:hotword:"
+def _hotword_graph():
+    """取后台循环图（装配在 graph/builder.py:build_hotword_graph）。
 
-
-# ★2026-11-13：LangSmith 一条根 trace 的层级 =
-#   graph 根 → 批次 span → 每词 span → [tool:serp / tool:trend / ChatOpenAI / tool:kv.write]。
-#   ThreadPoolExecutor 的 worker 线程不继承主线程 contextvars，父 run 必须显式传（见
-#   observability/langsmith.py:run_traced）；词 span 拿到自己的 run 后，再把它作为
-#   所有 tool span 的 parent，SERP/Trends/KV 这些「原本只存在于日志里」的调用才会
-#   出现在 Traces 页面上。graph 结构本身一个字都不改。
-
-
-def _select_pending(kv: CloudflareKV, limit: int) -> list[dict[str, Any]]:
-    """读 KV 候选池，剔除已跟进/打标签/已分析的词，返回前 limit 条未跟进候选。
-
-    ★形状兜底：KV 里这几张表是 console/radar 写的，字段形状一旦漂移（比如 tags 变成数组、
-    candidates 变成对象），按原样 .items() / 迭代 会整批失败。这里统一按「期望类型不符就
-    当空」处理并 warn，让漂移可见但不阻断分析。
+    惰性取图是**加载期边界**，不是兼容补丁：builder 顶层会拉起整条主图依赖链
+    （nodes → services → registry → hotwords_tools → 门面 → 本模块），若在本模块顶层
+    import builder 会形成加载期环。调用到此函数时 builder 早已加载完。图本身是
+    lru_cache 单例，第一次调用才编译。
     """
-    candidates = _kv_list(kv, "candidates")
-    saved = _kv_list(kv, SAVED_KEY)
-    rejected = _kv_list(kv, REJECTED_KEY)
-    tags = _kv_dict(kv, TAGS_KEY)
-
-    curated = set()
-    for x in (saved + rejected):
-        if isinstance(x, dict) and x.get("key"):
-            curated.add(term_key(x["key"]))
-    for k, v in tags.items():
-        if v:
-            curated.add(term_key(k))
-
-    analyzed = {k[len(AI_CACHE_PREFIX):] for k in kv.list_keys(AI_CACHE_PREFIX)}
-
-    items: list[dict[str, Any]] = []
-    for c in candidates:
-        if not isinstance(c, dict) or not c.get("term"):
-            continue
-        key = term_key(c.get("key") or c.get("term"))
-        if key in curated or key in analyzed:
-            continue
-        items.append({
-            "key": key,
-            "term": str(c.get("term") or "")[:120],
-            "related": [str(x) for x in (c.get("related") or [])][:6],
-            "hints": [str(x) for x in (c.get("hints") or [])][:6],
-            "geos": [str(x) for x in (c.get("geos") or [])][:16],
-            "geoCount": int(c.get("geoCount") or (len(c.get("geos") or []))),
-            "traffic": int(c.get("traffic") or 0),
-            "count": int(c.get("count") or 1),
-            "score": int(c.get("score") or 0),
-            "src": str(c.get("src") or "trends"),
-        })
-        if len(items) >= limit:
-            break
-    return items
+    from src.app.graph.builder import get_hotword_graph
+    return get_hotword_graph()
 
 
 def _batch_outputs(out: dict[str, Any]) -> dict[str, Any]:
@@ -128,8 +78,8 @@ def run_batch(limit: int = 20, kv: Optional[CloudflareKV] = None,
               prompt_version: Optional[str] = None) -> dict[str, Any]:
     """读 KV 候选池 → 逐词分析（循环图驱动）→ 汇总。KV 不可达时整批失败，不写状态。
 
-    ★2026-11-19：逐词调度交给 hotword_loop.py 的独立 StateGraph 条件边回环图，
-      一次一词、串行推进，limit 即最大循环数；不再有 ThreadPoolExecutor 并发分块。
+    ★逐词调度交给 graph/builder.py 装配的 StateGraph 回环图（节点逻辑在 hotword_loop.py），
+      一次一词、串行推进，limit 即最大循环数。
 
     ★不再有「整批中止」。每个词独立跑完并把自己的失败写进 items[].error；
       源级故障只把「取数」这一步降级（serpDisabled / trendsDisabled），其它词照常出结论。
@@ -187,8 +137,7 @@ def _run_batch(limit: int, kv: Optional[CloudflareKV], batch_run,
         "cursor": 0,
         "results": [],
         "loop_count": 0,
-        "current_index": 0,
         "examples": [],
     }
-    final = get_hotword_loop().invoke(initial)
+    final = _hotword_graph().invoke(initial)
     return summarize(final)

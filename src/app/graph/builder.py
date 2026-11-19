@@ -79,14 +79,14 @@ def build_hotword_graph():
     不传 checkpointer：单次 invoke 跑完即弃，不跨请求续跑。
     """
     graph = StateGraph(_hwloop.HotwordLoopState)
-    graph.add_node(_hwloop._FETCH, _hwloop.fetch_one)
-    graph.add_node(_hwloop._ANALYZE, _hwloop.analyze_one)
-    graph.add_edge(START, _hwloop._FETCH)
-    graph.add_edge(_hwloop._FETCH, _hwloop._ANALYZE)
+    graph.add_node(_hwloop.FETCH_NODE, _hwloop.fetch_one)
+    graph.add_node(_hwloop.ANALYZE_NODE, _hwloop.analyze_one)
+    graph.add_edge(START, _hwloop.FETCH_NODE)
+    graph.add_edge(_hwloop.FETCH_NODE, _hwloop.ANALYZE_NODE)
     graph.add_conditional_edges(
-        _hwloop._ANALYZE,
+        _hwloop.ANALYZE_NODE,
         _hwloop.should_continue,
-        {_hwloop._RETRY: _hwloop._FETCH, END: END},
+        {_hwloop.FETCH_NODE: _hwloop.FETCH_NODE, END: END},
     )
     return graph.compile()
 

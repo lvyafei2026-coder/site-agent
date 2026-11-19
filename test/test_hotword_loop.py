@@ -12,13 +12,16 @@ from __future__ import annotations
 
 from langgraph.graph import END
 
+from src.app.graph import builder
+
 from src.app.tools.adapters.terms import hotwords as hw
+from src.app.tools.adapters.terms import hotword_llm
 from src.app.tools.adapters.terms import hotword_loop as hloop
 
 
 def test_loop_graph_topology():
     """图恰有两个业务节点，且 analyze_one 有回环边指回 fetch_one。"""
-    g = hloop.get_hotword_loop().get_graph()
+    g = builder.get_hotword_graph().get_graph()
     nodes = set(g.nodes.keys())
     assert {"fetch_one", "analyze_one"} <= nodes
     # 条件边的分支里应含 END 与回环目标
@@ -39,11 +42,11 @@ def test_fetch_one_loads_once_then_pop_one(fake_kv, monkeypatch):
     fake_kv.put_json("candidates", [{"term": f"t{i}"} for i in range(4)])
     monkeypatch.setattr(hw.scrape_serp, "fetch_serp", lambda *a, **k: {"engine": "duckduckgo", "items": [], "attempts": []})
     monkeypatch.setattr(hw.scrape_trend, "fetch_interest", lambda *a, **k: {"points": [], "summary": {}, "attempts": []})
-    monkeypatch.setattr(hw, "_llm", lambda m: ("7) 结论：观望\n8) 信号标签：无", "fake"))
+    monkeypatch.setattr(hotword_llm, "_llm", lambda m: ("7) 结论：观望\n8) 信号标签：无", "fake"))
 
     s = hloop.HotwordLoopState(limit=10, kv=fake_kv, batch_run=None, batch_id="loop-test",
                                abort=hw._BatchAbort(), loaded=False, queue=[], cursor=0,
-                               results=[], loop_count=0, current_index=0, examples=[])
+                               results=[], loop_count=0, examples=[])
     s1 = {**s, **hloop.fetch_one(s)}
     assert s1["loaded"] is True and len(s1["queue"]) == 4
     assert s1["cursor"] == 1 and s1["current"]["term"] == "t0"
@@ -57,7 +60,7 @@ def test_loop_stops_at_limit(fake_kv, monkeypatch):
     fake_kv.put_json("candidates", [{"term": f"term {i}"} for i in range(8)])
     monkeypatch.setattr(hw.scrape_serp, "fetch_serp", lambda *a, **k: {"engine": "duckduckgo", "items": [], "attempts": []})
     monkeypatch.setattr(hw.scrape_trend, "fetch_interest", lambda *a, **k: {"points": [], "summary": {}, "attempts": []})
-    monkeypatch.setattr(hw, "_llm", lambda m: ("7) 结论：观望\n8) 信号标签：无", "fake"))
+    monkeypatch.setattr(hotword_llm, "_llm", lambda m: ("7) 结论：观望\n8) 信号标签：无", "fake"))
 
     out = hw.run_batch(limit=3, kv=fake_kv)
     assert out["fetched"] == 3 and len(out["items"]) == 3
