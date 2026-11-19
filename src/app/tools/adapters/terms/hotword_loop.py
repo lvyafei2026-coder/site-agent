@@ -2,14 +2,14 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""热词逐词分析的**独立循环图**：一次读一词 → 分析 → 回环，直到词用完或达上限。
+"""热词逐词循环图的**节点逻辑**：一次读一词 → 分析 → 回环，直到词用完或达上限。
 
-★2026-11-19：把 hotword_batch.py 里硬编码的 ThreadPoolExecutor 并发批处理，换成
-  LangGraph 原生的 StateGraph 条件边回环。这是**全项目第二张图**，与 src/app/graph
-  的主流水线图**彼此独立**：主图管「一个意图怎么走完」，本图只管「热词意图内部
-  20 个词怎么逐个走完」。职责不重叠，所以不并入主图、也不污染它的状态。
+★2026-11-19 架构调整：本模块只放「节点做什么」（状态 / fetch_one / analyze_one /
+  should_continue / summarize）。**图的结构装配**（StateGraph + 节点 + 条件边）已上移到
+  src/app/graph/builder.py:build_hotword_graph()，与对外用户输入的主图并列定义——
+  这样在装配层一眼能看到「用户线 / 后台线」两张图。两图彼此独立、互不嵌套。
 
-循环由**图的条件边驱动**，不是 Python 层的 while/for：
+循环由**图的条件边驱动**，不是 Python 层的 while/for（结构见 builder.py）：
     START → fetch_one → analyze_one → should_continue ─┬─ fetch_one（还有词且未达上限）
                                                       └─ END（词用完 / 达上限 / KV 失败）
 
@@ -19,16 +19,18 @@ results ...）——langgraph 0.3.x 不允许 add_node 的节点名与 State 字
 trace：批次 span 由 run_batch 的 run_traced 外壳创建，batch_run 经 state 显式传给
 每个节点；串行执行下 contextvar 虽不丢，仍显式传以保住「批次→词→LLM」层级契约。
 
-单词逻辑（补数/LLM/降级/回写）完全复用 hotword_worker._analyze_one，本图不碰。
+单词逻辑（补数/LLM/降级/回写）完全复用 hotword_worker._analyze_one，本模块不碰。
+
+get_hotword_loop() 是兼容 shim：运行时转发到 builder.get_hotword_graph()，让
+hotword_batch / 门面 / 测试的老引用零改动。
 """
 
 from __future__ import annotations
 
 import logging
-from functools import lru_cache
 from typing import Any, Optional, TypedDict
 
-from langgraph.graph import END, START, StateGraph
+from langgraph.graph import END
 
 from src.app.observability.langsmith import run_traced as _span, trace_tool
 
@@ -210,20 +212,15 @@ def should_continue(state: HotwordLoopState) -> str:
     return _RETRY
 
 
-def _build_loop():
-    graph = StateGraph(HotwordLoopState)
-    graph.add_node(_FETCH, fetch_one)
-    graph.add_node(_ANALYZE, analyze_one)
-    graph.add_edge(START, _FETCH)
-    graph.add_edge(_FETCH, _ANALYZE)
-    graph.add_conditional_edges(_ANALYZE, should_continue, {_RETRY: _FETCH, END: END})
-    return graph.compile()  # 不传 checkpointer：单次 invoke 跑完，无需跨请求续跑
-
-
-@lru_cache(maxsize=1)
 def get_hotword_loop():
-    """编译后的图进程级单例（图本身无状态，运行时数据全在 invoke 的 state 里）。"""
-    return _build_loop()
+    """兼容 shim：图的结构装配已上移到 graph/builder.py:build_hotword_graph。
+
+    保留此名让 hotword_batch / 门面 / 老测试按 ``hotword_loop.get_hotword_loop``
+    引用时不破坏；运行时延迟导入避免与 builder 形成模块加载期循环。新代码请直接用
+    ``graph.builder.get_hotword_graph``，两条图都在那里并列装配。
+    """
+    from src.app.graph.builder import get_hotword_graph
+    return get_hotword_graph()
 
 
 def summarize(state: HotwordLoopState) -> dict[str, Any]:

@@ -7,7 +7,8 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ 入口      api/routes.py（FastAPI /run /health） · main.py（CLI） │
+│ 入口      用户线 api/routes.py(/run)·main.py run()；后台线 main.py run_background() │
+│           后台线跑热词循环图，供调度器周期调用                                      │
 ├──────────────────────────────────────────────────────────────┤
 │ 编排      graph/（builder · state · constants · edges）         │
 ├──────────────────────────────────────────────────────────────┤
@@ -55,7 +56,8 @@
 | 站群清单 | `config.py:SITES` ← `config/sites.json` | 站点信息是数据不是代码，重名直接抛错 |
 | 实现门面 | `tools/registry.py:RuntimeService` | 6 个域 Ops 的多继承组合，本身没有实现 |
 | 工具实例 | `tools/registry.py:tool_registry` | 把门面注入 26 个工具，一次构造 |
-| 图 | `graph/builder.py:get_graph()` | `lru_cache(1)`，checkpointer 连接跟着复用 |
+| 图（用户线） | `graph/builder.py:get_graph()` | `lru_cache(1)`，checkpointer 连接跟着复用 |
+| 图（后台线） | `graph/builder.py:get_hotword_graph()` | 热词逐词循环图，`lru_cache(1)`，无 checkpointer |
 
 工具拿实现的唯一途径是构造注入：
 

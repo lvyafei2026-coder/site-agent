@@ -24,7 +24,7 @@
 
 ```
 src/app/
-├── main.py            run()：样例 state + app.invoke
+├── main.py            两条入口线：run()（用户线）+ run_background()（后台热词线）
 ├── config.py          Settings dataclass（.env 全量读口）
 ├── api/               /run · /health
 ├── graph/             builder · state · edges · constants · registry(Names/Nodes/Tags)
@@ -117,11 +117,11 @@ src/app/
 ```
 site-agent/
 ├── src/app/
-│   ├── main.py                  CLI 入口：get_graph().invoke(initial_state(...))
+│   ├── main.py                  两条入口线：run() 用户线 + run_background() 后台线
 │   ├── config.py                Settings(settings) + INTENTS + FLEET_DOMAIN + SiteConfig/SITES
 │   ├── api/routes.py            FastAPI：POST /run、GET /health
 │   ├── graph/
-│   │   ├── builder.py           StateGraph 组装 + get_graph() 进程级单例
+│   │   ├── builder.py           并列装配两张图：get_graph() 用户线 + get_hotword_graph() 后台线
 │   │   ├── state.py             WorkflowState（输入 / 中间 / 输出三组）+ initial_state()
 │   │   ├── constants.py         Names（节点名）+ Tags（路由标签）
 │   │   └── edges.py             route_after_validation + EDGE_MAP

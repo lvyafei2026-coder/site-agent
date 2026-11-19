@@ -31,8 +31,9 @@
 
 ## 2. 图与路由
 
-`graph/builder.py`：
+`graph/builder.py` 并列装配**两张图**（两条线互不嵌套）：
 
+线 1｜用户线 `build_graph()` → `get_graph()`（意图流水线）：
 ```python
 START → classify_intent → run_processing → validate_result
                                    ↑              │
@@ -40,6 +41,13 @@ START → classify_intent → run_processing → validate_result
                                                   ├── complete → build_output → END
                                                   └── error    → handle_error → END
 ```
+
+线 2｜后台线 `build_hotword_graph()` → `get_hotword_graph()`（逐词循环）：
+```python
+START → fetch_one → analyze_one → should_continue ─┬─ fetch_one（还有词且未达 limit）
+                                                   └─ END（词用完 / 达 limit / KV 失败）
+```
+节点逻辑在 `adapters/terms/hotword_loop.py`，本层只装配结构；入口是 `main.py:run_background()`。
 
 | 组件 | 内容 |
 |---|---|
