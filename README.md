@@ -34,10 +34,16 @@ POST /run → classify_intent → run_processing → validate_result
 ```bash
 pip install -e .
 cp .env.example .env
-python -m src.app.main                 # CLI 跑一轮
-uvicorn src.app.api.routes:api --reload --port 10000
+python -m src.app.main                 # 常驻双服务：HTTP 用户线 + 定时后台线（默认）
+python -m src.app.main user            # 用户线单跑一轮（调试）
+python -m src.app.main background      # 后台线单跑一批（调试）
 pytest -q                              # 全量单测（含 test_hotwords.py）
 ```
+
+`serve` 在一个进程里同时起两条线：主线程 uvicorn 承载 `/run`（对外用户输入），
+守护线程按 `BACKGROUND_INTERVAL_SEC`（默认 21600 秒 = 6h，对齐 radar 抓取节奏）
+自动跑热词分析；启动即跑一轮，`<=0` 关闭自动循环。本地开发若只要 HTTP，可设
+`BACKGROUND_INTERVAL_SEC=0` 后仍用 `uvicorn src.app.api.routes:api --reload`。
 
 ```bash
 curl -s -X POST localhost:10000/run -H 'Content-Type: application/json' \
@@ -94,7 +100,9 @@ migrations/0001_agent_tables.sql  D1 台账表
 
 1. 依赖单向：`api → graph → nodes → services → tools → adapters`；
    **tools 不依赖 services**，`tools/base.py` 只依赖标准库与 pydantic，
-   工具层没有函数内 import。三条都由 `test/test_architecture.py` 守着。
+   工具层没有函数内 import。入口层（`main.py`）与批次外壳也不再靠函数内 import 解环：
+   后台图装配下沉到只依赖 `hotword_loop` 的 `graph/hotword_graph.py` 叶子模块，`builder.py`
+   re-export 保持两图统一门面。三条都由 `test/test_architecture.py` 守着。
    `src.app.enums` 是零依赖纯数据模块，是唯一被放行给 base/sql 叶子引用的包内模块。
 2. 门面靠构造注入：`RuntimeService` 在 `registry.py` 组装后注入 26 个工具，
    测试用 `tool_registry.bind(FakeRuntime())` 整体替换。

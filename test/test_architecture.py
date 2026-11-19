@@ -74,6 +74,24 @@ def test_tools_have_no_deferred_imports():
     assert not offenders, f"工具层出现函数内 import：{sorted(offenders)}"
 
 
+def test_entry_and_batch_have_no_deferred_imports():
+    """入口层与批次外壳不得再用函数内 import 解环——环已从结构上消除。
+
+    main.py 顶层 import 全部依赖；hotword_batch.py 顶层静态取后台图。
+    两者若重现函数内 import，说明有人把加载期环又引回来了。
+    """
+    for rel in ("main.py", "tools/adapters/terms/hotword_batch.py",
+                "graph/hotword_graph.py", "graph/builder.py"):
+        tree = ast.parse((APP / rel).read_text(encoding="utf-8"))
+        offenders = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for sub in ast.walk(node):
+                    if isinstance(sub, (ast.Import, ast.ImportFrom)):
+                        offenders.add(node.name)
+        assert not offenders, f"{rel} 出现函数内 import：{sorted(offenders)}"
+
+
 def test_sql_layer_has_no_side_effects():
     """sql.py 只放语句与构造器，不碰 client / requests / env。"""
     module = ast.parse((APP / "tools/adapters/cloudflare/sql.py").read_text(encoding="utf-8"))

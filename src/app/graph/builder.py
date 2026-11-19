@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""图装配层：两条线在这里并列定义，入口（main.py）一眼可见。
+"""图装配门面：两条线在这里并列可见，入口（main.py / api）一眼可见。
 
 线 1｜对外用户输入（用户线）
     build_graph() → get_graph()
@@ -8,12 +8,17 @@ from __future__ import annotations
     驱动方：HTTP /run（api/routes.py）、CLI（main.py:run）。带 checkpointer，按 thread_id 续跑。
 
 线 2｜后台自动运行（后台线）
-    build_hotword_graph() → get_hotword_graph()
+    build_hotword_graph() → get_hotword_graph()（真身在 graph/hotword_graph.py）
     fetch_one → analyze_one → should_continue 回环（读一词→分析→回环，直到词用完或达 limit）
-    驱动方：main.py:run_background()。不传 checkpointer，单次 invoke 跑完即弃。
+    驱动方：main.py 的常驻后台线程（serve）与单跑调试（run_background）。不传 checkpointer。
 
 两图彼此独立、互不嵌套：主图不知道热词循环的存在，热词循环也不是请求级流程。
 共享的只是底层节点/工具/适配器实现，图结构各管各的。节点逻辑不动——本文件只装配结构。
+
+★后台图装配下沉到 hotword_graph.py 是刻意的：builder 顶层已拉起 nodes → services →
+  registry → hotwords_tools → hotwords 门面 → batch 这条链；batch 若再顶层取本模块的图
+  会成加载期环。把后台图装配放进只依赖 loop 的叶子模块后，batch 可静态 import，本模块
+  re-export 保持「两图统一装配门面」的观感。依赖恢复单向，无函数内 import。
 """
 
 from functools import lru_cache
@@ -27,6 +32,8 @@ from src.app.graph.edges import (
     route_after_processing,
     route_after_validation,
 )
+# 后台图装配下沉到只依赖 loop 的叶子模块；此处 re-export，入口仍从 builder 取两张图。
+from src.app.graph.hotword_graph import build_hotword_graph, get_hotword_graph  # noqa: F401
 from src.app.graph.state import WorkflowState
 from src.app.memory.checkpointer import get_checkpointer
 from src.app.nodes.error import error_node
@@ -34,8 +41,6 @@ from src.app.nodes.intent import intent_node
 from src.app.nodes.output import output_node
 from src.app.nodes.processing import processing_node
 from src.app.nodes.validation import validation_node
-# 后台线的节点逻辑：真身在 adapters/terms/hotword_loop.py，这里只 import 来装配结构。
-from src.app.tools.adapters.terms import hotword_loop as _hwloop
 
 
 # ══ 线 1：对外用户输入 ═══════════════════════════════════════════════
@@ -68,30 +73,3 @@ def build_graph():
 def get_graph():
     """用户线图进程级单例。checkpointer 持有连接（sqlite 尤甚），不能每请求重建。"""
     return build_graph()
-
-
-# ══ 线 2：后台自动运行 ═══════════════════════════════════════════════
-def build_hotword_graph():
-    """后台线：fetch_one → analyze_one → should_continue 回环。
-
-    读一个热词 → 分析 → 回环，直到词用完或达到 limit（最大循环数）。循环完全由
-    条件边驱动，Python 层不写 while/for。节点逻辑在 hotword_loop.py，本函数只装配结构。
-    不传 checkpointer：单次 invoke 跑完即弃，不跨请求续跑。
-    """
-    graph = StateGraph(_hwloop.HotwordLoopState)
-    graph.add_node(_hwloop.FETCH_NODE, _hwloop.fetch_one)
-    graph.add_node(_hwloop.ANALYZE_NODE, _hwloop.analyze_one)
-    graph.add_edge(START, _hwloop.FETCH_NODE)
-    graph.add_edge(_hwloop.FETCH_NODE, _hwloop.ANALYZE_NODE)
-    graph.add_conditional_edges(
-        _hwloop.ANALYZE_NODE,
-        _hwloop.should_continue,
-        {_hwloop.FETCH_NODE: _hwloop.FETCH_NODE, END: END},
-    )
-    return graph.compile()
-
-
-@lru_cache(maxsize=1)
-def get_hotword_graph():
-    """后台线图进程级单例（图无状态，运行时数据全在 invoke 的 state 里）。"""
-    return build_hotword_graph()

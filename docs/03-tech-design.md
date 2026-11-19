@@ -47,7 +47,10 @@ START → classify_intent → run_processing → validate_result
 START → fetch_one → analyze_one → should_continue ─┬─ fetch_one（还有词且未达 limit）
                                                    └─ END（词用完 / 达 limit / KV 失败）
 ```
-节点逻辑在 `adapters/terms/hotword_loop.py`，本层只装配结构；入口是 `main.py:run_background()`。
+装配真身在 `graph/hotword_graph.py`（只依赖 `hotword_loop` 的叶子模块），`builder.py`
+re-export 保持两图统一门面——这样 `hotword_batch.py` 能顶层静态取图，无函数内 import。
+节点逻辑在 `adapters/terms/hotword_loop.py`；入口是 `main.py:run_background()`（单跑）与
+`main.py:serve()` 里的守护线程（常驻自动，周期 `BACKGROUND_INTERVAL_SEC`）。
 
 | 组件 | 内容 |
 |---|---|

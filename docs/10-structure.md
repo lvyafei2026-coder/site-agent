@@ -117,11 +117,13 @@ src/app/
 ```
 site-agent/
 ├── src/app/
-│   ├── main.py                  两条入口线：run() 用户线 + run_background() 后台线
+│   ├── main.py                  常驻双服务入口：serve()（uvicorn 主线程 + 后台守护线程）
+│   │                            + run() 用户线单跑 + run_background() 后台线单跑
 │   ├── config.py                Settings(settings) + INTENTS + FLEET_DOMAIN + SiteConfig/SITES
 │   ├── api/routes.py            FastAPI：POST /run、GET /health
 │   ├── graph/
-│   │   ├── builder.py           并列装配两张图：get_graph() 用户线 + get_hotword_graph() 后台线
+│   │   ├── builder.py           装配门面：get_graph() 用户线 + re-export 后台图
+│   │   ├── hotword_graph.py     后台线叶子装配：get_hotword_graph()（只依赖 loop，供 batch 静态取图）
 │   │   ├── state.py             WorkflowState（输入 / 中间 / 输出三组）+ initial_state()
 │   │   ├── constants.py         Names（节点名）+ Tags（路由标签）
 │   │   └── edges.py             route_after_validation + EDGE_MAP
@@ -187,8 +189,10 @@ flowchart LR
 工具包内还有两条更细的：
 
 1. `tools/base.py` 是纯叶子：只依赖标准库与 pydantic，不 import 任何 `src.app.*`。
-2. 工具层没有函数内 `import`：顺序由模块层级保证（`registry → *_tools → base`）。
-   `adapters/` 例外，那里允许为可选依赖做延迟导入。
+2. 没有函数内 `import` 解环：顺序由模块层级保证（`registry → *_tools → base`）。
+   入口层/批次外壳同理——后台图装配下沉到 `graph/hotword_graph.py` 叶子模块，
+   `builder.py` re-export、`hotword_batch.py` 顶层静态取图。`adapters/` 例外，那里允许
+   为可选依赖做延迟导入。
 
 ## 5. 装配与工具契约
 

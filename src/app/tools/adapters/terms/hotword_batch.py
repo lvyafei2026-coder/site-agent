@@ -11,7 +11,7 @@ hotword_worker.py，取数在 hotword_fetch.py，候选筛选规则与 trace 常
 ★逐词调度由 graph/builder.py 装配的 StateGraph 回环图承担（fetch_one → analyze_one
   → should_continue 回环）；节点逻辑在 hotword_loop.py。本文件只做三件事：
   构造循环图 initial state → invoke → summarize；外层套批次 trace + traceRun 回链。
-  取图经 _hotword_graph() 的加载期边界（builder 顶层拉起整条主图链，不能顶层 import）。
+  图从 graph/hotword_graph.py 顶层静态 import（叶子装配模块，只依赖 loop，无环）。
 
 ★2026-11-13：不再有「整批中止」。每个词独立跑完并把自己的失败写进 items[].error；
   源级故障只把「取数」这一步降级（serpDisabled / trendsDisabled），其它词照常出结论。
@@ -25,9 +25,11 @@ from __future__ import annotations
 import logging
 import uuid
 import time
+from functools import partial
 from typing import Any, Optional
 
 from src.app.config import settings
+from src.app.graph.hotword_graph import get_hotword_graph
 from src.app.observability.langsmith import run_traced
 
 from src.app.tools.adapters.cloudflare.kv import CloudflareKV, get_kv
@@ -38,18 +40,6 @@ from .hotword_contract import (
 from .hotword_loop import HotwordLoopState, summarize
 
 log = logging.getLogger(__name__)
-
-
-def _hotword_graph():
-    """取后台循环图（装配在 graph/builder.py:build_hotword_graph）。
-
-    惰性取图是**加载期边界**，不是兼容补丁：builder 顶层会拉起整条主图依赖链
-    （nodes → services → registry → hotwords_tools → 门面 → 本模块），若在本模块顶层
-    import builder 会形成加载期环。调用到此函数时 builder 早已加载完。图本身是
-    lru_cache 单例，第一次调用才编译。
-    """
-    from src.app.graph.builder import get_hotword_graph
-    return get_hotword_graph()
 
 
 def _batch_outputs(out: dict[str, Any]) -> dict[str, Any]:
@@ -74,6 +64,19 @@ def _trace_run_info(run, batch_id: str) -> dict[str, Any]:
     }
 
 
+def _batch_body(batch_run, *, limit: int, kv: Optional[CloudflareKV],
+                batch_id: str, prompt_version: Optional[str]) -> dict[str, Any]:
+    """批次 span 的执行体（模块级，避免 run_batch 内嵌 def）。
+
+    第一个位置参数 batch_run 由 run_traced(pass_run=True) 注入；其余参数在 run_batch
+    里用 functools.partial 绑定。KV 读失败 / 无候选这些提前返回也带同一条根 run 的回链。
+    """
+    out = _run_batch(limit, kv, batch_run, batch_id, prompt_version)
+    if batch_run is not None:
+        out["traceRun"] = _trace_run_info(batch_run, batch_id)
+    return out
+
+
 def run_batch(limit: int = 20, kv: Optional[CloudflareKV] = None,
               prompt_version: Optional[str] = None) -> dict[str, Any]:
     """读 KV 候选池 → 逐词分析（循环图驱动）→ 汇总。KV 不可达时整批失败，不写状态。
@@ -90,14 +93,8 @@ def run_batch(limit: int = 20, kv: Optional[CloudflareKV] = None,
       批次 run 经 state 显式传给图。
     """
     batch_id = f"hotwords-{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}"
-
-    def body(batch_run):
-        out = _run_batch(limit, kv, batch_run, batch_id, prompt_version)
-        # 放在包装层：KV 读失败 / 无候选这些提前返回也带同一条根 run 的回链
-        if batch_run is not None:
-            out["traceRun"] = _trace_run_info(batch_run, batch_id)
-        return out
-
+    body = partial(_batch_body, limit=limit, kv=kv,
+                   batch_id=batch_id, prompt_version=prompt_version)
     resolved_version = (prompt_version
                         or (settings.default_prompt_versions or {}).get("hotwords", "v1"))
     return run_traced(
@@ -139,5 +136,5 @@ def _run_batch(limit: int, kv: Optional[CloudflareKV], batch_run,
         "loop_count": 0,
         "examples": [],
     }
-    final = _hotword_graph().invoke(initial)
+    final = get_hotword_graph().invoke(initial)
     return summarize(final)

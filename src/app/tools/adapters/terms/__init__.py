@@ -11,16 +11,16 @@
     hotword_contract.py  共享契约叶子：候选筛选规则 + trace 常量 + 成功阈值（无上层依赖）。
     hotword_fetch.py     取数层：SERP / Trends 读缓存 → 现抓 → 写回 + 全局节流。
     hotword_worker.py    单词层：补数据 → LLM → 结论判定 → 回写状态（失败隔离到单词）。
-    hotword_batch.py     批次入口：批次 trace 外壳 + 对外契约，invoke builder 的循环图。
+    hotword_batch.py     批次入口：批次 trace 外壳 + 对外契约，invoke 后台循环图。
     hotword_loop.py      逐词循环图的节点逻辑（state / fetch_one / analyze_one / route /
-                         summarize）；图结构装配在 graph/builder.py，与本模块单向依赖。
+                         summarize）；图结构装配在 graph/hotword_graph.py，与本模块单向依赖。
     hotword_criteria.py  纯判据：提示词拼装、结论/红线/信号标签解析（无 IO）。
     hotword_llm.py       LLM 调用与空正文诊断。
     hotword_kv_io.py     KV 写账本（_WriteLog）+ 形状兜底读取。
     hotword_backfill.py  状态回填 backfill_states。
 
-依赖单向无环：batch → builder → loop → worker → fetch / criteria / llm / kv_io / contract。
-唯一的加载期边界：batch 惰性取 builder 的图（builder 顶层拉起整条主图链，顶层 import 会成环）。
+依赖单向无环：batch → hotword_graph → loop → worker → fetch / criteria / llm / kv_io / contract。
+后台图装配下沉到 graph/hotword_graph.py 叶子模块（只依赖 loop），batch 顶层静态取图，无惰性边界。
 
 外部取数：
     gsc.py / reddit.py / scrape_serp.py / scrape_trend.py

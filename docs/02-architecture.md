@@ -7,10 +7,11 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ 入口      用户线 api/routes.py(/run)·main.py run()；后台线 main.py run_background() │
-│           后台线跑热词循环图，供调度器周期调用                                      │
+│ 入口      main.py:serve() 常驻双线（默认）：主线程 uvicorn + 守护线程定时循环      │
+│           线1 用户线 api/routes.py(/run)·run()；线2 后台线 run_background()        │
+│           user / background 子命令单跑调试                                        │
 ├──────────────────────────────────────────────────────────────┤
-│ 编排      graph/（builder · state · constants · edges）         │
+│ 编排      graph/（builder · hotword_graph · state · constants · edges）│
 ├──────────────────────────────────────────────────────────────┤
 │ 节点      nodes/（intent · processing · validation · output · error）│
 ├──────────────────────────────────────────────────────────────┤
@@ -25,8 +26,8 @@
 
 | 层 | 职责 | 允许依赖 |
 |---|---|---|
-| `api` / `main` | 收请求、构造入口 state、返回结果 | graph |
-| `graph` | 图组装、状态契约、路由条件 | nodes、memory |
+| `api` / `main` | 收请求、构造入口 state、常驻拉起双线、返回结果 | graph |
+| `graph` | 图组装、状态契约、路由条件 | nodes、memory（后台图只依赖 adapters/terms/loop） |
 | `nodes` | 单个步骤的逻辑，读 state 写 state | services、models |
 | `services` | 跨节点复用的能力（LLM、prompt、工具分发、评分） | tools、prompts、llm、observability |
 | `tools` | 26 个工具的定义与实现、外部 IO 适配器 | adapters（+ 包内 base） |
@@ -40,8 +41,11 @@
 工具层还要再守两条更细的：
 
 1. `tools/base.py` 是包内叶子：只依赖标准库与 pydantic，不 import 任何 `src.app.*`。
-2. 工具层没有函数内 `import`：装配顺序由模块层级保证（`registry → *_tools → base`），
-   不靠延迟导入解循环。`adapters/` 例外——那是为可选依赖（`google-api-python-client`）留的。
+2. 没有函数内 `import` 解环：装配顺序由模块层级保证（`registry → *_tools → base`）。
+   入口层与批次外壳同样如此——后台图装配下沉到只依赖 `hotword_loop` 的
+   `graph/hotword_graph.py` 叶子模块，`builder.py` re-export，`hotword_batch.py` 顶层静态取图，
+   环从结构上消除而非靠延迟导入绕过。`adapters/` 例外——那是为可选依赖
+   （`google-api-python-client`）留的。
 
 三条都由 `test/test_architecture.py` 用 AST 扫描守着，违反了先在测试里红，
 而不是部署后 `ModuleNotFoundError`。
@@ -57,7 +61,7 @@
 | 实现门面 | `tools/registry.py:RuntimeService` | 6 个域 Ops 的多继承组合，本身没有实现 |
 | 工具实例 | `tools/registry.py:tool_registry` | 把门面注入 26 个工具，一次构造 |
 | 图（用户线） | `graph/builder.py:get_graph()` | `lru_cache(1)`，checkpointer 连接跟着复用 |
-| 图（后台线） | `graph/builder.py:get_hotword_graph()` | 热词逐词循环图，`lru_cache(1)`，无 checkpointer |
+| 图（后台线） | `graph/hotword_graph.py:get_hotword_graph()` | 热词逐词循环图，`lru_cache(1)`，无 checkpointer；`builder.py` re-export |
 
 工具拿实现的唯一途径是构造注入：
 
@@ -147,17 +151,20 @@ flowchart LR
   agent -->|"decide"| llm["OpenAI 兼容 LLM"]
 ```
 
-`render.yaml` 是完整定义：`plan: starter` + 1GB 磁盘挂 `/data`，
-`buildCommand: pip install -e .`，`startCommand: uvicorn src.app.api.routes:api`，
-健康检查 `/health`。生产用 `MEMORY_BACKEND=sqlite` +
-`DATABASE_URL=sqlite:////data/agent.sqlite`（checkpointer 落盘 `/data/agent.sqlite`，
-git 仓库副本在 `/data/repos`）。
+`render.yaml` 是完整定义：`plan: free`（实例文件系统临时，重启即丢，故 checkpointer
+用 memory 后端，单轮流水线无跨轮状态、重启无损失），`buildCommand: pip install -e .`，
+`startCommand: python -m src.app.main serve`，健康检查 `/health`。要持久化再换
+starter + 1GB 磁盘挂 `/data` 并设 `MEMORY_BACKEND=sqlite` +
+`DATABASE_URL=sqlite:////data/agent.sqlite`。
 
-触发方式：外部 cron 或手动 `POST /run`（console 的「Agent入口」页透传，
-cron 心跳保活由 site-console 的 `*/10 1-15 * * *`（UTC）负责）。
+触发方式：一个常驻进程同时跑两条线（见 `main.py:serve`）——
+主线程 uvicorn 承载 `/run`（用户线，console「Agent入口」页透传或手动 POST）；
+守护线程按 `BACKGROUND_INTERVAL_SEC`（默认 6h）自动跑热词分析（后台线），启动即跑一轮。
+`user` / `background` 子命令保留单跑调试。console 的 `*/10 1-15 * * *`（UTC）cron
+只做心跳保活与额度预警，不再负责触发 agent 任务。
 
-为什么不用 Workers：没有长驻进程，也没有可持久化的图状态；Workers AI 是账户级
-额度，出图站已经占了大部分。
+为什么不用 Workers：agent 现在是常驻双服务进程，需要长驻线程承载后台定时循环；
+Workers AI 是账户级额度，出图站已经占了大部分。
 
 ## 6. 与站群其它系统的边界
 

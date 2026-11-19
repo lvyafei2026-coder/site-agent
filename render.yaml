@@ -1,9 +1,10 @@
-# Render Blueprint — Web Service（FastAPI 单轮流水线）
+# Render Blueprint — Web Service（常驻双服务：HTTP 用户线 + 定时后台线）
 # 免费档：Free 实例文件系统是临时的（重启即丢），checkpointer 用 memory 后端，
 # 单轮流水线不保存跨轮状态，重启无损失。以后要持久化再换 starter + /data 磁盘：
 #   plan: starter + disk(mountPath /data, 1GB)
 #   MEMORY_BACKEND=sqlite + DATABASE_URL=sqlite:////data/agent.sqlite
-# 调度在外部。部署见 docs/04-runbook.md。
+# 一个进程同时跑两条线：主线程 uvicorn（/run 用户线）+ 守护线程定时循环（后台热词线）。
+# 后台周期由 BACKGROUND_INTERVAL_SEC 控制，<=0 关闭自动循环。部署见 docs/04-runbook.md。
 services:
   - type: web
     name: site-agent
@@ -11,7 +12,7 @@ services:
     plan: free
     region: singapore
     buildCommand: pip install -e .
-    startCommand: uvicorn src.app.api.routes:api --host 0.0.0.0 --port $PORT
+    startCommand: python -m src.app.main serve
     autoDeploy: true
     healthCheckPath: /health
     envVars:
@@ -68,6 +69,9 @@ services:
         sync: false
       - key: MEMORY_BACKEND
         value: memory
+      # 后台线自动循环周期（秒），默认 6h 对齐 radar 抓取节奏；<=0 关闭自动循环。
+      - key: BACKGROUND_INTERVAL_SEC
+        value: "21600"
       # 可选：Render 出口连不上 DuckDuckGo 时，单独给 SERP 抓取换 HTTP 出口。
       # 留空走直连；不影响 KV REST / LLM / GitHub 等其它出站调用。
       - key: SERP_HTTPS_PROXY
