@@ -80,7 +80,7 @@ src/app/
 
 ## 2. 分包规则
 
-1. **按技术职责切，不按业务域切**。`selection / measurement / distribution / ledger /
+1. **按技术职责切，不按业务域切**。`hotwords / measurement / distribution / ledger /
    promotion / publishing` 六个域只体现为 `tools/` 下 6 个文件，不占顶层包。
    顶层稳定为 **11 个包 + 2 个模块（`config.py`、`main.py`）= 13 个代码单元**，
    加业务只加文件，不加包。
@@ -134,7 +134,7 @@ site-agent/
 │   ├── tools/
 │   │   ├── base.py              契约：BaseTool / RuntimeTool / ToolOutput / stable_key
 │   │   ├── registry.py          装配：RuntimeService + TOOL_CLASSES + ToolRegistry
-│   │   ├── selection_tools.py   SelectionOps + 1 个工具
+│   │   ├── hotwords_tools.py   HotwordsOps + 1 个工具
 │   │   ├── measurement_tools.py MeasurementOps + 2 个工具
 │   │   ├── distribution_tools.py DistributionOps + 4 个工具
 │   │   ├── ledger_tools.py      LedgerOps + 9 个工具
@@ -196,7 +196,7 @@ flowchart LR
 装配与注入都在 `registry.py`：
 
 ```python
-class RuntimeService(SelectionOps, DistributionOps, LedgerOps,
+class RuntimeService(HotwordsOps, DistributionOps, LedgerOps,
                      MeasurementOps, PromotionOps, PublishingOps):
     """唯一门面：实现见各域 Ops，这里只有组合。"""
 

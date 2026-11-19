@@ -55,7 +55,7 @@ from src.app.tools.publishing_tools import (
     RenderFilesTool,
     WaitBuildTool,
 )
-from src.app.tools.selection_tools import AnalyzeHotwordsTool, GetHotwordsTool, SelectionOps
+from src.app.tools.hotwords_tools import AnalyzeHotwordsTool, GetHotwordsTool, HotwordsOps
 
 
 def _tool_tracer(name: str, kind: str, method: str, kwargs: dict, call):
@@ -79,7 +79,7 @@ def _tool_tracer(name: str, kind: str, method: str, kwargs: dict, call):
     )
 
 
-class RuntimeService(SelectionOps, DistributionOps, LedgerOps,
+class RuntimeService(HotwordsOps, DistributionOps, LedgerOps,
                      MeasurementOps, PromotionOps, PublishingOps):
     """26 个工具的唯一门面：实现见各域 Ops 类，这里只有组合。"""
 

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""selection 域：选题雷达取数（定义 + 实现同文件）。"""
+"""hotwords 域：选题雷达取数（定义 + 实现同文件）。"""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ from src.app.tools.adapters.terms import curation as candidates
 from src.app.tools.base import RuntimeTool
 
 
-class SelectionOps:
-    """selection 域的实现：只碰 terms 适配器。"""
+class HotwordsOps:
+    """hotwords 域的实现：只碰 terms 适配器。"""
 
     def hotwords(self, status=CandidateStatus.DOING.value, limit=40):
         return candidates.snapshot(status=status, limit=limit)

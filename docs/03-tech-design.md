@@ -92,7 +92,7 @@ START → classify_intent → run_processing → validate_result
 - 工具层（adapters）不能反向依赖 `services`，所以热词逐词分析走 `prompts/__init__.py`
   的纯加载函数 `_prompt_pair()`（带进程内缓存，一批 20 词只读一次磁盘）；
   `/run` 的 `prompt_versions.hotwords` 经 `processing → tool_service → AnalyzeHotwordsTool
-  → SelectionOps → run_batch` 一路透传，批次 trace 的 inputs 里也记 `promptVersion`。
+  → HotwordsOps → run_batch` 一路透传，批次 trace 的 inputs 里也记 `promptVersion`。
 - 每次加载打日志 `prompt_loaded`（task + version），排查「这轮用的是哪版」很快。
 
 ### 4.3 `tool_service`：意图 → 工具集
@@ -163,7 +163,7 @@ class GetHotwordsTool(RuntimeTool):
 
 | 文件 | Ops 实现 | 工具数 |
 |---|---|---|
-| `selection_tools.py` | `SelectionOps`（radar） | 1 |
+| `hotwords_tools.py` | `HotwordsOps`（radar） | 1 |
 | `measurement_tools.py` | `MeasurementOps`（D1 埋点、GSC） | 2 |
 | `distribution_tools.py` | `DistributionOps`（外链台账、Reddit、Dev.to） | 4 |
 | `ledger_tools.py` | `LedgerOps`（台账 upsert、KV、事件、通知） | 9 |

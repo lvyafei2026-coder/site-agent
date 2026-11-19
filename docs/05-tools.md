@@ -8,7 +8,7 @@
 `kind` 说明：`read` 只读；`ledger` 写台账 / KV / 本地文件，可重复执行；
 `write` 不可逆的外部发布。
 
-### 1.1 selection（2）
+### 1.1 hotwords（2）
 
 | name | kind | method | 参数 | 用途 |
 |---|---|---|---|---|
