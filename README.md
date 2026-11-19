@@ -34,16 +34,15 @@ POST /run → classify_intent → run_processing → validate_result
 ```bash
 pip install -e .
 cp .env.example .env
-python -m src.app.main                 # 常驻双服务：HTTP 用户线 + 定时后台线（默认）
-python -m src.app.main user            # 用户线单跑一轮（调试）
-python -m src.app.main background      # 后台线单跑一批（调试）
+python -m src.app.main                 # 常驻双服务：HTTP 用户线 + 定时后台线
 pytest -q                              # 全量单测（含 test_hotwords.py）
 ```
 
-`serve` 在一个进程里同时起两条线：主线程 uvicorn 承载 `/run`（对外用户输入），
-守护线程按 `BACKGROUND_INTERVAL_SEC`（默认 21600 秒 = 6h，对齐 radar 抓取节奏）
-自动跑热词分析；启动即跑一轮，`<=0` 关闭自动循环。本地开发若只要 HTTP，可设
-`BACKGROUND_INTERVAL_SEC=0` 后仍用 `uvicorn src.app.api.routes:api --reload`。
+`python -m src.app.main` 直接进 `serve()`：一个进程同时起两条线——主线程 uvicorn
+承载 `/run`（对外用户输入），守护线程按 `BACKGROUND_INTERVAL_SEC`（默认 21600 秒
+= 6h，对齐 radar 抓取节奏）自动跑热词分析，启动即跑一轮，`<=0` 关闭自动循环。
+单跑调试直接调函数（`from src.app.main import run, run_background`）。本地开发若
+只要 HTTP，可设 `BACKGROUND_INTERVAL_SEC=0` 或直接用 `uvicorn ... --reload`。
 
 ```bash
 curl -s -X POST localhost:10000/run -H 'Content-Type: application/json' \

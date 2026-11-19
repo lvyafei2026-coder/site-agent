@@ -7,9 +7,9 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ 入口      main.py:serve() 常驻双线（默认）：主线程 uvicorn + 守护线程定时循环      │
+│ 入口      main.py:serve() 常驻双线：主线程 uvicorn + 守护线程定时循环             │
 │           线1 用户线 api/routes.py(/run)·run()；线2 后台线 run_background()        │
-│           user / background 子命令单跑调试                                        │
+│           python -m src.app.main 直接起双服务；run()/run_background() 可单跑       │
 ├──────────────────────────────────────────────────────────────┤
 │ 编排      graph/（builder · hotword_graph · state · constants · edges）│
 ├──────────────────────────────────────────────────────────────┤
@@ -153,14 +153,14 @@ flowchart LR
 
 `render.yaml` 是完整定义：`plan: free`（实例文件系统临时，重启即丢，故 checkpointer
 用 memory 后端，单轮流水线无跨轮状态、重启无损失），`buildCommand: pip install -e .`，
-`startCommand: python -m src.app.main serve`，健康检查 `/health`。要持久化再换
+`startCommand: python -m src.app.main`（直接进 serve），健康检查 `/health`。要持久化再换
 starter + 1GB 磁盘挂 `/data` 并设 `MEMORY_BACKEND=sqlite` +
 `DATABASE_URL=sqlite:////data/agent.sqlite`。
 
 触发方式：一个常驻进程同时跑两条线（见 `main.py:serve`）——
 主线程 uvicorn 承载 `/run`（用户线，console「Agent入口」页透传或手动 POST）；
 守护线程按 `BACKGROUND_INTERVAL_SEC`（默认 6h）自动跑热词分析（后台线），启动即跑一轮。
-`user` / `background` 子命令保留单跑调试。console 的 `*/10 1-15 * * *`（UTC）cron
+单跑调试直接调 `run()` / `run_background()`。console 的 `*/10 1-15 * * *`（UTC）cron
 只做心跳保活与额度预警，不再负责触发 agent 任务。
 
 为什么不用 Workers：agent 现在是常驻双服务进程，需要长驻线程承载后台定时循环；

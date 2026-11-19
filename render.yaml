@@ -12,7 +12,7 @@ services:
     plan: free
     region: singapore
     buildCommand: pip install -e .
-    startCommand: python -m src.app.main serve
+    startCommand: python -m src.app.main
     autoDeploy: true
     healthCheckPath: /health
     envVars:

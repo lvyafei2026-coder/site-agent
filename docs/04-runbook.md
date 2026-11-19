@@ -18,8 +18,6 @@ cp .env.example .env                              # 不填任何凭据也能跑
 ```bash
 pytest -q                                          # 全量单测
 python -m src.app.main                             # 常驻双服务：HTTP 用户线 + 定时后台线
-python -m src.app.main user                        # 用户线单跑一轮（调试）
-python -m src.app.main background                  # 后台线单跑一批（调试）
 curl -s localhost:10000/health
 curl -s localhost:10000/llm-quota                  # LLM 剩余额度（每次消耗 1 次请求额度）
 curl -s -X POST localhost:10000/run \
@@ -240,7 +238,7 @@ checkpointer 的表由 `langgraph-checkpoint-sqlite` 自动创建，不要手工
 |---|---|
 | 计划 | `free`（文件系统临时；单轮流水线无跨轮状态，重启无损失） |
 | 构建 | `pip install -e .` |
-| 启动 | `python -m src.app.main serve`（常驻双服务：主线程 uvicorn + 后台守护线程） |
+| 启动 | `python -m src.app.main`（常驻双服务：主线程 uvicorn + 后台守护线程） |
 | 健康检查 | `/health` |
 | 关键 env | `MEMORY_BACKEND=memory`、`BACKGROUND_INTERVAL_SEC=21600`（<=0 关后台线）、`FLEET_DOMAIN`、`GH_ORG` |
 
