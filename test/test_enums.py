@@ -98,7 +98,7 @@ def test_no_module_defines_its_own_status_list():
     允许的定义点只有 enums.py 与「从枚举派生的兼容别名」（curation.py / hotwords.py）。
     """
     # curation.py 的 STATUSES/HINT_NAMES 与 hotwords.py 的 HINT_NAMES 均为枚举派生
-    from src.app.tools.adapters.sources import curation, hotwords
+    from src.app.tools.adapters.terms import curation, hotwords
     assert curation.STATUSES == [s.value for s in CurationStatus]
     assert curation.HINT_NAMES == [h.value for h in HintName]
     assert hotwords.HINT_NAMES == tuple(h.value for h in HintName)

@@ -15,7 +15,7 @@ from src.app.enums import BacklinkChannel, ToolKind
 from src.app.tools.adapters.cloudflare import database
 from src.app.tools.adapters.cloudflare.sql import Sql
 from src.app.tools.adapters.publishing import devto
-from src.app.tools.adapters.sources import reddit
+from src.app.tools.adapters.terms import reddit
 from src.app.tools.base import RuntimeTool
 
 

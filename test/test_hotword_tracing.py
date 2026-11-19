@@ -24,7 +24,7 @@ from langsmith import trace as ls_trace, traceable, utils
 from langsmith.run_trees import RunTree
 
 from src.app.config import settings
-from src.app.tools.adapters.sources import hotwords as hw
+from src.app.tools.adapters.terms import hotwords as hw
 from src.app.tools.registry import tool_registry
 
 

@@ -5,7 +5,8 @@
 """热词分析的 KV 写账本层：单词级写入成败记录 + 共享表形状兜底读取。
 
 拆分自 hotwords.py（2026-11-17）。只放「怎么安全地写 / 怎么容错地读」这一层；
-抓取编排（_throttled_serp / _trend）与批次编排留在 hotwords.py。
+取数（_throttled_serp / _trend）在 hotword_fetch.py，单词/批次编排在
+hotword_worker.py / hotword_batch.py（2026-11-19 拆）。
 
 ★_WriteLog 存在的理由：以前 `kv.put_json(...)` 的返回值被丢掉，Cloudflare 返回
   401/5xx 时进程内仍以为写成功了，于是「正文有了、状态表没有」，而 _select_pending

@@ -52,7 +52,7 @@ curl -s -X POST localhost:10000/run -H 'Content-Type: application/json' \
 热词分析链路：console `/api/hotwords` 取词 → radar `/api/serp` + `/api/trend` 补竞争度与
 30 天趋势 → 外部 LLM 出 8 小节站点方案 → `/api/hotwords` 写回 `ai:v3:` 正文、`aihints`、
 `rejected`（不做）或 `saved.status=todo`（待开发）。实现与口径见
-`src/app/tools/adapters/sources/hotwords.py`。
+`src/app/tools/adapters/terms/hotwords.py`（门面 → hotword_fetch/worker/batch 三层）。
 
 ## 目录
 
@@ -68,7 +68,7 @@ src/app/
 │   ├── base.py              契约（BaseTool / RuntimeTool / ToolOutput）
 │   ├── registry.py          门面装配（RuntimeService）+ 26 个工具注册
 │   ├── *_tools.py           6 个业务域：<Domain>Ops 实现 + 工具类
-│   └── adapters/            cloudflare · sources · hosting · publishing
+│   └── adapters/            cloudflare · terms · hosting · publishing
 ├── models/                  ExtractionSchema · WorkflowResult
 ├── prompts/                 提示词唯一真源 = radar-rules D1（d1_source.py 读库+60s 缓存）
 │   ├── d1_source.py         D1 全表快照 + 失败旧快照兜底；本地 versions/*.txt 已删除

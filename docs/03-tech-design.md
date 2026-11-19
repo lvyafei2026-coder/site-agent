@@ -182,8 +182,8 @@ class GetHotwordsTool(RuntimeTool):
 | | `database` | `D1Database.query / execute` |
 | | `kv` | ★KV 唯一模块：`CloudflareKV`（共享表，fail-open，atomic_update+锁）+ `WorkersKV`（`agent:` 前缀，fail-fast）+ 键名契约；`__init__` 里 `keyvalue` 是 WorkersKV 单例 |
 | | `sql` | `Sql` / `PAGE_QUERIES` / `LEDGER_TABLES` / `SqlBuilder` |
-| `sources/` | `curation` | `snapshot(status, limit)` → `{items, meta, interests}`（只读共享 KV）+ `upsert_saved / upsert_rejected / set_hint_override`（与 console store.js 对齐的写侧口径） |
-| | `hotwords` | 热词分析编排（run_batch / _analyze_one / backfill_states 门面）；判据=hotword_criteria、LLM=hotword_llm、KV 写账本=hotword_kv_io、回填=hotword_backfill |
+| `terms/` | `curation` | `snapshot(status, limit)` → `{items, meta, interests}`（只读共享 KV）+ `upsert_saved / upsert_rejected / set_hint_override`（与 console store.js 对齐的写侧口径） |
+| | `hotwords` | 热词分析门面（只再导出：run_batch / _analyze_one / backfill_states 等）；三层=hotword_fetch（取数）/ hotword_worker（单词）/ hotword_batch（批次），判据=hotword_criteria、LLM=hotword_llm、KV 写账本=hotword_kv_io、回填=hotword_backfill |
 | | `gsc` | `search_analytics(days, dimensions)`；无凭据返回 `[]` |
 | | `reddit` | `search(query, limit, timeframe)` 只读 |
 | | `scrape_serp` / `scrape_trend` | DDG SERP / Google Trends 抓取 |

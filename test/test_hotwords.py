@@ -5,13 +5,13 @@
 """热词分析：提示词拼装、结论/红线/标签判据、作品硬证据、意图→工具映射，以及
 run_batch 经共享 KV 的端到端写回（不碰 console / radar / OpenAI / DDG / Google）。
 
-2026-11-12 去接口化后，run_batch 直接读写共享 KV（见 adapte../cloudflare/kv.py）。这里用
+2026-11-12 去接口化后，run_batch 直接读写共享 KV（见 ../cloudflare/kv.py）。这里用
 内存 FakeKV + monkeypatch 外部抓取/LLM，离线验证「候选 → 分析 → 回写状态」全链路。
 """
 
 import pytest
 
-from src.app.tools.adapters.sources import hotwords as hw
+from src.app.tools.adapters.terms import hotwords as hw
 from src.app.services.tool_service import INTENT_TOOLS, tool_service
 from src.app.tools.registry import tool_registry
 

@@ -63,7 +63,7 @@ def _tool_tracer(name: str, kind: str, method: str, kwargs: dict, call):
 
     ★`parent=None` 是刻意的：工具在 graph 节点里同步调用，LangSmith 会自动把 span
       挂到当前节点（LangChainTracer 注入的 run）下。只有 ThreadPoolExecutor 的
-      worker 线程才需要显式 parent，那部分在 hotwords.py 单独处理。
+      worker 线程才需要显式 parent，那部分在 hotword_batch.py / hotword_worker.py 单独处理。
     ★`ok=False` 也要让 span 标红：RuntimeTool 把异常吞进 ToolOutput 返回体，
       不抛异常的话 LangSmith 自己看不出失败。
     """

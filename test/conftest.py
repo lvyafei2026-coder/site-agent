@@ -33,7 +33,7 @@ class FakeRuntime:
     # 说明：生产里 SelectionOps.hotwords / analyze_hotwords 已不再委托给这里的同名方法
     #（2026-11-12 去接口化：改由 agent 直读共享 KV，见 ../cloudflare/kv.py）。但 FakeRuntime 作为
     # RuntimeService 的测试替身，仍需提供 hotwords 数据桩——get_hotwords 工具经 tool_registry
-    # 走到 self.ops.hotwords。真正的 KV 读写由 test/test_kv_sources.py + test_hotwords.py
+    # 走到 self.ops.hotwords。真正的 KV 读写由 test/test_kv_terms.py + test_hotwords.py
     # 经 fake_kv 夹具覆盖。analyze_hotwords 现由 run_batch 直接测，这里不另立桩。
 
     def hotwords(self, status="doing", limit=40):
@@ -316,7 +316,7 @@ def fake_prompt_store(monkeypatch):
     是同一个单例）。测试内部若自行 monkeypatch configured / prompt_store，优先级更高。
     """
     from src.app.prompts.d1_source import D1PromptStore, prompt_store
-    from src.app.tools.adapters.sources import hotwords as hw
+    from src.app.tools.adapters.terms import hotwords as hw
 
     def fetch(_account, _token, _db):
         # 深拷贝，避免某测试改动桩数据污染其它测试

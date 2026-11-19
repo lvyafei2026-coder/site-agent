@@ -20,7 +20,7 @@ from src.app.llm.quota import check_quota
 from src.app.observability.langsmith import public_config as langsmith_config
 from src.app.observability.metrics import metrics
 from src.app.observability.trace import run_traced
-from src.app.tools.adapters.sources.hotwords import backfill_states
+from src.app.tools.adapters.terms.hotwords import backfill_states
 
 
 class WorkflowRequest(BaseModel):

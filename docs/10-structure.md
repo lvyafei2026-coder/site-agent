@@ -142,7 +142,7 @@ site-agent/
 │   │   ├── publishing_tools.py  PublishingOps + 7 个工具
 │   │   └── adapters/
 │   │       ├── cloudflare/      client · database · kv（KV 唯一模块）· sql；`keyvalue`=WorkersKV 单例
-│   │       ├── sources/         curation（候选快照+整理写侧） · hotwords（编排）+ hotword_criteria/llm/kv_io/backfill（分层） · gsc · reddit · scrape_serp · scrape_trend · source_errors
+│   │       ├── terms/           curation（候选快照+整理写侧） · hotwords（门面）+ hotword_fetch/worker/batch（三层） + hotword_criteria/llm/kv_io/backfill（分层） · gsc · reddit · scrape_serp · scrape_trend · source_errors
 │   │       ├── hosting/         github_repo · renderer · verification
 │   │       └── publishing/      devto · email
 │   ├── models/                  ExtractionSchema · WorkflowResult
