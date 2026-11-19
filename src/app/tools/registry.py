@@ -62,8 +62,8 @@ def _tool_tracer(name: str, kind: str, method: str, kwargs: dict, call):
     """26 个工具共用的 LangSmith span：入参、统一返回体、失败原因全留在一条 run 上。
 
     ★`parent=None` 是刻意的：工具在 graph 节点里同步调用，LangSmith 会自动把 span
-      挂到当前节点（LangChainTracer 注入的 run）下。只有 ThreadPoolExecutor 的
-      worker 线程才需要显式 parent，那部分在 hotword_batch.py / hotword_worker.py 单独处理。
+      挂到当前节点（LangChainTracer 注入的 run）下。热词逐词循环图的每词 span 走
+      hotword_loop.py / hotword_worker.py 的显式 parent 链路（保住「批次→词→LLM」层级）。
     ★`ok=False` 也要让 span 标红：RuntimeTool 把异常吞进 ToolOutput 返回体，
       不抛异常的话 LangSmith 自己看不出失败。
     """

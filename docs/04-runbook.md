@@ -137,8 +137,8 @@ API 的 `LLM_MODEL` 要写 **`openai/gpt-4o-mini`**（vendor/model）——以�
 | 节点级 | classify_intent / run_processing / validate_result / build_output | LangGraph 自动打点 |
 | 工具级 | `tool:<工具名>`（26 个 RuntimeTool）：真实入参、统一返回体，`ok=False` 标红 | `tools/registry.py` 注入的 `trace_tool` |
 | 批次级 | `site-agent:hotword-batch`：analyzed / failed / successRate / 降级提示 | `hotwords.run_batch` 的 `run_traced` |
-| 批次内 IO | `tool:kv.read-candidates`：筛出哪些词、为什么这批跑空了 | `hotwords._run_batch` 的 `trace_tool` |
-| 逐词级 | `site-agent:hotword:<词>`：verdict / status / serp / trend / error（失败标红） | `hotwords._run_batch` 的逐词 `run_traced` |
+| 批次内 IO | `tool:kv.read-candidates`：筛出哪些词、为什么这批跑空了 | `hotword_loop.py` 的 `fetch_one`（懒加载） |
+| 逐词级 | `site-agent:hotword:<词>`：verdict / status / serp / trend / error（失败标红） | `hotword_loop.py` 的 `analyze_one` |
 | 逐词内 IO | `tool:serp` / `tool:trend` / `tool:kv.write`：抓取出入参、缓存命中、尝试明细、每个 KV 键写入成败 | `hotwords.py` 的 `_tool_step` |
 | LLM 级 | 实际发送的 messages、返回 JSON、token 数与延迟 | `llm/provider.py` 的 `wrap_openai` |
 
@@ -157,11 +157,12 @@ site-agent:analyze_hotwords                    ← 唯一根
          └─ tool:kv.write  → 写了哪些键、每个键 ok 与否、正文预览、失败清单
 ```
 
-根因是 `ThreadPoolExecutor` 的 worker 线程**不继承主线程的 contextvars**，而 LangSmith
-把父 run 存在 contextvar 里；并发逐词时 `wrap_openai` 找不到父，每个 LLM 都成了独立根
-trace。修法在工具层：批次 span 自动挂到 LangGraph 节点下，逐词 span **显式传 `parent=`**
-（`observability/langsmith.py:run_traced`），并把本词 run 继续传给所有 `tool:*` 子 span。
-**graph 结构本身没有改动**，也不是「每词一条独立 trace」。
+历史上根因是 `ThreadPoolExecutor` 的 worker 线程**不继承主线程的 contextvars**，而
+LangSmith 把父 run 存在 contextvar 里；并发逐词时 `wrap_openai` 找不到父，每个 LLM 都
+成了独立根 trace。修法在工具层：批次 span 自动挂到 LangGraph 节点下，逐词 span **显式传
+`parent=`**（`observability/langsmith.py:run_traced`），并把本词 run 继续传给所有 `tool:*`
+子 span。2026-11-19 起逐词调度改为独立的条件边回环图（`hotword_loop.py`，串行），显式
+parent 链路保留以维持上面这棵层级树；不是「每词一条独立 trace」。
 
 **工具可见性**（2026-11-13）：以前只有 `wrap_openai` 自动打点，SERP / Trends / KV 读写在
 Smith 上完全看不见，页面只显示「SERP 源不可用，本批已跳过 SERP」这类结果文字，无法判断
@@ -275,11 +276,12 @@ Render 的 FastAPI 为准。
 | `duckduckgo 不可用：连不上 DuckDuckGo（N 发全部连接失败）` | **网络层**：当前部署出口 IP 到 DDG 不通，与请求头 / 202 挑战页无关。本机直连与另一云端出口实测均 200 + 10 条真结果，Render singapore 出口 4 发全 ConnectTimeout | 默认已自动经公共 Reader 中转换出口（`SERP_FALLBACK_READER=1`，取回原始 DDG HTML，口径一致）；仍失败再配 `SERP_HTTPS_PROXY` 自备代理，或把 `region` 换区重建。★11-13 起源级故障**不再中止整批**：本批跳过 SERP、LLM 照常出结论并回写状态，`items[].notice` 会标「SERP 未取到」（缺辨形线索），返回里 `serpDisabled=true`。4 发已轮换 4 个不同域名 / IP，仍全挂就别再调请求头了 |
 | `duckduckgo 不可用：连续 N 发未返回可用结果` | **HTTP 层**：202 anomaly 挑战页。显式设置 `Accept` / `Accept-Language` / `Referer` 任意一个都会触发 | `BASE_HEADERS` 必须只有 `User-Agent`；`test_fetch_serp_uses_only_user_agent` 是防回归测试，别把「更像浏览器」的头加回来 |
 
-### 6.1 热词并发写入与状态回填（2026-11-13）
+### 6.1 热词逐词写入与状态回填（2026-11-19）
 
-- 20 条热词由 4 个 worker 并发分析。`saved` / `rejected` / `aihints` / `competition` /
+- 20 条热词由独立循环图（`hotword_loop.py`）**一次一词串行分析**（原 4 worker 并发已于
+  2026-11-19 改为 StateGraph 条件边回环）。`saved` / `rejected` / `aihints` / `competition` /
   `interests` 这 5 张**整表**的「读 → 改 → 写 → 校验返回值」统一走
-  `adapters/cloudflare/keyvalue.py:atomic_update()` 的一把进程级 `threading.RLock`，不会互相覆盖。
+  `adapters/cloudflare/kv.py:atomic_update()` 的一把进程级 `threading.RLock`，不会互相覆盖。
   ★只保证单进程：Cloudflare KV 无 CAS 且最终一致，多实例 / console 人工同时写仍可能
   丢更新，靠下面的 error + 回填兜底。
 - 每次 `put_text` / `put_json` 都检查返回值，失败写进 `items[].error` + `writeErrors`，

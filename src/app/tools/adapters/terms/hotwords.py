@@ -11,11 +11,13 @@ google-trend-radar 的 /api/*。它直接读写三方共用的共享 KV（Cloudf
 ★2026-11-19 三层拆分（原单文件 686 行 → 门面 + 三层）：
     hotword_fetch.py    外部取数：SERP / Trends 读缓存 → 现抓 → 写回 + 全局节流。
     hotword_worker.py   单词编排：补数据 → LLM → 结论判定 → 回写状态（失败隔离到单词）。
-    hotword_batch.py    批次编排：候选筛选 → 并发逐词 → 汇总 + 批次 trace 根。
+    hotword_batch.py    批次入口：候选筛选规则 + 批次 trace 外壳 + 对外契约。
+    hotword_loop.py     逐词循环图：独立 StateGraph 条件边回环（fetch_one → analyze_one
+                        → should_continue 回环），替代原 ThreadPoolExecutor 并发批处理。
   另有既存四层（2026-11-17 拆）：hotword_criteria（判据）/ hotword_llm（LLM 调用）/
   hotword_kv_io（写账本 + 容错读）/ hotword_backfill（状态回填）。
   下面把公开名字原样再导出——tests / runbook / api/routes.py 都按 hotwords.<name> 引用，
-  门面名不变。依赖单向：batch → worker → fetch → kv_io，门面只做再导出。
+  门面名不变。依赖单向：batch → loop → worker → fetch → kv_io，门面只做再导出。
 
 ★发给 LLM 的 system / user 模板唯一真源 = radar-rules D1 的 prompts 表（由 /rules/prompts
   页面维护，本地 versions/*.txt 已删），判据层只「拼数据」。
@@ -63,6 +65,12 @@ from .hotword_worker import (  # noqa: F401
 from .hotword_batch import (  # noqa: F401
     BATCH_WORKERS, BATCH_OK_MIN_RATE, BATCH_TRACE_NAME, WORD_TRACE_PREFIX,
     _select_pending, _batch_outputs, _trace_run_info, run_batch, _run_batch,
+)
+
+# ---- 逐词循环图层（独立 StateGraph 条件边回环，2026-11-19）----
+from .hotword_loop import (  # noqa: F401
+    HotwordLoopState, get_hotword_loop, summarize,
+    fetch_one, analyze_one, should_continue,
 )
 
 # ---- 状态回填（api/routes.py 经 hotwords.backfill_states 引用）----

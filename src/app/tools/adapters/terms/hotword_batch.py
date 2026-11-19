@@ -2,18 +2,21 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""热词分析的批次编排层：候选筛选 → 并发逐词分析 → 汇总 + 批次 trace 根。
+"""热词分析的批次入口：候选筛选规则 + 批次 trace 根 + 对外契约。
 
-拆分自 hotwords.py（2026-11-19 三层拆分）。本层只管「一批怎么调度」，单词内部
-（补数/LLM/回写）在 hotword_worker.py，取数在 hotword_fetch.py。graph 结构一个字不动。
+拆分自 hotwords.py（2026-11-19 三层拆分）。单词内部（补数/LLM/回写）在
+hotword_worker.py，取数在 hotword_fetch.py。
+
+★2026-11-19 循环图改造：逐词调度**不再是本文件的 ThreadPoolExecutor 并发**，
+  而是交给独立的 hotword_loop.py——一张 StateGraph 条件边回环图（fetch_one →
+  analyze_one → should_continue 回环）。本文件只保留：候选筛选规则 _select_pending、
+  对外 run_batch 外壳（批次 trace + traceRun 回链），执行体转交循环图。
 
 ★2026-11-13：不再有「整批中止」。每个词独立跑完并把自己的失败写进 items[].error；
   源级故障只把「取数」这一步降级（serpDisabled / trendsDisabled），其它词照常出结论。
-  整表写入都在 kv.atomic_update 的进程级 RLock 里完成，并发不会互相覆盖。
 
-★trace：整批一条 span（自动挂到 LangGraph 根下），每个词一条子 span，词里的
-  ChatOpenAI 再挂在词 span 下 —— Traces 页面展开一条就能看完 20 个词，而不是
-  散落 20 条孤立根 run。父 run 显式传，绕开 worker 线程的 contextvars 丢失。
+★trace：整批一条 span（run_batch 外壳），每个词一条子 span（循环图的 analyze_one
+  节点里创建），词里的 ChatOpenAI 再挂在词 span 下。批次 run 经 state 显式传给图。
 """
 
 from __future__ import annotations
@@ -21,26 +24,24 @@ from __future__ import annotations
 import logging
 import uuid
 import time
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
 from src.app.config import settings
-from src.app.enums import Verdict
-from src.app.observability.langsmith import run_traced, trace_tool
+from src.app.observability.langsmith import run_traced
 
 from src.app.tools.adapters.cloudflare.kv import (
     CloudflareKV, get_kv, term_key,
     AI_CACHE_PREFIX, SAVED_KEY, REJECTED_KEY, TAGS_KEY,
 )
 from .hotword_kv_io import _kv_list, _kv_dict
-from .hotword_criteria import pick_examples
-from .hotword_worker import (
-    _analyze_one, _BatchAbort, _word_outputs, _word_error, TOOL_TRACE_PREFIX,
-)
+from .hotword_worker import _BatchAbort, TOOL_TRACE_PREFIX
+from .hotword_loop import HotwordLoopState, get_hotword_loop, summarize
 
 log = logging.getLogger(__name__)
 
-BATCH_WORKERS = 4           # 20 条逐条分析，并发压住外部 LLM 超时
+# 保留为契约常量：循环图改串行，门面/测试仍按 hw.BATCH_WORKERS 取「本批最大在飞」语义，
+# 现在它只表示「一次循环图的并发度=1 的上界」，值不变以免测试断言（calls<=4）失效。
+BATCH_WORKERS = 4
 BATCH_OK_MIN_RATE = 0.5     # 整批成功判定：成功率低于此值即视为失败（不再「1 条成功就算成功」）
 
 BATCH_TRACE_NAME = "site-agent:hotword-batch"
@@ -125,15 +126,18 @@ def _trace_run_info(run, batch_id: str) -> dict[str, Any]:
 
 def run_batch(limit: int = 20, kv: Optional[CloudflareKV] = None,
               prompt_version: Optional[str] = None) -> dict[str, Any]:
-    """读 KV 候选池 → 并发逐条分析 → 汇总。KV 不可达时整批失败，不写任何状态。
+    """读 KV 候选池 → 逐词分析（循环图驱动）→ 汇总。KV 不可达时整批失败，不写状态。
 
-    ★2026-11-13：不再有「整批中止」。每个词独立跑完并把自己的失败写进 items[].error；
+    ★2026-11-19：逐词调度交给 hotword_loop.py 的独立 StateGraph 条件边回环图，
+      一次一词、串行推进，limit 即最大循环数；不再有 ThreadPoolExecutor 并发分块。
+
+    ★不再有「整批中止」。每个词独立跑完并把自己的失败写进 items[].error；
       源级故障只把「取数」这一步降级（serpDisabled / trendsDisabled），其它词照常出结论。
-      整表写入都在 kv.atomic_update 的进程级 RLock 里完成，并发不会互相覆盖。
+      整表写入都在 kv.atomic_update 的进程级 RLock 里完成。
 
-    ★trace：整批一条 span（自动挂到 LangGraph 根下），每个词一条子 span，词里的
-      ChatOpenAI 再挂在词 span 下 —— Traces 页面展开一条就能看完 20 个词，而不是
-      散落 20 条孤立根 run。父 run 显式传，绕开 worker 线程的 contextvars 丢失。
+    ★trace：整批一条 span（本函数外壳），每个词一条子 span（循环图 analyze_one 节点），
+      词里的 ChatOpenAI 再挂在词 span 下 —— Traces 页面展开一条就能看完 20 个词。
+      批次 run 经 state 显式传给图。
     """
     batch_id = f"hotwords-{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}"
 
@@ -160,112 +164,31 @@ def run_batch(limit: int = 20, kv: Optional[CloudflareKV] = None,
 
 def _run_batch(limit: int, kv: Optional[CloudflareKV], batch_run,
                batch_id: str, prompt_version: Optional[str] = None) -> dict[str, Any]:
-    """run_batch 的执行体；batch_run 是逐词 span 的显式父 run（关闭追踪时为 None）。"""
+    """run_batch 的执行体：构造循环图 initial state → invoke → 聚合回对外结构。
+
+    batch_run 是批次 span 的 run，经 state 显式传给图里每个节点（每词 span 的父）。
+    逐词循环、limit 封顶、候选/判例读取全部在 hotword_loop.py 的图里完成；
+    本函数不写任何 while/for 调度，只做一次 invoke。
+    """
     kv = kv or get_kv()
     limit = max(1, min(int(limit or 20), 50))
-    try:
-        # 候选池读取也是一次 IO：KV 挂了/形状漂移会在 tool:kv.read-candidates 上标红，
-        # 正常时能看到「筛出哪几个词」，不用再去翻日志猜为什么这批跑空了。
-        items = trace_tool(
-            lambda: _select_pending(kv, limit),
-            name=TOOL_TRACE_PREFIX + "kv.read-candidates",
-            parent=batch_run,
-            inputs={"limit": limit,
-                    "keys": ["candidates", SAVED_KEY, REJECTED_KEY, TAGS_KEY,
-                             AI_CACHE_PREFIX]},
-            tags=["site-agent", "hotword-tool"],
-            metadata={"batch_id": batch_id, "component": "analyze_hotwords"},
-            outputs=lambda res: {
-                "selected": len(res),
-                "terms": [x.get("term", "") for x in res],
-                "keys": [x.get("key", "") for x in res],
-            },
-        )
-    except Exception as exc:  # noqa: BLE001
-        log.warning("候选池读取失败：%s", exc)
-        return {"ok": False, "error": "候选池读取失败：" + str(exc)[:200],
-                "items": [], "fetched": 0, "analyzed": 0, "failed": 0, "counts": {}}
+    resolved_version = (prompt_version
+                        or (settings.default_prompt_versions or {}).get("hotwords", "v1"))
 
-    if not items:
-        return {"ok": True, "items": [], "fetched": 0, "analyzed": 0,
-                "failed": 0, "counts": {}, "note": "没有未跟进且未分析过的候选词"}
-
-    # 判例反馈：整批只读一次 rejected，筛出人工判例喂给每个词。
-    # ★失败只降级掉判例（examples=[]），不让整批分析因为这张表而挂掉。
-    examples: list[dict[str, str]] = []
-    try:
-        rejected_rows = trace_tool(
-            lambda: _kv_list(kv, REJECTED_KEY),
-            name=TOOL_TRACE_PREFIX + "kv.read-examples",
-            parent=batch_run,
-            inputs={"key": REJECTED_KEY},
-            tags=["site-agent", "hotword-tool"],
-            metadata={"batch_id": batch_id, "component": "analyze_hotwords"},
-            outputs=lambda res: {"rejected": len(res) if isinstance(res, list) else 0},
-        )
-        examples = pick_examples(rejected_rows)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("判例读取失败，本批不带判例继续：%s", str(exc)[:120])
-
-    state = _BatchAbort()
-
-    def work(pair: tuple[int, dict[str, Any]]) -> dict[str, Any]:
-        idx, item = pair
-        term = str(item.get("term") or "").strip()
-        key = term_key(item.get("key") or term)
-        return run_traced(
-            # ★pass_run：把本词 span 的 run 交给 _analyze_one，让它成为该词所有
-            #   tool:* 子 span 的显式父（worker 线程拿不到主线程的 contextvar）。
-            lambda word_run: _analyze_one(item, kv, state, word_run, prompt_version, examples),
-            name=WORD_TRACE_PREFIX + (term or key)[:60],
-            parent=batch_run,          # ★显式父：worker 线程没有主线程的 contextvar
-            inputs={"term": term, "key": key, "index": idx},
-            tags=["site-agent", "hotword"],
-            metadata={
-                "batch_id": batch_id,
-                # 整批共用一个 thread_id：Threads 视图也聚成一条，不把 20 个词拆散。
-                "thread_id": batch_id,
-                # 每词独立标识；要单独看某个词，按 word_id 检索即可。
-                "word_id": f"{batch_id}/{idx}/{key}",
-                "term": term, "key": key, "index": idx,
-            },
-            outputs=_word_outputs,
-            error=_word_error,
-            pass_run=True,
-        )
-
-    results: list[dict[str, Any]] = []
-    # 按 chunk 提交：一次最多 BATCH_WORKERS 条在飞，外部 LLM/SERP 超时不会把 20 条全排进队列。
-    with ThreadPoolExecutor(max_workers=BATCH_WORKERS) as pool:
-        for i in range(0, len(items), BATCH_WORKERS):
-            chunk = list(enumerate(items[i:i + BATCH_WORKERS], start=i))
-            results.extend(pool.map(work, chunk))
-
-    counts: dict[str, int] = {}
-    for r in results:
-        key = r["verdict"] or Verdict.UNDECIDED.value
-        counts[key] = counts.get(key, 0) + 1
-    analyzed = sum(1 for r in results if not r["error"])
-    failed = len(results) - analyzed
-    # 整批口径按成功率判定，并把比例一并回传，前端可直接展示。
-    rate = analyzed / len(results) if results else 0.0
-    out = {
-        "ok": rate >= BATCH_OK_MIN_RATE,
-        "fetched": len(items),
-        "analyzed": analyzed,
-        "failed": failed,
-        "successRate": round(rate, 3),
-        "counts": counts,
-        "items": results,
-        "serpDisabled": state.serp_off,
-        "trendsDisabled": state.trends_off,
-        "llmFailures": state.llm_failures,
+    initial: HotwordLoopState = {
+        "limit": limit,
+        "kv": kv,
+        "prompt_version": resolved_version,
+        "batch_run": batch_run,
+        "batch_id": batch_id,
+        "abort": _BatchAbort(),
+        "loaded": False,
+        "queue": [],
+        "cursor": 0,
+        "results": [],
+        "loop_count": 0,
+        "current_index": 0,
+        "examples": [],
     }
-    degraded = []
-    if state.serp_off:
-        degraded.append("SERP 源不可用，本批已跳过 SERP（结论缺少辨形线索）")
-    if state.trends_off:
-        degraded.append("趋势源不可用，本批已禁用趋势")
-    if degraded:
-        out["note"] = "；".join(degraded) + "；其余词仍照常分析并回写"
-    return out
+    final = get_hotword_loop().invoke(initial)
+    return summarize(final)

@@ -10,13 +10,15 @@
     hotwords.py          热词分析门面：只做再导出，保持 hotwords.<name> 引用不变。
     hotword_fetch.py     取数层：SERP / Trends 读缓存 → 现抓 → 写回 + 全局节流。
     hotword_worker.py    单词层：补数据 → LLM → 结论判定 → 回写状态（失败隔离到单词）。
-    hotword_batch.py     批次层：候选筛选 → 并发逐词 → 汇总 + 批次 trace 根。
+    hotword_batch.py     批次入口：候选筛选规则 + 批次 trace 外壳 + 对外契约。
+    hotword_loop.py      逐词循环图：独立 StateGraph 条件边回环（fetch_one → analyze_one
+                         → should_continue 回环），串行逐词，替代原 ThreadPoolExecutor。
     hotword_criteria.py  纯判据：提示词拼装、结论/红线/信号标签解析（无 IO）。
     hotword_llm.py       LLM 调用与空正文诊断。
     hotword_kv_io.py     KV 写账本（_WriteLog）+ 形状兜底读取。
     hotword_backfill.py  状态回填 backfill_states。
 
-依赖单向：batch → worker → fetch → kv_io；门面只再导出，不承载逻辑。
+依赖单向：batch → loop → worker → fetch → kv_io；门面只再导出，不承载逻辑。
 
 外部取数：
     gsc.py / reddit.py / scrape_serp.py / scrape_trend.py
