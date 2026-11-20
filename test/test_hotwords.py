@@ -12,8 +12,8 @@ run_batch 经共享 KV 的端到端写回（不碰 console / radar / OpenAI / DD
 import pytest
 
 from src.app.tools.adapters.terms import hotwords as hw
-from src.app.tools.adapters.terms import hotword_llm
-from src.app.services.tool_service import INTENT_TOOLS, tool_service
+from src.app.tools.adapters.terms import hotword_batch, hotword_llm
+from src.app.services.tool_service import INTENT_TOOLS
 from src.app.tools.registry import tool_registry
 
 
@@ -188,7 +188,7 @@ def test_run_batch_writes_kv(fake_kv, monkeypatch):
     _seed_candidates(fake_kv)
     _patch_external(monkeypatch)
 
-    out = hw.run_batch(limit=20, kv=fake_kv)
+    out = hw.run_batch(limit=20)
     assert out["ok"] is True
     assert out["fetched"] == 2 and out["analyzed"] == 2
     assert out["counts"].get("做") == 1 and out["counts"].get("不做") == 1
@@ -229,7 +229,7 @@ def test_run_batch_serp_source_down_only_skips_serp(fake_kv, monkeypatch):
     monkeypatch.setattr(hw.scrape_serp, "fetch_serp", boom)
     monkeypatch.setattr(hotword_llm, "_llm", lambda m: ("7) 结论：观望", "fake"))
 
-    out = hw.run_batch(limit=20, kv=fake_kv)
+    out = hw.run_batch(limit=20)
 
     assert not out.get("aborted")            # 没有「整批中止」这回事了
     assert out["serpDisabled"] is True
@@ -257,7 +257,7 @@ def test_run_batch_skips_serp_but_still_writes_states(fake_kv, monkeypatch):
     monkeypatch.setattr(hw.scrape_serp, "fetch_serp", boom)
     monkeypatch.setattr(hotword_llm, "_llm", lambda m: ("7) 结论：做，工具站\n8) 信号标签：工具查询", "fake"))
 
-    out = hw.run_batch(limit=20, kv=fake_kv)
+    out = hw.run_batch(limit=20)
 
     assert not out.get("aborted")
     assert out["analyzed"] == 5
@@ -283,7 +283,7 @@ def test_run_batch_keeps_going_when_trends_down(fake_kv, monkeypatch):
     monkeypatch.setattr(hw.scrape_trend, "fetch_interest", trends_down)
     monkeypatch.setattr(hotword_llm, "_llm", lambda m: ("7) 结论：观望", "fake"))
 
-    out = hw.run_batch(limit=20, kv=fake_kv)
+    out = hw.run_batch(limit=20)
 
     assert not out.get("aborted")
     assert out["fetched"] == 5
@@ -312,7 +312,7 @@ def test_run_batch_llm_failures_are_word_local(fake_kv, monkeypatch):
 
     monkeypatch.setattr(hotword_llm, "_llm", llm)
 
-    out = hw.run_batch(limit=20, kv=fake_kv)
+    out = hw.run_batch(limit=20)
 
     assert not out.get("aborted")
     assert out["llmFailures"] == 1
@@ -323,7 +323,7 @@ def test_run_batch_llm_failures_are_word_local(fake_kv, monkeypatch):
 
 
 def test_run_batch_no_candidates(fake_kv):
-    out = hw.run_batch(limit=20, kv=fake_kv)
+    out = hw.run_batch(limit=20)
     assert out["ok"] is True and out["fetched"] == 0
     assert "没有未跟进" in (out.get("note") or "")
 
@@ -454,7 +454,7 @@ def test_analyze_one_error_matches_real_cause(fake_kv, monkeypatch):
         raise hw.LLMEmptyContent("LLM 返回空正文：输出预算耗尽；finish_reason=length", diag)
 
     monkeypatch.setattr(hotword_llm, "_llm", fake_llm)
-    out = hw.run_batch(limit=1, kv=fake_kv)
+    out = hw.run_batch(limit=1)
     item = out["items"][0]
     assert "预算耗尽" in item["error"]
     assert "LLM_API_KEY 未配置" not in item["error"]
@@ -510,7 +510,7 @@ def test_run_batch_ok_requires_success_rate(fake_kv, monkeypatch):
 
     monkeypatch.setattr(hotword_llm, "_llm", one_success)
 
-    out = hw.run_batch(limit=20, kv=fake_kv)
+    out = hw.run_batch(limit=20)
     assert out["analyzed"] == 1 and out["failed"] == 3
     assert out["successRate"] == 0.25
     assert out["ok"] is False   # 旧口径 ok>0 会错报 True
@@ -558,7 +558,8 @@ def test_run_batch_kv_unreachable_returns_error(fake_kv, monkeypatch):
     class BoomKV:
         def get_json(self, *a, **k):
             raise RuntimeError("unreachable")
-    out = hw.run_batch(limit=20, kv=BoomKV())
+    monkeypatch.setattr(hotword_batch, "get_kv", lambda: BoomKV())
+    out = hw.run_batch(limit=20)
     assert out["ok"] is False and "候选池读取失败" in out["error"]
     assert out["fetched"] == 0  # 没读到候选，不写任何状态
 
@@ -586,7 +587,7 @@ def test_status_table_write_failure_marks_error_and_is_backfillable(fake_kv, mon
                         lambda m: ("7) 结论：做，工具站\n8) 信号标签：工具查询", "fake"))
     fake_kv.fail_keys.add(hw.SAVED_KEY)
 
-    out = hw.run_batch(limit=1, kv=fake_kv)
+    out = hw.run_batch(limit=1)
     item = out["items"][0]
     assert "KV 写入失败" in item["error"] and hw.SAVED_KEY in item["writeErrors"]
     assert out["analyzed"] == 0
@@ -595,12 +596,12 @@ def test_status_table_write_failure_marks_error_and_is_backfillable(fake_kv, mon
 
     # 模拟瞬时故障恢复后跑回填
     fake_kv.fail_keys.clear()
-    dry = hw.backfill_states(kv=fake_kv, dry_run=True)
+    dry = hw.backfill_states(dry_run=True)
     assert dry["dryRun"] is True and dry["repaired"] == 0
     assert any(i["key"] == hw.term_key(term) and i["action"] == "preview" for i in dry["items"])
     assert fake_kv.get_json("saved", []) == []
 
-    rep = hw.backfill_states(kv=fake_kv)
+    rep = hw.backfill_states()
     assert rep["ok"] is True and rep["repaired"] == 1
     saved = fake_kv.get_json("saved", [])
     assert any(x["key"] == hw.term_key(term) and x["status"] == "todo" for x in saved)
@@ -616,7 +617,7 @@ def test_body_write_failure_never_writes_state(fake_kv, monkeypatch):
                         lambda m: ("7) 结论：做，工具站\n8) 信号标签：工具查询", "fake"))
     fake_kv.fail_keys.add(key)
 
-    out = hw.run_batch(limit=1, kv=fake_kv)
+    out = hw.run_batch(limit=1)
     assert "KV 写入失败" in out["items"][0]["error"]
     assert out["analyzed"] == 0
     assert fake_kv.get_json("saved", []) == []
@@ -656,7 +657,7 @@ def test_concurrent_table_updates_do_not_lose_rows(fake_kv, monkeypatch):
         return (f"7) 结论：{'做' if do_it else '不做'}，工具站\n8) 信号标签：工具查询", "fake")
 
     monkeypatch.setattr(hotword_llm, "_llm", llm)
-    out = hw.run_batch(limit=20, kv=fake_kv)
+    out = hw.run_batch(limit=20)
 
     assert out["analyzed"] == n
     assert len(fake_kv.list_keys(hw.AI_CACHE_PREFIX)) == n
@@ -672,13 +673,13 @@ def test_backfill_states_dry_run_and_unresolved(fake_kv):
     fake_kv.put_text("ai:v3:bar", "7) 结论：观望，等长尾\n8) 信号标签：无")
     fake_kv.put_text("ai:v3:baz", "没有结论小节的乱码")
 
-    dry = hw.backfill_states(kv=fake_kv, dry_run=True)
+    dry = hw.backfill_states(dry_run=True)
     assert dry["dryRun"] is True and dry["scanned"] == 3
     assert fake_kv.get_json("rejected", []) == []
     assert any(i["key"] == "foo" and i["action"] == "preview" for i in dry["items"])
     assert any(i["key"] == "baz" and i["action"] == "unresolved" for i in dry["items"])
 
-    rep = hw.backfill_states(kv=fake_kv)
+    rep = hw.backfill_states()
     assert rep["ok"] is True and rep["repaired"] == 1
     assert any(x["key"] == "foo" and x["source"] == "ai"
                for x in fake_kv.get_json("rejected", []))
@@ -690,7 +691,7 @@ def test_backfill_states_skips_already_curated(fake_kv):
     """已整理 / 人工打标的词不能被回填改写，重复跑也要幂等。"""
     fake_kv.put_text("ai:v3:foo", "7) 结论：不做，真人姓名\n8) 信号标签：工具查询")
     fake_kv.put_json("saved", [{"key": "foo", "term": "foo", "status": "wip"}])
-    rep = hw.backfill_states(kv=fake_kv)
+    rep = hw.backfill_states()
     assert rep["repaired"] == 0 and rep["hintsRepaired"] == 1
     assert fake_kv.get_json("saved", [])[0]["status"] == "wip"
     assert fake_kv.get_json("rejected", []) == []

@@ -99,12 +99,13 @@ migrations/0001_agent_tables.sql  D1 台账表
 
 1. 依赖单向：`api → graph → nodes → services → tools → adapters`；
    **tools 不依赖 services**，`tools/base.py` 只依赖标准库与 pydantic，
-   工具层没有函数内 import。入口层（`main.py`）与批次外壳也不再靠函数内 import 解环：
-   后台图装配下沉到只依赖 `hotword_loop` 的 `graph/hotword_graph.py` 叶子模块，`builder.py`
-   re-export 保持两图统一门面。三条都由 `test/test_architecture.py` 守着。
+   工具层、入口层（`main.py`）与批次外壳都没有函数内 import：后台图装配下沉到
+   只依赖 `hotword_loop` 的 `graph/hotword_graph.py` 叶子模块，`builder.py` re-export
+   保持两图统一门面。全仓再守一条：包内 `src.app.*` 依赖一律顶层声明（第三方 SDK
+   按需加载除外）。四条都由 `test/test_architecture.py` 守着。
    `src.app.enums` 是零依赖纯数据模块，是唯一被放行给 base/sql 叶子引用的包内模块。
 2. 门面靠构造注入：`RuntimeService` 在 `registry.py` 组装后注入 26 个工具，
-   测试用 `tool_registry.bind(FakeRuntime())` 整体替换。
+   外部可通过 `tool_registry.bind(...)` 整体换门面。
 3. 站点信息只在 `config/sites.json`；域名只在 `FLEET_DOMAIN`。
 4. SQL 只在 `tools/adapters/cloudflare/sql.py`；表名列名只来自白名单契约。
 5. **枚举值只在 `src/app/enums.py`**（29 个 `StrEnum` 族，逐值注释含义）。

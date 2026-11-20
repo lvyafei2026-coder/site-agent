@@ -232,8 +232,15 @@ class FakeKV:
 
 
 @pytest.fixture
-def fake_kv():
-    return FakeKV()
+def fake_kv(monkeypatch):
+    """内存 KV 替身：生产函数一律自己取 get_kv()，测试只替换取数点。"""
+    from src.app.tools.adapters.cloudflare import kv as kvmod
+    from src.app.tools.adapters.terms import curation, hotword_backfill, hotword_batch
+
+    fake = FakeKV()
+    for mod in (kvmod, curation, hotword_backfill, hotword_batch):
+        monkeypatch.setattr(mod, "get_kv", lambda: fake)
+    return fake
 
 
 @pytest.fixture
@@ -325,8 +332,8 @@ def fake_prompt_store(monkeypatch):
 
     monkeypatch.setattr(D1PromptStore, "configured", staticmethod(lambda: True))
     monkeypatch.setattr(prompt_store, "_fetcher", fetch)
-    prompt_store.clear()
+    prompt_store._cache = None
     hw._prompt_pair.cache_clear()
     yield
-    prompt_store.clear()
+    prompt_store._cache = None
     hw._prompt_pair.cache_clear()

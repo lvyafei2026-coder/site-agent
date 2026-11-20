@@ -4,7 +4,7 @@
 
 """提示词 D1 数据源回归（2026-11-17 迁移）：D1 优先 / 缓存 / 失败降级 / 默认版本。
 
-不碰网络：注入 fake fetcher；配置开关用 monkeypatch 改 configured。
+不碰网络：测试把 store 的取数函数换成桩；配置开关用 monkeypatch 改 configured。
 本地 versions/*.txt 已删除：D1 读不到且无旧快照时注册表抛错（不再回退文件）。
 """
 
@@ -29,7 +29,8 @@ FAKE_DATA = {
 }
 
 
-def make_store(data, *, ttl=60):
+def make_store(monkeypatch, data, *, ttl=60):
+    """生产 store 固定读 D1；测试把取数函数和 TTL 直接换成桩。"""
     calls = {"n": 0}
 
     def fetch(account, token, db):
@@ -38,11 +39,14 @@ def make_store(data, *, ttl=60):
             raise data
         return data
 
-    return D1PromptStore(fetcher=fetch, ttl=ttl), calls
+    store = D1PromptStore()
+    monkeypatch.setattr(store, "_fetcher", fetch)
+    monkeypatch.setattr(store, "_ttl", ttl)
+    return store, calls
 
 
 def test_d1_content_and_default_version(monkeypatch):
-    store, _ = make_store(FAKE_DATA)
+    store, _ = make_store(monkeypatch, FAKE_DATA)
     monkeypatch.setattr(D1PromptStore, "configured", staticmethod(lambda: True))
     assert store.load("hotwords", "v2") == "D1 系统提示词 v2"      # 去首尾空白
     assert store.load("hotwords", "v999") is None                  # D1 无此版本
@@ -53,18 +57,18 @@ def test_d1_content_and_default_version(monkeypatch):
 
 
 def test_cache_one_fetch_per_ttl(monkeypatch):
-    store, calls = make_store(FAKE_DATA, ttl=60)
+    store, calls = make_store(monkeypatch, FAKE_DATA, ttl=60)
     monkeypatch.setattr(D1PromptStore, "configured", staticmethod(lambda: True))
     for _ in range(5):
         store.load("hotwords", "v2")
     assert calls["n"] == 1, f"60s 内应只拉一次全表，实际 {calls['n']} 次"
-    store.clear()
+    store._cache = None
     store.load("hotwords", "v2")
-    assert calls["n"] == 2, "clear() 后应重新拉取"
+    assert calls["n"] == 2, "清空缓存后应重新拉取"
 
 
 def test_ttl_expiry_refetches(monkeypatch):
-    store, calls = make_store(FAKE_DATA, ttl=0)
+    store, calls = make_store(monkeypatch, FAKE_DATA, ttl=0)
     monkeypatch.setattr(D1PromptStore, "configured", staticmethod(lambda: True))
     store.load("hotwords", "v2")
     store.load("hotwords", "v2")
@@ -81,7 +85,8 @@ def test_stale_on_error_then_empty(monkeypatch):
             raise RuntimeError("D1 down")
         return FAKE_DATA
 
-    store = D1PromptStore(fetcher=flaky)
+    store = D1PromptStore()
+    monkeypatch.setattr(store, "_fetcher", flaky)
     monkeypatch.setattr(D1PromptStore, "configured", staticmethod(lambda: True))
     assert store.load("hotwords", "v2") == "D1 系统提示词 v2"
     # 让缓存过期
@@ -90,13 +95,13 @@ def test_stale_on_error_then_empty(monkeypatch):
     assert calls["n"] == 2
 
     # 从未成功过 + 失败 → 空，注册表据此抛错
-    empty, _ = make_store(RuntimeError("D1 never up"))
+    empty, _ = make_store(monkeypatch, RuntimeError("D1 never up"))
     assert empty.load("hotwords", "v2") is None
     assert empty.resolve_version("hotwords", "v1") == "v1"
 
 
 def test_not_configured_never_touches_fetch(monkeypatch):
-    store, calls = make_store(FAKE_DATA)
+    store, calls = make_store(monkeypatch, FAKE_DATA)
     monkeypatch.setattr(D1PromptStore, "configured", staticmethod(lambda: False))
     assert store.load("hotwords", "v2") is None
     assert store.resolve_version("hotwords", "v1") == "v1"
@@ -105,7 +110,7 @@ def test_not_configured_never_touches_fetch(monkeypatch):
 
 
 def test_registry_prefers_d1(monkeypatch):
-    store, _ = make_store(FAKE_DATA)
+    store, _ = make_store(monkeypatch, FAKE_DATA)
     monkeypatch.setattr("src.app.prompts.registry.prompt_store", store)
     monkeypatch.setattr(D1PromptStore, "configured", staticmethod(lambda: True))
     reg = PromptRegistry()
@@ -114,7 +119,7 @@ def test_registry_prefers_d1(monkeypatch):
 
 
 def test_registry_missing_version_falls_back_to_default(monkeypatch):
-    store, _ = make_store(FAKE_DATA)
+    store, _ = make_store(monkeypatch, FAKE_DATA)
     monkeypatch.setattr("src.app.prompts.registry.prompt_store", store)
     monkeypatch.setattr(D1PromptStore, "configured", staticmethod(lambda: True))
     reg = PromptRegistry()
@@ -124,7 +129,7 @@ def test_registry_missing_version_falls_back_to_default(monkeypatch):
 
 def test_registry_raises_when_d1_has_nothing(monkeypatch):
     """D1 空且无旧快照 → 明确抛错，不再静默降级（避免空提示词让 LLM 乱答）。"""
-    store, _ = make_store({"prompts": [], "defaults": []})
+    store, _ = make_store(monkeypatch, {"prompts": [], "defaults": []})
     monkeypatch.setattr("src.app.prompts.registry.prompt_store", store)
     monkeypatch.setattr(D1PromptStore, "configured", staticmethod(lambda: True))
     reg = PromptRegistry()
@@ -133,7 +138,7 @@ def test_registry_raises_when_d1_has_nothing(monkeypatch):
 
 
 def test_registry_default_version_from_d1(monkeypatch):
-    store, _ = make_store(FAKE_DATA)
+    store, _ = make_store(monkeypatch, FAKE_DATA)
     monkeypatch.setattr("src.app.prompts.registry.prompt_store", store)
     monkeypatch.setattr(D1PromptStore, "configured", staticmethod(lambda: True))
     reg = PromptRegistry()

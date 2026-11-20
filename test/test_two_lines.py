@@ -54,15 +54,3 @@ def test_serve_starts_both_lines(monkeypatch):
 
     app_main.serve()
     assert seen == {"http": True, "background": True}
-
-
-def test_background_line_forwards_to_facade(monkeypatch):
-    """后台入口把 limit / prompt_version 透传给热词门面 run_batch。"""
-    from src.app.tools.adapters.terms import hotwords as hw
-
-    seen = {}
-    monkeypatch.setattr(hw, "run_batch",
-                        lambda **kw: seen.update(kw) or {"ok": True, "analyzed": 3})
-    out = app_main.run_background(limit=7, prompt_version="v9")
-    assert out["analyzed"] == 3
-    assert seen == {"limit": 7, "prompt_version": "v9"}

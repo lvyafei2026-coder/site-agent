@@ -10,7 +10,7 @@
 响应体都以 ")]}'\n\n" 开头；explore 是 JSON，csv 是 CSV。
 
 纯函数（strip_xssi / find_timeseries_widget / parse_interest_csv / summarize_interest）
-不碰网络，单测直接喂文本。fetch_interest 是网络层，session 可注入。
+不碰网络。fetch_interest 是网络层，走 requests.Session 保持跨请求 Cookie。
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import urllib.parse as up
 from typing import Any, Optional
 
 import requests
@@ -105,16 +106,15 @@ def summarize_interest(points: list[dict]) -> Optional[dict]:
     return {"avg": avg, "max": mx, "last": last, "delta": delta, "direction": direction}
 
 
-def fetch_interest(term: str, session: Optional[Any] = None, geo: str = "") -> dict[str, Any]:
-    """抓 30 天逐日兴趣度。session 可注入（测试用）。
+def fetch_interest(term: str, geo: str = "") -> dict[str, Any]:
+    """抓 30 天逐日兴趣度。
 
     返回 {points, summary, attempts}；失败抛异常（带 attempts）。
     """
-    import urllib.parse as up
     keyword = str(term or "").strip()
     if not keyword:
         raise ValueError("term required")
-    sess = session or requests.Session()
+    sess = requests.Session()
     attempts: list[dict] = []
     last_note = ""
 

@@ -64,21 +64,24 @@ def test_load_sites_defaults_and_duplicate_guard(tmp_path):
         load_sites(path)
 
 
-def test_checkpointer_memory():
-    saver = get_checkpointer(backend="memory")
+def test_checkpointer_memory(monkeypatch):
+    monkeypatch.setattr(settings, "memory_backend", "memory")
+    saver = get_checkpointer()
     assert type(saver).__name__ in ("MemorySaver", "InMemorySaver")
 
 
-def test_checkpointer_sqlite_is_a_saver_not_a_context_manager(tmp_path):
+def test_checkpointer_sqlite_is_a_saver_not_a_context_manager(tmp_path, monkeypatch):
     # from_conn_string 返回上下文管理器，直接交给 compile 会在首次写入时炸
-    saver = get_checkpointer(backend="sqlite",
-                             database_url=f"sqlite:///{tmp_path / 'agent.db'}")
+    monkeypatch.setattr(settings, "memory_backend", "sqlite")
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'agent.db'}")
+    saver = get_checkpointer()
     assert hasattr(saver, "get_tuple")
 
 
-def test_checkpointer_rejects_unknown_backend():
+def test_checkpointer_rejects_unknown_backend(monkeypatch):
+    monkeypatch.setattr(settings, "memory_backend", "redis")
     with pytest.raises(ValueError):
-        get_checkpointer(backend="redis")
+        get_checkpointer()
 
 
 def test_workflow_state_is_typeddict():

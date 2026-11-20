@@ -38,16 +38,18 @@
 
 > **服务层可以依赖工具层，工具层绝不能依赖服务层。**
 
-工具层还要再守两条更细的：
+工具层还要再守三条更细的（全仓共四条）：
 
 1. `tools/base.py` 是包内叶子：只依赖标准库与 pydantic，不 import 任何 `src.app.*`。
 2. 没有函数内 `import` 解环：装配顺序由模块层级保证（`registry → *_tools → base`）。
    入口层与批次外壳同样如此——后台图装配下沉到只依赖 `hotword_loop` 的
    `graph/hotword_graph.py` 叶子模块，`builder.py` re-export，`hotword_batch.py` 顶层静态取图，
-   环从结构上消除而非靠延迟导入绕过。`adapters/` 例外——那是为可选依赖
-   （`google-api-python-client`）留的。
+   环从结构上消除而非靠延迟导入绕过。
+3. 全仓禁止函数内 `import src.app.*`：包内依赖一律在模块顶层声明。
+   `adapters/` 里第三方可选依赖（`google-api-python-client` / `langsmith` / `openai`）的
+   按需加载不在此列——那是零开销设计，不是拿延迟导入解加载期环。
 
-三条都由 `test/test_architecture.py` 用 AST 扫描守着，违反了先在测试里红，
+四条都由 `test/test_architecture.py` 用 AST 扫描守着，违反了先在测试里红，
 而不是部署后 `ModuleNotFoundError`。
 
 ## 3. 谁负责装配

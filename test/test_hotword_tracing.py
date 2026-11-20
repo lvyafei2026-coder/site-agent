@@ -25,7 +25,7 @@ from langsmith.run_trees import RunTree
 
 from src.app.config import settings
 from src.app.tools.adapters.terms import hotwords as hw
-from src.app.tools.adapters.terms import hotword_llm
+from src.app.tools.adapters.terms import hotword_batch, hotword_llm
 from src.app.tools.registry import tool_registry
 
 
@@ -87,7 +87,7 @@ def test_batch_tree_is_nested_under_graph_root(fake_kv, monkeypatch, traced_runs
     _seed(fake_kv, monkeypatch, count=6, llm=llm)
 
     with ls_trace("site-agent:analyze_hotwords") as root:
-        out = hw.run_batch(limit=6, kv=fake_kv)
+        out = hw.run_batch(limit=6)
 
     batch = next(r for r in traced_runs if r.name == hw.BATCH_TRACE_NAME)
     words = [r for r in traced_runs if r.name.startswith(hw.WORD_TRACE_PREFIX)]
@@ -126,7 +126,7 @@ def test_word_span_marks_business_error_without_breaking_others(fake_kv, monkeyp
     _seed(fake_kv, monkeypatch, count=5, llm=llm)
 
     with ls_trace("site-agent:analyze_hotwords") as root:
-        out = hw.run_batch(limit=5, kv=fake_kv)
+        out = hw.run_batch(limit=5)
 
     batch = next(r for r in traced_runs if r.name == hw.BATCH_TRACE_NAME)
     words = [r for r in traced_runs if r.name.startswith(hw.WORD_TRACE_PREFIX)]
@@ -159,7 +159,7 @@ def test_batch_nests_under_real_langgraph_node(fake_kv, monkeypatch, traced_runs
     def node(state: S) -> dict:
         current = run_helpers.get_current_run_tree()
         node_run_ids.append(str(current.id) if current else "")
-        return {"out": hw.run_batch(limit=3, kv=fake_kv)}
+        return {"out": hw.run_batch(limit=3)}
 
     graph = (StateGraph(S).add_node("analyze", node)
              .add_edge(START, "analyze").add_edge("analyze", END).compile())
@@ -181,8 +181,9 @@ def test_early_return_still_has_batch_span_and_link(monkeypatch, traced_runs):
         def get_json(self, *a, **k):
             raise RuntimeError("unreachable")
 
+    monkeypatch.setattr(hotword_batch, "get_kv", lambda: BoomKV())
     with ls_trace("site-agent:analyze_hotwords") as root:
-        out = hw.run_batch(limit=5, kv=BoomKV())
+        out = hw.run_batch(limit=5)
 
     batch = next(r for r in traced_runs if r.name == hw.BATCH_TRACE_NAME)
     assert str(batch.parent_run_id) == str(root.id)
@@ -197,7 +198,7 @@ def test_tracing_off_has_no_spans_and_plain_result(fake_kv, monkeypatch):
     monkeypatch.setattr(settings, "langsmith_api_key", "")
     _seed(fake_kv, monkeypatch, count=3)
 
-    out = hw.run_batch(limit=3, kv=fake_kv)
+    out = hw.run_batch(limit=3)
     assert out["analyzed"] == 3
     assert "traceRun" not in out
     assert run_helpers.get_current_run_tree() is None
@@ -214,7 +215,7 @@ def test_batch_tool_spans_capture_serp_trend_kv_io(fake_kv, monkeypatch, traced_
 
     _seed(fake_kv, monkeypatch, count=3, llm=llm)
     with ls_trace("site-agent:analyze_hotwords") as root:
-        out = hw.run_batch(limit=3, kv=fake_kv)
+        out = hw.run_batch(limit=3)
 
     batch = next(r for r in traced_runs if r.name == hw.BATCH_TRACE_NAME)
     words = [r for r in traced_runs if r.name.startswith(hw.WORD_TRACE_PREFIX)]
@@ -290,7 +291,7 @@ def test_source_down_marks_tool_spans_red_and_batch_continues(fake_kv, monkeypat
     monkeypatch.setattr(hw.scrape_trend, "fetch_interest", trend_boom)
 
     with ls_trace("site-agent:analyze_hotwords"):
-        out = hw.run_batch(limit=8, kv=fake_kv)
+        out = hw.run_batch(limit=8)
 
     serp_spans = [r for r in traced_runs if r.name == "tool:serp"]
     trend_spans = [r for r in traced_runs if r.name == "tool:trend"]
@@ -313,7 +314,7 @@ def test_kv_write_failure_is_visible_on_tool_span(fake_kv, monkeypatch, traced_r
     fake_kv.fail_keys.add(failed_key)
 
     with ls_trace("site-agent:analyze_hotwords"):
-        out = hw.run_batch(limit=1, kv=fake_kv)
+        out = hw.run_batch(limit=1)
 
     span = next(r for r in traced_runs if r.name == "tool:kv.write")
     assert span.outputs["stoppedAfterTextFailure"] is True

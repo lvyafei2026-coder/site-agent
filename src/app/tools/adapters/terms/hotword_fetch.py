@@ -6,7 +6,7 @@
 
 拆分自 hotwords.py（2026-11-19 三层拆分）。只负责「补数据」这一步，不碰判据、
 LLM 与结论回写（那些在 hotword_worker.py）。K/V 操作经 hotword_kv_io 的 _WriteLog，
-抓取经 scrape_serp / scrape_trend（模块引用，便于测试按模块 patch）。
+抓取经 scrape_serp / scrape_trend 的模块引用。
 
 ★源级不可用（连不上 / 被挑战页占满）原样抛 SourceUnavailable，由 worker 层的
   _analyze_one 只让本词跳过该源，不中止整批。

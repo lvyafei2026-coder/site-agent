@@ -13,8 +13,8 @@ txt 文件已删除。运行时只读 D1，/rules/prompts 页面改完最多 TTL
   - D1 查询失败：有旧快照就继续用旧的（stale-while-error），线上 LLM 调用不受瞬时
     抖动影响；没有任何快照时 load() 返回 None，由注册表抛明确错误（不再有本地文件
     兜底）。
-  - 未配 CF_ACCOUNT_ID / CF_API_TOKEN 时（本地开发 / 测试）完全不碰网络；测试通过
-    注入 fake fetcher / fake snapshot 提供提示词桩。
+  - 未配 CF_ACCOUNT_ID / CF_API_TOKEN 时（本地开发）完全不碰网络，注册表按
+    无快照处理并给出明确错误。
 
 数据库 id：默认雷达规则库 radar-rules（dca72fb2…，非 secret，已在 wrangler.toml 公开）；
 可用 PROMPTS_DB_ID 覆盖。CF_API_TOKEN 需要有该库的 D1 读权限。
@@ -24,21 +24,17 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any, Callable
+from typing import Any
 
 import requests
 
-from src.app.config import PROMPTS_DB_ID
+from src.app.config import PROMPTS_DB_ID, env
 from src.app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 API = "https://api.cloudflare.com/client/v4"
 TTL_SECONDS = 60
-
-# 注入点：测试传 fetcher 返回 {"prompts": [...], "defaults": [...]}，不碰网络。
-Fetcher = Callable[[str, str, str], dict[str, list[dict[str, Any]]]]
-
 
 def _http_fetch(account_id: str, api_token: str, database_id: str) -> dict[str, list[dict[str, Any]]]:
     url = f"{API}/accounts/{account_id}/d1/database/{database_id}/query"
@@ -59,24 +55,19 @@ def _http_fetch(account_id: str, api_token: str, database_id: str) -> dict[str, 
 
 
 class D1PromptStore:
-    """全表快照 + TTL 缓存。configurable 通过 fetcher 注入 fake 做单测。"""
+    """全表快照 + TTL 缓存：一次拉全表，60 秒内复用，失败退回旧快照。"""
 
-    def __init__(self, fetcher: Fetcher | None = None, ttl: int = TTL_SECONDS) -> None:
-        self._fetcher = fetcher or _http_fetch
-        self._ttl = ttl
+    def __init__(self) -> None:
+        self._fetcher = _http_fetch
+        self._ttl = TTL_SECONDS
         self._lock = threading.Lock()
         # (fetched_at, {(task, version): content}, {task: version})
         self._cache: tuple[float, dict[tuple[str, str], str], dict[str, str]] | None = None
 
     @staticmethod
     def configured() -> bool:
-        """有账号 + token 才走 D1；否则不发网络（本地开发 / 测试注入桩）。"""
-        from src.app.config import env
+        """有账号 + token 才走 D1；否则不发网络。"""
         return bool(env("CF_ACCOUNT_ID") and env("CF_API_TOKEN"))
-
-    def clear(self) -> None:
-        with self._lock:
-            self._cache = None
 
     def snapshot(self) -> tuple[dict[tuple[str, str], str], dict[str, str]]:
         """返回 (提示词字典, 默认版本字典)。命中缓存直接返回；失败降级旧快照/空。"""
@@ -86,7 +77,6 @@ class D1PromptStore:
         if cache and now - cache[0] < self._ttl:
             return cache[1], cache[2]
 
-        from src.app.config import env
         try:
             data = self._fetcher(env("CF_ACCOUNT_ID"), env("CF_API_TOKEN"), PROMPTS_DB_ID)
             prompts = {

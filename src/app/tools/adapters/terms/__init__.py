@@ -7,7 +7,7 @@
 数据通道与业务读写（都落在共享 KV 上；KV 操作实现统一在 ../cloudflare/kv.py）：
     curation.py          词库整理域：候选池只读快照（candidates / meta / interests）
                          + 收藏 / 「不做」表写侧口径（与 console store.js 对齐）。
-    hotwords.py          热词分析公共 API 门面：聚合对外契约 + 稳定测试入口，不承载逻辑。
+    hotwords.py          热词分析公共 API 门面：聚合对外契约 + 稳定只读出口，不承载逻辑。
     hotword_contract.py  共享契约叶子：候选筛选规则 + trace 常量 + 成功阈值（无上层依赖）。
     hotword_fetch.py     取数层：SERP / Trends 读缓存 → 现抓 → 写回 + 全局节流。
     hotword_worker.py    单词层：补数据 → LLM → 结论判定 → 回写状态（失败隔离到单词）。

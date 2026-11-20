@@ -68,10 +68,10 @@ def _read(kv: CloudflareKV, status: str, limit: int, light: bool) -> dict[str, A
     return {"items": items, "meta": meta, "interests": interests}
 
 
-def snapshot(status: str = CandidateStatus.DOING.value, limit: int = 40, light: bool = False,
-             kv: Optional[CloudflareKV] = None) -> dict[str, Any]:
+def snapshot(status: str = CandidateStatus.DOING.value, limit: int = 40,
+             light: bool = False) -> dict[str, Any]:
     """给 Agent 的完整快照：候选 + meta + interests。status 由调用方按需过滤（radar 不解析该参数）。"""
-    kv = kv or get_kv()
+    kv = get_kv()
     try:
         return _read(kv, status, limit, light)
     except Exception as exc:  # noqa: BLE001
@@ -100,12 +100,12 @@ def _pick_saved(item: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def upsert_saved(list_: Optional[list], item: dict[str, Any], now: Optional[int] = None) -> list:
+def upsert_saved(list_: Optional[list], item: dict[str, Any]) -> list:
     """新增或更新一条收藏；同词去重，首次收藏时间不变，更新 updatedAt。
 
     status 只认 STATUSES 里的；传错或缺失时保留原状态，首次默认 saved。
     """
-    now = now or int(time.time() * 1000)
+    now = int(time.time() * 1000)
     key = term_key(item.get("term"))
     if not key:
         return list_ if isinstance(list_, list) else []
@@ -122,9 +122,9 @@ def upsert_saved(list_: Optional[list], item: dict[str, Any], now: Optional[int]
     return arr
 
 
-def upsert_rejected(list_: Optional[list], item: dict[str, Any], now: Optional[int] = None) -> list:
+def upsert_rejected(list_: Optional[list], item: dict[str, Any]) -> list:
     """标记「不做」；人工标记优先：AI 重复判定不改原因、不降级来源。"""
-    now = now or int(time.time() * 1000)
+    now = int(time.time() * 1000)
     key = term_key(item.get("term"))
     if not key:
         return list_ if isinstance(list_, list) else []

@@ -115,13 +115,13 @@ TOOL_CLASSES = (
 
 
 class ToolRegistry:
-    def __init__(self, ops: Any = None) -> None:
+    def __init__(self) -> None:
         self.ops: Any = None
         self._tools: dict[str, BaseTool] = {}
-        self.bind(RuntimeService() if ops is None else ops)
+        self.bind(RuntimeService())
 
     def bind(self, ops: Any) -> None:
-        """换门面并重建工具：生产在 import 时绑一次，测试换成 FakeRuntime。"""
+        """换门面并重建 26 个工具（初始化时绑生产 RuntimeService）。"""
         self.ops = ops
         # tracer 注入而不是在 base.py 里 import 追踪模块：分层守卫要求 base 是叶子。
         self._tools = {tool.name: tool for tool in

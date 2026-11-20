@@ -18,8 +18,8 @@
      SERP_HTTPS_PROXY（部署侧自备代理，只作用于 SERP），以及直连全挂时自动走公共
      Reader 中转（SERP_FALLBACK_READER=0 可关）。两者都不影响 KV REST / LLM / GitHub。
 
-纯函数（parse_ddg / domain_of / decode_uddg / score_competition / serp_verdict）不碰网络，
-单测直接喂 HTML 即可。fetch_serp 是网络层，session 可注入，便于离线测试。
+纯函数（parse_ddg / domain_of / decode_uddg / score_competition / serp_verdict）不碰网络。
+fetch_serp 是网络层，走 requests.Session 保持跨请求 Cookie。
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from __future__ import annotations
 import os
 import re
 import time
+import urllib.parse as up
 from typing import Any, Optional
 
 import requests
@@ -87,7 +88,7 @@ SERP_FALLBACK_READER = os.environ.get("SERP_FALLBACK_READER", "1").strip().lower
 
 
 def _fetch_via_reader(q: str, limit: int, sess: Any, proxy: Optional[str]) -> dict:
-    """经 Reader 取原始 DDG HTML；session 可注入，离线测试完全可控。"""
+    """经 Reader 取原始 DDG HTML。"""
     kwargs: dict[str, Any] = {"headers": READER_HEADERS, "timeout": (6, 20)}
     if proxy:
         kwargs["proxies"] = {"http": proxy, "https": proxy}
@@ -105,7 +106,7 @@ _STATE = {"direct_down_until": 0.0}
 RE_BLOCK = re.compile(r"anomaly|unusual traffic|are you a robot|captcha", re.I)
 RE_NO_RESULT = re.compile(r"no-results|No results found|没有找到", re.I)
 
-# 纯函数：判定这一发是「真结果 / 真空结果 / 挑战页」，方便单测覆盖
+# 纯函数：判定这一发是「真结果 / 真空结果 / 挑战页」
 def serp_verdict(status: int, html: str, limit: int = 10):
     body = str(html or "")
     if status != 200:
@@ -152,7 +153,6 @@ def decode_uddg(href: str) -> str:
     m = re.search(r"[?&]uddg=([^&]+)", href)
     if m:
         try:
-            import urllib.parse as up
             return up.unquote(m.group(1))
         except Exception:
             return ""
@@ -328,8 +328,8 @@ def score_competition(items: list[dict], term: str = "") -> dict[str, Any]:
     }
 
 
-def fetch_serp(term: str, session: Optional[Any] = None, limit: int = 10) -> dict[str, Any]:
-    """抓真实 SERP 前 10，4 发退避、4 个不同 host。session 可注入（测试用）。
+def fetch_serp(term: str, limit: int = 10) -> dict[str, Any]:
+    """抓真实 SERP 前 10，4 发退避、4 个不同 host。
 
     返回 {engine, items, attempts}；失败抛 SourceUnavailable（源级不可用，调用方应在
     整批里立刻停手，等下次触发重试），异常里带 attempts 便于诊断。
@@ -343,9 +343,8 @@ def fetch_serp(term: str, session: Optional[Any] = None, limit: int = 10) -> dic
       失败诊断列出全部 host + 异常类型；直连全挂时再自动走 Reader 中转换出口，
       仍失败才抛 SourceUnavailable（用户定的「遇异常退出等下次重试」不变）。
     """
-    import urllib.parse as up
     q = up.quote(str(term or "").strip())
-    sess = session or requests.Session()
+    sess = requests.Session()
     attempts: list[dict] = []
     last_note = ""
     proxy = SERP_HTTPS_PROXY or None

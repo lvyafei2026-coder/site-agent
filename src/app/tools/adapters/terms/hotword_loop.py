@@ -29,6 +29,7 @@ from typing import Any, Optional, TypedDict
 
 from langgraph.graph import END
 
+from src.app.enums import Verdict
 from src.app.observability.langsmith import run_traced as _span, trace_tool
 
 from src.app.tools.adapters.cloudflare.kv import (
@@ -211,8 +212,6 @@ def summarize(state: HotwordLoopState) -> dict[str, Any]:
     if not results:
         return {"ok": True, "items": [], "fetched": 0, "analyzed": 0,
                 "failed": 0, "counts": {}, "note": "没有未跟进且未分析过的候选词"}
-
-    from src.app.enums import Verdict
 
     counts: dict[str, int] = {}
     for r in results:

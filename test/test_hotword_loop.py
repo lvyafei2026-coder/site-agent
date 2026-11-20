@@ -15,7 +15,7 @@ from langgraph.graph import END
 from src.app.graph import builder
 
 from src.app.tools.adapters.terms import hotwords as hw
-from src.app.tools.adapters.terms import hotword_llm
+from src.app.tools.adapters.terms import hotword_batch, hotword_llm
 from src.app.tools.adapters.terms import hotword_loop as hloop
 
 
@@ -62,7 +62,7 @@ def test_loop_stops_at_limit(fake_kv, monkeypatch):
     monkeypatch.setattr(hw.scrape_trend, "fetch_interest", lambda *a, **k: {"points": [], "summary": {}, "attempts": []})
     monkeypatch.setattr(hotword_llm, "_llm", lambda m: ("7) 结论：观望\n8) 信号标签：无", "fake"))
 
-    out = hw.run_batch(limit=3, kv=fake_kv)
+    out = hw.run_batch(limit=3)
     assert out["fetched"] == 3 and len(out["items"]) == 3
     # 未分析的词不会写 AI 缓存（只回写了 3 个）
     analyzed_keys = {hw.term_key(f"term {i}") for i in range(3)}
@@ -71,12 +71,13 @@ def test_loop_stops_at_limit(fake_kv, monkeypatch):
     assert not any(fake_kv.get_text(hw.AI_CACHE_PREFIX + k) for k in left_keys)
 
 
-def test_loop_kv_unreachable_short_circuits():
+def test_loop_kv_unreachable_short_circuits(monkeypatch):
     """候选池读取抛异常时，图经条件边直接 END，summarize 收口为 ok=False。"""
     class BoomKV:
         def list_keys(self, *a, **k):
             raise RuntimeError("kv down")
 
-    out = hw.run_batch(limit=5, kv=BoomKV())
+    monkeypatch.setattr(hotword_batch, "get_kv", lambda: BoomKV())
+    out = hw.run_batch(limit=5)
     assert out["ok"] is False and "候选池读取失败" in out["error"]
     assert out["items"] == [] and out["fetched"] == 0

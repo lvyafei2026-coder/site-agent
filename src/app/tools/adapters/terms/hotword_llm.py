@@ -18,7 +18,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from src.app import config
 from src.app.enums import LlmThinking
+from src.app.llm import provider
 
 log = logging.getLogger(__name__)
 
@@ -50,13 +52,11 @@ def _thinking_kwargs() -> dict[str, Any]:
       OpenAI 兼容服务不会误传这个 DeepSeek 专属参数；
     off：强制注入；on：保留思考（此时要自行调大 MAX_TOKENS）。
     """
-    from src.app.config import LLM_BASE_URL, LLM_THINKING
-
-    mode = (LLM_THINKING or LlmThinking.AUTO.value).strip().lower()
+    mode = (config.LLM_THINKING or LlmThinking.AUTO.value).strip().lower()
     if mode == LlmThinking.ON.value:
         return {}
     if mode == LlmThinking.OFF.value or (
-            mode == LlmThinking.AUTO.value and "deepseek" in (LLM_BASE_URL or "").lower()):
+            mode == LlmThinking.AUTO.value and "deepseek" in (config.LLM_BASE_URL or "").lower()):
         return {"extra_body": {"thinking": {"type": "disabled"}}}
     return {}
 
@@ -67,8 +67,6 @@ def _empty_content_diag(resp: Any) -> dict[str, Any]:
     实测线上场景：finish_reason=length、content=""、reasoning_tokens=2000、
     completion_tokens=2000 —— 是输出预算被思考推理吃光，绝不是 API Key 没配。
     """
-    from src.app.config import LLM_MODEL
-
     choices = _field(resp, "choices") or []
     first = choices[0] if choices else None
     finish = _field(first, "finish_reason")
@@ -82,7 +80,7 @@ def _empty_content_diag(resp: Any) -> dict[str, Any]:
                              "output_token_details") or {}
         reasoning = _field(out_details, "reasoning")
     completion = _field(usage, "completion_tokens")
-    model = _field(resp, "model") or LLM_MODEL
+    model = _field(resp, "model") or config.LLM_MODEL
 
     if finish == "length" and reasoning:
         reason = "输出预算耗尽（思考推理吃光 max_tokens，正文未生成）"
@@ -124,24 +122,21 @@ def _llm(messages: list[dict[str, str]]) -> tuple[str, str]:
       content_from_response 归一——wrap_openai 会把 ChatCompletion 转成 dict，
       裸写 resp.choices[0].message.content 在这条路径上会直接抛 AttributeError。
     """
-    from src.app.config import LLM_API_KEY, LLM_MODEL
-    from src.app.llm.provider import content_from_response, get_llm
-
-    if not LLM_API_KEY:
+    if not config.LLM_API_KEY:
         diag = {"reason": "LLM_API_KEY 未配置，未发起调用", "no_key": True,
                 "hint": "在 Render 配好 LLM_API_KEY", "finish_reason": None,
                 "reasoning_tokens": None, "max_tokens": MAX_TOKENS}
         diag["message"] = "LLM 未配置 API Key（LLM_API_KEY 为空），本次未发起调用；建议在 Render 配好该变量"
         raise LLMEmptyContent(diag["message"], diag)
 
-    resp = get_llm().chat.completions.create(
-        model=LLM_MODEL, messages=messages,
+    resp = provider.get_llm().chat.completions.create(
+        model=config.LLM_MODEL, messages=messages,
         max_tokens=MAX_TOKENS, temperature=0, timeout=60,
         **_thinking_kwargs(),
     )
-    text = (content_from_response(resp) or "").strip()
+    text = (provider.content_from_response(resp) or "").strip()
     if not text:
         diag = _empty_content_diag(resp)
         log.warning("hotwords_llm_empty_content %s", diag["message"])
         raise LLMEmptyContent(diag["message"], diag)
-    return text, LLM_MODEL
+    return text, config.LLM_MODEL

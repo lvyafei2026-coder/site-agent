@@ -5,7 +5,7 @@
 """热词分析的纯判据层：提示词拼装、LLM 输出解析、结论/红线/信号标签判定。
 
 这里**没有任何外部 IO**（不碰 KV / LLM / 抓取），全部函数都是「文本进、文本出」，
-单测直接喂字符串即可。口径与 console/public/assets/app.js 一致。
+不依赖外部状态。口径与 console/public/assets/app.js 一致。
 
 拆分自 hotwords.py（2026-11-17）：该文件当时 1200+ 行，判据、LLM 调用、KV 写入、
 批次编排混在一起；本模块承载其中「判读」这一层。编排已于 2026-11-19 拆成
@@ -100,21 +100,16 @@ WORK_TITLE_RX = re.compile(
 
 
 def build_messages(body: dict[str, Any], *, prompt_version: Optional[str] = None,
-                   system: Optional[str] = None,
-                   user_template: Optional[str] = None,
                    examples: Optional[list[dict[str, str]]] = None) -> list[dict[str, str]]:
     """拼 system + user；**措辞全部来自 D1 的 hotwords 提示词**，这里只填数据。
 
-    SERP 前 6 的「域名 — 标题」是 AI 辨形的主要线索。system / user_template 可注入
-    （单测固定模板用）；生产由 _prompt_pair() 一次性加载并缓存，20 个词只读一次。
+    SERP 前 6 的「域名 — 标题」是 AI 辨形的主要线索。模板由 _prompt_pair() 按
+    prompt_version 一次性加载并缓存，20 个词只读一次。
 
     ``examples`` 是人工判例反馈（见 :func:`pick_examples`）：仅当 user 模板含
     ``{examples_line}`` 占位符（v2+）时注入；v1 模板无此占位符则输出逐字不变。
     """
-    if system is None or user_template is None:
-        default_system, default_tpl = _prompt_pair(prompt_version)
-        system = default_system if system is None else system
-        user_template = default_tpl if user_template is None else user_template
+    system, user_template = _prompt_pair(prompt_version)
 
     term = str(body.get("term") or "")[:120]
     related = [str(x) for x in (body.get("related") or [])][:6]

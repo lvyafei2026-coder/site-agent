@@ -95,9 +95,7 @@ def test_examples_injected_only_when_present():
 
     # v1 模板无 {examples_line} 占位符：即使传 examples 也不注入、不报 KeyError
     msgs_v1 = hw.build_messages({"term": "x", "related": [], "hints": []},
-                                system=load_prompt("hotwords", "v1"),
-                                user_template=load_prompt("hotwords_user", "v1"),
-                                examples=ex)
+                                prompt_version="v1", examples=ex)
     assert "{examples_line}" not in msgs_v1[1]["content"]
     assert "人工判定" not in msgs_v1[1]["content"]
     assert "how to sound better" not in msgs_v1[1]["content"]
@@ -138,9 +136,9 @@ def test_prompt_pair_is_cached():
     hw._prompt_pair.cache_clear()
 
 
-def test_prompt_version_reaches_analyze_hotwords_tool():
+def test_prompt_version_reaches_analyze_hotwords_tool(monkeypatch):
     """/run 的 prompt_versions.hotwords 要一路透传到工具入参，否则版本化形同虚设。"""
-    from src.app.services.tool_service import ToolService
+    import src.app.services.tool_service as ts
 
     captured: dict = {}
 
@@ -152,11 +150,12 @@ def test_prompt_version_reaches_analyze_hotwords_tool():
             captured.update(kwargs)
             return {"tool": name, "ok": True, "result": {}}
 
-    ToolService(FakeRegistry()).execute_for_intent(
+    monkeypatch.setattr(ts, "tool_registry", FakeRegistry())
+    ts.ToolService().execute_for_intent(
         "analyze_hotwords", "分析热词", {}, prompt_versions={"hotwords": "v2"})
     assert captured.get("limit") == 20
     assert captured.get("prompt_version") == "v2"
 
     captured.clear()
-    ToolService(FakeRegistry()).execute_for_intent("analyze_hotwords", "分析热词", {})
+    ts.ToolService().execute_for_intent("analyze_hotwords", "分析热词", {})
     assert "prompt_version" not in captured     # 没指定版本就不该塞参数

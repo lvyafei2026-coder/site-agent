@@ -4,7 +4,7 @@
 
 """Cloudflare 适配器：一个 client + KV 唯一模块 + D1 端口。
 
-端口约定（测试用同名方法的内存对象替换，不依赖具体厂商）：
+端口约定（不依赖具体厂商）：
     database.query(sql, params) / execute(sql, params)
     keyvalue.get / put
 

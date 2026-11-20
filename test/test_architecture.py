@@ -92,6 +92,51 @@ def test_entry_and_batch_have_no_deferred_imports():
         assert not offenders, f"{rel} 出现函数内 import：{sorted(offenders)}"
 
 
+def test_no_deferred_internal_imports():
+    """全仓禁止函数内 import src.app.*：包内模块的依赖必须在顶层声明。
+
+    第三方 SDK 的按需加载（langsmith / openai / google 等）不在此列——那是关闭追踪
+    或无凭据时的零开销设计，不是拿延迟导入解加载期环。
+    """
+    offenders = set()
+    for path in APP.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.ImportFrom) and (sub.module or "").startswith("src.app"):
+                    offenders.add(f"{path.relative_to(APP)}::{node.name}")
+                elif isinstance(sub, ast.Import):
+                    for alias in sub.names:
+                        if alias.name.startswith("src.app"):
+                            offenders.add(f"{path.relative_to(APP)}::{node.name}")
+    assert not offenders, f"函数内延迟 import 包内模块：{sorted(offenders)}"
+
+
+def test_business_functions_have_no_test_injection_params():
+    """生产函数不得为测试留注入口：这些参数名 + 默认值 None 已从签名里清掉。
+
+    需要换实现时由测试侧 monkeypatch 取数点（get_kv / requests.Session / store._fetcher），
+    不许再给业务函数加「平时永远不传」的可选参数。
+    """
+    banned = {"kv", "session", "transport", "fetcher", "now", "backend", "database_url"}
+    offenders = []
+    for path in APP.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            args = node.args
+            pairs = list(zip(args.args[-len(args.defaults):], args.defaults)) if args.defaults else []
+            pairs += [(a, d) for a, d in zip(args.kwonlyargs, args.kw_defaults) if d is not None]
+            for arg, default in pairs:
+                if (arg.arg in banned and isinstance(default, ast.Constant)
+                        and default.value is None):
+                    offenders.append(f"{path.relative_to(APP)}::{node.name}({arg.arg}=None)")
+    assert not offenders, f"业务函数又出现测试注入参数：{sorted(offenders)}"
+
+
 def test_sql_layer_has_no_side_effects():
     """sql.py 只放语句与构造器，不碰 client / requests / env。"""
     module = ast.parse((APP / "tools/adapters/cloudflare/sql.py").read_text(encoding="utf-8"))

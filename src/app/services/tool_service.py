@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 from src.app.enums import Intent, PageQueryMode
-from src.app.tools.registry import ToolRegistry, tool_registry
+from src.app.tools.registry import tool_registry
 
 INTENT_TOOLS: dict[str, tuple[str, ...]] = {
     Intent.SELECT_PAGES.value: ("get_hotwords", "get_page_inventory", "get_reflections"),
@@ -39,9 +39,9 @@ TOOL_ARGS = {
 
 
 class ToolService:
-    def __init__(self, registry: ToolRegistry | None = None) -> None:
+    def __init__(self) -> None:
         # 复用 tools/registry.py 的那个单例，避免 26 个工具被实例化两遍
-        self.registry = registry or tool_registry
+        self.registry = tool_registry
 
     def execute_for_intent(self, intent: str, text: str,
                            extracted: dict, tools: list[str] | None = None,

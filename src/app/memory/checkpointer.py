@@ -13,6 +13,9 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
+
 from src.app.config import settings
 from src.app.enums import MemoryBackend
 from src.app.utils.logger import get_logger
@@ -20,13 +23,11 @@ from src.app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-def get_checkpointer(backend: str | None = None, database_url: str | None = None):
-    backend = (backend or settings.memory_backend).lower()
-    url = settings.database_url if database_url is None else database_url
+def get_checkpointer():
+    backend = settings.memory_backend.lower()
+    url = settings.database_url
 
     if backend == MemoryBackend.SQLITE.value:
-        from langgraph.checkpoint.sqlite import SqliteSaver
-
         db_path = url.replace("sqlite:///", "") or "./state.db"
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         logger.info("checkpointer_backend", extra={"backend": MemoryBackend.SQLITE.value, "path": db_path})
@@ -34,8 +35,6 @@ def get_checkpointer(backend: str | None = None, database_url: str | None = None
 
     if backend != MemoryBackend.MEMORY.value:
         raise ValueError(f"不支持的 MEMORY_BACKEND：{backend}（memory | sqlite）")
-
-    from langgraph.checkpoint.memory import MemorySaver
 
     logger.info("checkpointer_backend", extra={"backend": MemoryBackend.MEMORY.value})
     return MemorySaver()

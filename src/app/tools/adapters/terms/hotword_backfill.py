@@ -15,12 +15,12 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from src.app.enums import BackfillAction, CurationStatus, RejectSource, Verdict
 
 from src.app.tools.adapters.cloudflare.kv import (
-    CloudflareKV, get_kv, term_key, table_lock,
+    get_kv, term_key, table_lock,
     AI_CACHE_PREFIX, SAVED_KEY, REJECTED_KEY, TAGS_KEY, HINTS_KEY,
 )
 from .curation import upsert_saved, upsert_rejected, set_hint_override
@@ -30,15 +30,28 @@ from .hotword_kv_io import _WriteLog, _kv_list, _kv_dict
 log = logging.getLogger(__name__)
 
 
-def backfill_states(kv: Optional[CloudflareKV] = None, *, limit: int = 200,
-                    dry_run: bool = False) -> dict[str, Any]:
+def _curated_keys(saved: list, rejected: list, tags: dict) -> set[str]:
+    """已整理的词 key 集合：saved / rejected / tags 三处状态合并。
+
+    扫描开始时用读到的快照判断缺口；写入锁内再以实时 KV 复核一次——回填期间
+    可能正好有一批分析写完状态，别覆盖人工/新结论。
+    """
+    keys: set[str] = set()
+    for row in saved + rejected:
+        if isinstance(row, dict) and row.get("key"):
+            keys.add(term_key(row["key"]))
+    keys.update(term_key(k) for k, v in tags.items() if v)
+    return keys
+
+
+def backfill_states(*, limit: int = 200, dry_run: bool = False) -> dict[str, Any]:
     """从已落库的 `ai:v3:<key>` 正文反推结论，补写缺失的 saved / rejected / aihints。
 
     dry_run=True 只出报告不写，建议先跑一次核对。结论「观望」按设计不写状态（只补标签）；
     正文为空 / 结论解析不出且状态缺失的词会列进 items（action=unresolved）——要重跑它们
     得先删掉对应的 `ai:v3:` 正文，因为 _select_pending 只认正文存在与否。
     """
-    kv = kv or get_kv()
+    kv = get_kv()
     limit = max(1, min(int(limit or 200), 1000))
     report: dict[str, Any] = {
         "ok": True, "dryRun": bool(dry_run), "scanned": 0, "repaired": 0,
@@ -62,20 +75,7 @@ def backfill_states(kv: Optional[CloudflareKV] = None, *, limit: int = 200,
         report["error"] = "状态回填读取 KV 失败：" + str(exc)[:200]
         return report
 
-    def curated_now() -> set[str]:
-        """锁内复核：回填期间可能正好有一批分析写完状态，别覆盖人工/新结论。"""
-        cur: set[str] = set()
-        for row in _kv_list(kv, SAVED_KEY) + _kv_list(kv, REJECTED_KEY):
-            if isinstance(row, dict) and row.get("key"):
-                cur.add(term_key(row["key"]))
-        cur.update(term_key(k) for k, v in _kv_dict(kv, TAGS_KEY).items() if v)
-        return cur
-
-    curated: set[str] = set()
-    for row in saved + rejected:
-        if isinstance(row, dict) and row.get("key"):
-            curated.add(term_key(row["key"]))
-    curated.update(term_key(k) for k, v in tags.items() if v)
+    curated = _curated_keys(saved, rejected, tags)
 
     for cache_key in cache_keys[:limit]:
         key = cache_key[len(AI_CACHE_PREFIX):]
@@ -123,7 +123,9 @@ def backfill_states(kv: Optional[CloudflareKV] = None, *, limit: int = 200,
         # 与正在跑的 batch 共用同一把 RLock（可重入）：状态 + 标签一起改完再放开，
         # 避免回填到一半被另一个词插进来读到半套数据。
         with table_lock():
-            if need_state and key in curated_now():
+            if need_state and key in _curated_keys(
+                    _kv_list(kv, SAVED_KEY), _kv_list(kv, REJECTED_KEY),
+                    _kv_dict(kv, TAGS_KEY)):
                 # 回填扫描期间刚被整理过 → 不再覆盖，保证幂等、不抢人工标记
                 need_state = False
                 report["alreadyCurated"] += 1

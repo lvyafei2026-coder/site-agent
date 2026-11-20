@@ -4,14 +4,19 @@
 
 """terms 适配器的纯逻辑测试：KV 读写、SERP/Trend 纯函数、整理写侧、候选快照。
 
-全部走内存 FakeKV + monkeypatch 外部抓取/LLM，不碰 Cloudflare / Google / DuckDuckGo / OpenAI。
+全部走内存 FakeKV + monkeypatch 外部 IO，不碰 Cloudflare / Google / DuckDuckGo / OpenAI。
 KV 实现在 ../cloudflare/kv.py（全项目唯一 KV 模块），这些模块是
 「agent 直读共享 KV、去除 console/radar 接口依赖」改造后的核心，必须离线可测。
+
+生产代码不提供任何测试注入口：HTTP 走 requests、KV 走 get_kv()，测试侧在这里
+把假响应 / 假 session 接到真实的 requests 调用点上。
 """
 
 import json
+import urllib.parse
 
 import pytest
+import requests as _requests
 
 from src.app.tools.adapters.cloudflare import kv as kvmod
 from src.app.tools.adapters.terms import scrape_serp as ss
@@ -28,8 +33,60 @@ def _reset_serp_egress_state():
     ss._STATE["direct_down_until"] = 0.0
 
 
+# ---- 测试侧 IO 适配：生产只走 requests / get_kv，这里把假对象接上去 ----
+_REAL_SESSION = _requests.Session
+_SESSION = {"current": None}
+
+
+@pytest.fixture(autouse=True)
+def _session_egress(monkeypatch):
+    """生产 fetch_serp/fetch_interest 里的 requests.Session() 接到用例指定的假 session。"""
+    _SESSION["current"] = None
+    monkeypatch.setattr(_requests, "Session",
+                        lambda: _SESSION["current"] or _REAL_SESSION())
+    yield
+    _SESSION["current"] = None
+
+
+def fetch_serp(term, *, session, **kw):
+    _SESSION["current"] = session
+    return ss.fetch_serp(term, **kw)
+
+
+def fetch_interest(term, *, session, **kw):
+    _SESSION["current"] = session
+    return st.fetch_interest(term, **kw)
+
+
+def fake_cf_http(monkeypatch, transport):
+    """把假 HTTP 响应接到 CloudflareKV._request 的 requests 调用点上。
+
+    transport 签名沿用旧测试习惯：(method, url, headers, body) -> (status, text)。
+    生产 _request 用 requests.request / requests.get，这里把 params 还原成带 query 的 URL
+    再转给 transport，保证 URL 编码 / TTL 参数断言与线上路径一致。
+    """
+    class Resp:
+        def __init__(self, status, text):
+            self.status_code = status
+            self.text = text
+
+    def full_url(url, params):
+        return url + ("?" + urllib.parse.urlencode(params) if params else "")
+
+    def fake_request(method, url, params=None, headers=None, data=None, timeout=None):
+        status, text = transport(method, full_url(url, params), headers, data)
+        return Resp(status, text)
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        status, text = transport("GET", full_url(url, params), headers, None)
+        return Resp(status, text)
+
+    monkeypatch.setattr(kvmod.requests, "request", fake_request)
+    monkeypatch.setattr(kvmod.requests, "get", fake_get)
+
+
 # ---------------------------------------------------------------------------
-# cloudflare/kv.py：CloudflareKV 的键常量 / term_key / transport 行为
+# cloudflare/kv.py：CloudflareKV 的键常量 / term_key / HTTP 请求构造
 # ---------------------------------------------------------------------------
 def test_term_key_normalizes():
     assert kvmod.term_key("  Free  Invoice  CALCULATOR ") == "free invoice calculator"
@@ -48,23 +105,24 @@ def test_fakekv_roundtrip(fake_kv):
     assert fake_kv.writes == 3  # 两次 put_json(同 key 也算 2) + put_text + put_text
 
 
-def test_cloudflarekv_transport_url_includes_params():
-    # 用假 transport 验证底层 _request 把 prefix/cursor 拼进 URL，且走 transport 分支
+def test_cloudflarekv_request_url_includes_params(monkeypatch):
+    # 验证底层 _request 把 prefix/cursor 拼进 URL
     calls = []
 
     def transport(method, url, headers, body):
         calls.append((method, url, body))
         return 200, '{"result":[],"result_info":{"count":0}}'
 
-    client = kvmod.CloudflareKV("acct", "ns", "tok", transport=transport)
+    fake_cf_http(monkeypatch, transport)
+    client = kvmod.CloudflareKV("acct", "ns", "tok")
     assert client.configured is True
     keys = client.list_keys("ai:v3:")
     assert keys == []
-    # list 走 /keys?prefix=...，transport 收到带 query 的 URL
+    # list 走 /keys?prefix=...，请求 URL 带 query
     assert calls and "prefix=ai%3Av3%3A" in calls[-1][1]
 
 
-def test_list_keys_real_cloudflare_shape():
+def test_list_keys_real_cloudflare_shape(monkeypatch):
     """★真实 Cloudflare 格式：result 是数组、游标在 result_info.cursor。
 
     曾经按 {"result":{"keys":[...]}} 解析，线上报 "'list' object has no attribute 'get'"。
@@ -76,11 +134,12 @@ def test_list_keys_real_cloudflare_shape():
             "result_info": {"count": 2, "cursor": ""},
         })
 
-    client = kvmod.CloudflareKV("acct", "ns", "tok", transport=transport)
+    fake_cf_http(monkeypatch, transport)
+    client = kvmod.CloudflareKV("acct", "ns", "tok")
     assert client.list_keys("ai:v3:") == ["ai:v3:foo", "ai:v3:bar"]
 
 
-def test_list_keys_follows_cursor_in_result_info():
+def test_list_keys_follows_cursor_in_result_info(monkeypatch):
     """游标在 result_info 里，必须跟着翻页，否则只拿到第一页 1000 条。"""
     pages = [
         {"result": [{"name": "a1"}], "result_info": {"cursor": "c1"}},
@@ -93,33 +152,37 @@ def test_list_keys_follows_cursor_in_result_info():
         seen.append(url)
         return 200, json.dumps(pages[len(seen) - 1])
 
-    client = kvmod.CloudflareKV("acct", "ns", "tok", transport=transport)
+    fake_cf_http(monkeypatch, transport)
+    client = kvmod.CloudflareKV("acct", "ns", "tok")
     assert client.list_keys("a") == ["a1", "a2", "a3"]
     assert len(seen) == 3
     assert "cursor=c1" in seen[1] and "cursor=c2" in seen[2]
 
 
-def test_list_keys_tolerates_legacy_dict_shape():
+def test_list_keys_tolerates_legacy_dict_shape(monkeypatch):
     """兜底：老式 {"result":{"keys":[...],"cursor":"x"}} 也能解析。"""
     def transport(method, url, headers, body):
         return 200, '{"result":{"keys":[{"name":"k1"}],"cursor":"x"}}'
 
-    client = kvmod.CloudflareKV("acct", "ns", "tok", transport=transport)
+    fake_cf_http(monkeypatch, transport)
+    client = kvmod.CloudflareKV("acct", "ns", "tok")
     assert client.list_keys("k")[:1] == ["k1"]
 
 
-def test_list_keys_handles_error_and_garbage():
+def test_list_keys_handles_error_and_garbage(monkeypatch):
     """非 200、非 JSON、result 类型异常都不能抛，返回已拿到的部分。"""
     for body in ('', '不是 JSON', '{"result":null}', '[1,2,3]'):
-        client = kvmod.CloudflareKV("acct", "ns", "tok", transport=lambda *a, _b=body: (200, _b))
+        fake_cf_http(monkeypatch, lambda *a, _b=body: (200, _b))
+        client = kvmod.CloudflareKV("acct", "ns", "tok")
         assert client.list_keys("x") == []
 
-    client = kvmod.CloudflareKV("acct", "ns", "tok", transport=lambda *a: (500, 'oops'))
+    fake_cf_http(monkeypatch, lambda *a: (500, 'oops'))
+    client = kvmod.CloudflareKV("acct", "ns", "tok")
     assert client.list_keys("x") == []
 
 
 def test_production_path_builds_correct_request(monkeypatch):
-    """★线上走 requests 分支（transport=None），必须编码键名、snake_case TTL、不发 __list__。"""
+    """★线上 requests 路径必须编码键名、snake_case TTL、不发 __list__。"""
     seen = []
 
     class FakeResp:
@@ -137,7 +200,7 @@ def test_production_path_builds_correct_request(monkeypatch):
     monkeypatch.setattr(kvmod.requests, "request", fake_request)
     monkeypatch.setattr(kvmod.requests, "get", fake_get)
 
-    client = kvmod.CloudflareKV("acct", "ns", "tok")  # 无 transport → 生产分支
+    client = kvmod.CloudflareKV("acct", "ns", "tok")
     client.put_text("serp:v1:a b", "{}", ttl=604800)
     kind, method, url, params, data = seen[-1]
     assert kind == "request" and method == "PUT"
@@ -151,7 +214,7 @@ def test_production_path_builds_correct_request(monkeypatch):
     assert params["prefix"] == "ai:v3:" and "__list__" not in params
 
 
-def test_kv_key_is_percent_encoded():
+def test_kv_key_is_percent_encoded(monkeypatch):
     """★键名含冒号/空格/# 时必须编码，否则 URL 被截断（词是自然语言短语）。"""
     urls = []
 
@@ -159,14 +222,15 @@ def test_kv_key_is_percent_encoded():
         urls.append(url)
         return 200, '{"success":true,"result":{}}'
 
-    client = kvmod.CloudflareKV("acct", "ns", "tok", transport=transport)
+    fake_cf_http(monkeypatch, transport)
+    client = kvmod.CloudflareKV("acct", "ns", "tok")
     key = "ai:v3:" + kvmod.term_key("Free Invoice #Calculator?")
     client.put_text(key, "x")
     assert "/values/ai%3Av3%3Afree%20invoice%20%23calculator%3F" in urls[-1]
     assert " " not in urls[-1] and "#" not in urls[-1] and "?" not in urls[-1]
 
 
-def test_put_text_uses_snake_case_expiration_ttl():
+def test_put_text_uses_snake_case_expiration_ttl(monkeypatch):
     """★REST 写 KV 的 TTL 参数是 expiration_ttl（snake_case），不是 expirationTtl。"""
     calls = []
 
@@ -174,7 +238,8 @@ def test_put_text_uses_snake_case_expiration_ttl():
         calls.append((method, url, body))
         return 200, '{"success":true,"result":{}}'
 
-    client = kvmod.CloudflareKV("acct", "ns", "tok", transport=transport)
+    fake_cf_http(monkeypatch, transport)
+    client = kvmod.CloudflareKV("acct", "ns", "tok")
     assert client.put_text("serp:v1:foo", "{}", ttl=604800) is True
     assert "expiration_ttl=604800" in calls[-1][1]
     assert "expirationTtl" not in calls[-1][1]
@@ -337,23 +402,24 @@ def test_set_hint_override_filters_names():
 # ---------------------------------------------------------------------------
 # curation.py（候选快照部分）：只读（直读 KV，不调 radar /api/candidates）
 # ---------------------------------------------------------------------------
-def test_snapshot_reads_kv(fake_kv):
+def test_snapshot_reads_kv(fake_kv, monkeypatch):
     fake_kv.put_json("candidates", [{"term": "a"}, {"term": "b"}])
     fake_kv.put_json("meta", {"updatedMs": 123, "geosOk": 5, "raw": 2907})
     fake_kv.put_json("interests", {"a": {"summary": "x"}})
-    snap = cur.snapshot(kv=fake_kv)
+    snap = cur.snapshot()
     assert len(snap["items"]) == 2
     assert snap["meta"]["geosOk"] == 5
     assert snap["interests"]["a"]["summary"] == "x"
     # light=True 仍回 interests 字段，只是代码路径里不读 KV（保证调用方契约稳定）
-    snap2 = cur.snapshot(light=True, kv=fake_kv)
+    snap2 = cur.snapshot(light=True)
     assert "interests" in snap2
 
     # 异常兜底：KV 抛错返回空结构不崩溃
     class BoomKV:
         def get_json(self, *a, **k):
             raise RuntimeError("boom")
-    failed = cur.snapshot(kv=BoomKV())
+    monkeypatch.setattr(cur, "get_kv", lambda: BoomKV())
+    failed = cur.snapshot()
     assert failed["items"] == [] and "error" in failed
 
 
@@ -362,7 +428,7 @@ def test_snapshot_survives_shape_drift(fake_kv):
     fake_kv.put_json("candidates", {"a": {"term": "a"}})   # 期望数组
     fake_kv.put_json("meta", ["x"])                         # 期望对象
     fake_kv.put_json("interests", "垃圾")                   # 期望对象
-    snap = cur.snapshot(kv=fake_kv)
+    snap = cur.snapshot()
     assert snap["items"] == [] and snap["meta"] == {} and snap["interests"] == {}
 
 
@@ -372,7 +438,7 @@ def test_snapshot_status_filter_keeps_default_doing(fake_kv):
         {"term": "b", "status": "live"},
         {"term": "c"},  # 无 status 视为 doing
     ])
-    snap = cur.snapshot(status="doing", kv=fake_kv)
+    snap = cur.snapshot(status="doing")
     terms = {i["term"] for i in snap["items"]}
     assert terms == {"a", "c"}  # 默认 doing；b(live) 被过滤，但 c 无字段不丢
 
@@ -404,7 +470,7 @@ def test_fetch_serp_raises_source_unavailable_on_connect_failure(monkeypatch):
     """连不上 DDG（Render 出口实测）→ 源级不可用，上层中止整批。"""
     monkeypatch.setattr(ss.time, "sleep", lambda s: None)
     with pytest.raises(SourceUnavailable) as ei:
-        ss.fetch_serp("cba housing market downturn outlook", session=_DownSession())
+        fetch_serp("cba housing market downturn outlook", session=_DownSession())
     assert ei.value.source == "duckduckgo"
     assert "连不上" in str(ei.value)
     assert len(ei.value.attempts) == 4          # 4 发都记了账
@@ -415,7 +481,7 @@ def test_fetch_serp_raises_source_unavailable_on_challenge_pages(monkeypatch):
     """被判定异常时仍可能回 202 挑战页 → 仍是源级不可用，不能当「无结果」。"""
     monkeypatch.setattr(ss.time, "sleep", lambda s: None)
     with pytest.raises(SourceUnavailable) as ei:
-        ss.fetch_serp("some term", session=_ChallengeSession())
+        fetch_serp("some term", session=_ChallengeSession())
     assert ei.value.source == "duckduckgo"
     assert "未返回可用结果" in str(ei.value)
     assert all(a["status"] == 202 for a in ei.value.attempts)
@@ -439,7 +505,7 @@ def test_fetch_serp_uses_only_user_agent(monkeypatch):
     """2026-11-13：202 挑战页是显式 Accept / Accept-Language / Referer 触发的。
     只发 User-Agent 才能拿到真结果；防止有人把「更像浏览器」的头加回来。"""
     monkeypatch.setattr(ss.time, "sleep", lambda s: None)
-    out = ss.fetch_serp("example term", session=_MinimalHeaderSession())
+    out = fetch_serp("example term", session=_MinimalHeaderSession())
     assert out["engine"] == "duckduckgo"
     assert [x["domain"] for x in out["items"]] == ["example.com", "other.org", "plain.example.net"]
     assert set(ss.BASE_HEADERS) == {"User-Agent"}
@@ -474,7 +540,7 @@ def test_fetch_serp_tries_four_distinct_hosts(monkeypatch):
     4 发必须覆盖 4 个不同 host，别退化回两个子域来回撞。"""
     monkeypatch.setattr(ss.time, "sleep", lambda s: None)
     fake = _HtmlSession(down_hosts=["html.duckduckgo.com"])
-    out = ss.fetch_serp("example term", session=fake)
+    out = fetch_serp("example term", session=fake)
     assert fake.seen == ["html.duckduckgo.com", "duckduckgo.com"]
     assert [x["domain"] for x in out["items"]] == ["example.com", "other.org", "plain.example.net"]
     assert out["engine"] == "duckduckgo"
@@ -486,7 +552,7 @@ def test_fetch_serp_connect_failure_reports_hosts_and_error_kind(monkeypatch):
     别再甩一长串被 UI 截断的 HTTPSConnectionPool 文本。"""
     monkeypatch.setattr(ss.time, "sleep", lambda s: None)
     with pytest.raises(SourceUnavailable) as ei:
-        ss.fetch_serp("petroleum", session=_DownSession())
+        fetch_serp("petroleum", session=_DownSession())
     msg = str(ei.value)
     assert "连不上" in msg and "ConnectTimeout" in msg
     for host in ("html.duckduckgo.com", "duckduckgo.com",
@@ -504,12 +570,12 @@ def test_fetch_serp_honors_dedicated_proxy_env(monkeypatch):
     monkeypatch.setattr(ss.time, "sleep", lambda s: None)
     monkeypatch.setattr(ss, "SERP_HTTPS_PROXY", "")
     plain = _HtmlSession()
-    ss.fetch_serp("x", session=plain)
+    fetch_serp("x", session=plain)
     assert "proxies" not in plain.kwargs[0]
 
     monkeypatch.setattr(ss, "SERP_HTTPS_PROXY", "http://127.0.0.1:8899")
     proxied = _HtmlSession()
-    ss.fetch_serp("x", session=proxied)
+    fetch_serp("x", session=proxied)
     assert proxied.kwargs[0]["proxies"] == {
         "http": "http://127.0.0.1:8899", "https": "http://127.0.0.1:8899"}
 
@@ -543,7 +609,7 @@ def test_fetch_serp_falls_back_to_reader_when_direct_all_down(monkeypatch):
     monkeypatch.setattr(ss.time, "sleep", lambda s: None)
     monkeypatch.setattr(ss, "SERP_FALLBACK_READER", True)
     fake = _ReaderSession()
-    out = ss.fetch_serp("petroleum", session=fake)
+    out = fetch_serp("petroleum", session=fake)
     assert out["via"] == "reader"
     assert out["engine"] == "duckduckgo"     # 写进 KV 的口径不变
     assert [x["domain"] for x in out["items"]] == ["example.com", "other.org", "plain.example.net"]
@@ -558,7 +624,7 @@ def test_fetch_serp_reader_can_be_disabled(monkeypatch):
     monkeypatch.setattr(ss, "SERP_FALLBACK_READER", False)
     fake = _ReaderSession()
     with pytest.raises(SourceUnavailable):
-        ss.fetch_serp("petroleum", session=fake)
+        fetch_serp("petroleum", session=fake)
     assert not any("r.jina.ai" in u for u in fake.urls)
 
 
@@ -568,7 +634,7 @@ def test_fetch_serp_reports_reader_failure_when_both_paths_down(monkeypatch):
     monkeypatch.setattr(ss, "SERP_FALLBACK_READER", True)
     fake = _ReaderSession(reader_down=True)
     with pytest.raises(SourceUnavailable) as ei:
-        ss.fetch_serp("petroleum", session=fake)
+        fetch_serp("petroleum", session=fake)
     assert "Reader 中转也连不上" in str(ei.value)
     assert "ConnectTimeout" in str(ei.value)
 
@@ -577,12 +643,12 @@ def test_fetch_serp_skips_direct_after_egress_marked_down(monkeypatch):
     """★一批 20 词不能每词都撞 4 次 6 秒超时：判定出口不通后，后续词直接走兜底。"""
     monkeypatch.setattr(ss.time, "sleep", lambda s: None)
     monkeypatch.setattr(ss, "SERP_FALLBACK_READER", True)
-    first = ss.fetch_serp("petroleum", session=_ReaderSession())
+    first = fetch_serp("petroleum", session=_ReaderSession())
     assert first["via"] == "reader" and not first.get("skipped_direct")
     assert ss._STATE["direct_down_until"] > 0
 
     fake = _ReaderSession()
-    second = ss.fetch_serp("another term", session=fake)
+    second = fetch_serp("another term", session=fake)
     assert second.get("skipped_direct") is True
     assert len(fake.urls) == 1 and "r.jina.ai" in fake.urls[0]  # 一次直连都没打
 
@@ -593,7 +659,7 @@ def test_fetch_serp_fast_path_falls_through_when_reader_also_down(monkeypatch):
     monkeypatch.setattr(ss, "SERP_FALLBACK_READER", True)
     ss._STATE["direct_down_until"] = float("inf")
     with pytest.raises(SourceUnavailable) as ei:
-        ss.fetch_serp("petroleum", session=_ReaderSession(reader_down=True))
+        fetch_serp("petroleum", session=_ReaderSession(reader_down=True))
     assert len(ei.value.attempts) == 4         # 直连 4 发照常跑完
     assert "Reader 中转也连不上" in str(ei.value)
 
@@ -601,6 +667,6 @@ def test_fetch_serp_fast_path_falls_through_when_reader_also_down(monkeypatch):
 def test_fetch_interest_raises_source_unavailable(monkeypatch):
     monkeypatch.setattr(st.time, "sleep", lambda s: None)
     with pytest.raises(SourceUnavailable) as ei:
-        st.fetch_interest("some term", session=_DownSession())
+        fetch_interest("some term", session=_DownSession())
     assert ei.value.source == "google-trends"
     assert "连不上" in str(ei.value)

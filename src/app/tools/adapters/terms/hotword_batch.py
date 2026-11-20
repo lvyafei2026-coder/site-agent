@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""热词分析的批次外壳：批次 trace 根 + 对外契约 + 循环图加载边界。
+"""热词分析的批次外壳：批次 trace 根 + 对外契约 + 循环图加载。
 
 本文件是热词子系统对外的执行入口（run_batch）。单词内部（补数/LLM/回写）在
 hotword_worker.py，取数在 hotword_fetch.py，候选筛选规则与 trace 常量在
@@ -32,11 +32,9 @@ from src.app.config import settings
 from src.app.graph.hotword_graph import get_hotword_graph
 from src.app.observability.langsmith import run_traced
 
-from src.app.tools.adapters.cloudflare.kv import CloudflareKV, get_kv
+from src.app.tools.adapters.cloudflare.kv import get_kv
 from .hotword_worker import _BatchAbort
-from .hotword_contract import (
-    _select_pending, BATCH_OK_MIN_RATE, BATCH_TRACE_NAME, WORD_TRACE_PREFIX,
-)
+from .hotword_contract import BATCH_TRACE_NAME
 from .hotword_loop import HotwordLoopState, summarize
 
 log = logging.getLogger(__name__)
@@ -64,20 +62,20 @@ def _trace_run_info(run, batch_id: str) -> dict[str, Any]:
     }
 
 
-def _batch_body(batch_run, *, limit: int, kv: Optional[CloudflareKV],
-                batch_id: str, prompt_version: Optional[str]) -> dict[str, Any]:
+def _batch_body(batch_run, *, limit: int, batch_id: str,
+                prompt_version: Optional[str]) -> dict[str, Any]:
     """批次 span 的执行体（模块级，避免 run_batch 内嵌 def）。
 
     第一个位置参数 batch_run 由 run_traced(pass_run=True) 注入；其余参数在 run_batch
     里用 functools.partial 绑定。KV 读失败 / 无候选这些提前返回也带同一条根 run 的回链。
     """
-    out = _run_batch(limit, kv, batch_run, batch_id, prompt_version)
+    out = _run_batch(limit, batch_run, batch_id, prompt_version)
     if batch_run is not None:
         out["traceRun"] = _trace_run_info(batch_run, batch_id)
     return out
 
 
-def run_batch(limit: int = 20, kv: Optional[CloudflareKV] = None,
+def run_batch(limit: int = 20,
               prompt_version: Optional[str] = None) -> dict[str, Any]:
     """读 KV 候选池 → 逐词分析（循环图驱动）→ 汇总。KV 不可达时整批失败，不写状态。
 
@@ -93,7 +91,7 @@ def run_batch(limit: int = 20, kv: Optional[CloudflareKV] = None,
       批次 run 经 state 显式传给图。
     """
     batch_id = f"hotwords-{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}"
-    body = partial(_batch_body, limit=limit, kv=kv,
+    body = partial(_batch_body, limit=limit,
                    batch_id=batch_id, prompt_version=prompt_version)
     resolved_version = (prompt_version
                         or (settings.default_prompt_versions or {}).get("hotwords", "v1"))
@@ -109,15 +107,15 @@ def run_batch(limit: int = 20, kv: Optional[CloudflareKV] = None,
     )
 
 
-def _run_batch(limit: int, kv: Optional[CloudflareKV], batch_run,
-               batch_id: str, prompt_version: Optional[str] = None) -> dict[str, Any]:
+def _run_batch(limit: int, batch_run, batch_id: str,
+               prompt_version: Optional[str] = None) -> dict[str, Any]:
     """run_batch 的执行体：构造循环图 initial state → invoke → 聚合回对外结构。
 
     batch_run 是批次 span 的 run，经 state 显式传给图里每个节点（每词 span 的父）。
     逐词循环、limit 封顶、候选/判例读取全部在 hotword_loop.py 的图里完成；
     本函数不写任何 while/for 调度，只做一次 invoke。
     """
-    kv = kv or get_kv()
+    kv = get_kv()
     limit = max(1, min(int(limit or 20), 50))
     resolved_version = (prompt_version
                         or (settings.default_prompt_versions or {}).get("hotwords", "v1"))

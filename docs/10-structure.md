@@ -186,13 +186,16 @@ flowchart LR
 `prompts/` 是基础设施，`services` 与 `tools/adapters` 都能直接依赖它——所以热词逐词分析
 从 `prompts/__init__.py` 取纯加载函数，而不是绕道 `services/prompt_service.py`。
 
-工具包内还有两条更细的：
+工具包内还有三条更细的（全仓共四条）：
 
 1. `tools/base.py` 是纯叶子：只依赖标准库与 pydantic，不 import 任何 `src.app.*`。
 2. 没有函数内 `import` 解环：顺序由模块层级保证（`registry → *_tools → base`）。
    入口层/批次外壳同理——后台图装配下沉到 `graph/hotword_graph.py` 叶子模块，
-   `builder.py` re-export、`hotword_batch.py` 顶层静态取图。`adapters/` 例外，那里允许
-   为可选依赖做延迟导入。
+   `builder.py` re-export、`hotword_batch.py` 顶层静态取图。
+3. 全仓禁止函数内 `import src.app.*`：包内依赖一律顶层声明；`adapters/` 里第三方
+   可选依赖（`google-api-python-client` / `langsmith` / `openai`）的按需加载不在此列。
+
+四条都由 `test/test_architecture.py` 用 AST 扫描守着。
 
 ## 5. 装配与工具契约
 

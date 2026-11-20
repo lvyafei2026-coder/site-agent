@@ -8,16 +8,12 @@
     CloudflareKV  共享业务表（RADAR_KV：saved / rejected / ai:v3: / serp:v1: 等，
                   键名与 console/src/store.js、radar/src/store.js 严格对齐，见下方常量）。
                   fail-open：读失败返回默认值并留痕，绝不因 KV 抖动中断一批词。
-                  自带 transport 注入，测试可完全离线。
     WorkersKV     agent 私有状态标记（键统一带 `agent:` 前缀）。
                   fail-fast：出错直接抛异常，状态标记写不进去必须让人知道。
                   建立在同一个 CloudflareKV 底层请求之上。
 
 架构约束（2026-11-12 定）：radar / console / agent 共用这个 KV 命名空间，agent 直接经
 REST API 读写，不调任何 App 接口；写侧口径在 terms/curation.py 复刻 store.js。
-
-transport 可注入：生产走 requests 打 Cloudflare；测试注入内存实现（test/ 里的 FakeKV），
-不联网、不依赖 Cloudflare 凭据。
 """
 
 from __future__ import annotations
@@ -75,31 +71,24 @@ def _api_base(account_id: str, namespace_id: str) -> str:
 
 
 class CloudflareKV:
-    """Cloudflare KV REST 客户端（fail-open）。transport 为 None 时走 requests 打真实 API。
-
-    transport 签名：(method: str, url: str, headers: dict, body: Optional[str]) -> (status: int, text: str)
-    注入假 transport 即可在单测里完全离线验证读写逻辑。
-    """
+    """Cloudflare KV REST 客户端（fail-open）：读写共享业务表，失败降级不中断。"""
 
     def __init__(
         self,
         account_id: str,
         namespace_id: str,
         api_token: str,
-        transport: Optional[Callable[[str, str, dict, Optional[str]], tuple[int, str]]] = None,
     ) -> None:
         self.account_id = account_id
         self.namespace_id = namespace_id
         self.api_token = api_token
-        self.transport = transport
 
     @classmethod
-    def from_env(cls, transport=None) -> "CloudflareKV":
+    def from_env(cls) -> "CloudflareKV":
         return cls(
             account_id=os.environ.get("CF_ACCOUNT_ID", ""),
             namespace_id=os.environ.get("KV_NAMESPACE_ID", ""),
             api_token=os.environ.get("CF_API_TOKEN", ""),
-            transport=transport,
         )
 
     @property
@@ -117,11 +106,6 @@ class CloudflareKV:
 
         # __list__ 是内部标记（区分 /keys 与 /values），绝不能发给 Cloudflare
         q = {k: v for k, v in (params or {}).items() if k != "__list__"} or None
-
-        if self.transport is not None:
-            full = url + ("?" + urllib.parse.urlencode(q) if q else "")
-            headers = {"Authorization": "Bearer " + self.api_token}
-            return self.transport(method, full, headers, body)
 
         # 生产路径：真实打 Cloudflare
         headers = {"Authorization": "Bearer " + self.api_token}
@@ -185,7 +169,7 @@ class CloudflareKV:
         即 result 是**数组**、游标在 result_info 里（早期版本曾按 {"result":{"keys":[...]}}
         写，结果线上直接 "'list' object has no attribute 'get'"）。两种都兼容。
         """
-        if not self.configured and self.transport is None:
+        if not self.configured:
             return []
         out: list[str] = []
         cursor = None
@@ -296,15 +280,13 @@ def atomic_update(
         return ok, updated
 
 
-# 模块级单例：生产路径默认从这里取；单测显式传 kv 覆盖。
+# 模块级单例：生产路径从这里取，避免每批词重建客户端。
 _DEFAULT_KV: Optional[CloudflareKV] = None
 
 
-def get_kv(transport=None) -> CloudflareKV:
-    """返回进程内共享的 KV 客户端（按环境变量构造）。transport 仅用于测试。"""
+def get_kv() -> CloudflareKV:
+    """返回进程内共享的 KV 客户端（按环境变量构造）。"""
     global _DEFAULT_KV
-    if transport is not None:
-        return CloudflareKV.from_env(transport=transport)
     if _DEFAULT_KV is None:
         _DEFAULT_KV = CloudflareKV.from_env()
     return _DEFAULT_KV
