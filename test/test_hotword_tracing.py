@@ -8,8 +8,10 @@ trace 全部由 observability.observed 切面声明，父子靠 contextvar 自�
     外层 root → 热词 run → LangGraph → 节点 → 词 → IO / LLM
 本文件验证三件事：
   ① 一条树：6 个词展开在同一条 trace 下，不散成独立根；LLM 挂在对应词下；
-  ② 可观测：SERP / Trends / KV 读写 / RuntimeTool 各有 tool span 与真实出入参，
-     源挂了 span 标红且带 traceback，业务照常降级；
+  ② 可观测：热词线与常规线共用 registry 的统一 tool span（tool:fetch_serp /
+     tool:fetch_trend / tool:write_hotword_result / tool:next_candidate …），
+     出入参是真实 ToolOutput；源挂了 span 标红且 retryable=True，业务照常降级，
+     被跳过的取数不伪造 span，只在词 span 上留 note；
   ③ 零开销：关追踪时不建 span、不注入回链字段、不 import SDK 运行时。
 
 父子断言用「后代关系」而不是「直接 parent」——LangGraph 会自动插入图/节点层，
@@ -26,6 +28,7 @@ from langsmith import trace as ls_trace, traceable, utils
 from langsmith.run_trees import RunTree
 
 from src.app.config import settings
+from src.app.enums import TraceName
 from src.app.tools.adapters.cloudflare import kv as kvk
 from src.app.tools.adapters.hotwords import hotword_contract as hwk
 from src.app.tools.adapters.hotwords import hotword_fetch
@@ -33,7 +36,6 @@ from src.app.tools.adapters.hotwords import hotword_llm
 from src.app.tools.adapters.hotwords import scrape_serp, scrape_trend
 from src.app.tools.adapters.hotwords.source_errors import SourceUnavailable
 from src.app.graph import hotword_graph
-from src.app.graph import state as graph_state
 from src.app.tools.registry import tool_registry
 
 
@@ -107,7 +109,7 @@ def test_batch_tree_is_nested_under_graph_root(fake_kv, monkeypatch, traced_runs
     with ls_trace("site-agent:analyze_hotwords") as root:
         out = hotword_graph.run_hotwords(limit=6)
 
-    run = next(r for r in traced_runs if r.name == hwk.RUN_TRACE_NAME)
+    run = next(r for r in traced_runs if r.name == TraceName.HOTWORD_RUN)
     words = [r for r in traced_runs if r.name.startswith(hwk.WORD_TRACE_PREFIX)]
     llms = [r for r in traced_runs if r.name == "ChatOpenAI"]
 
@@ -143,7 +145,7 @@ def test_word_span_marks_business_error_without_breaking_others(fake_kv, monkeyp
     with ls_trace("site-agent:analyze_hotwords") as root:
         out = hotword_graph.run_hotwords(limit=5)
 
-    run = next(r for r in traced_runs if r.name == hwk.RUN_TRACE_NAME)
+    run = next(r for r in traced_runs if r.name == TraceName.HOTWORD_RUN)
     words = [r for r in traced_runs if r.name.startswith(hwk.WORD_TRACE_PREFIX)]
     assert str(run.parent_run_id) == str(root.id)
     assert len(words) == 5
@@ -187,7 +189,7 @@ def test_batch_nests_under_real_langgraph_node(fake_kv, monkeypatch, traced_runs
     result = graph.invoke({"out": {}},
                           config={"run_name": "site-agent:analyze_hotwords"})
 
-    run = next(r for r in traced_runs if r.name == hwk.RUN_TRACE_NAME)
+    run = next(r for r in traced_runs if r.name == TraceName.HOTWORD_RUN)
     words = [r for r in traced_runs if r.name.startswith(hwk.WORD_TRACE_PREFIX)]
     assert node_run_ids and node_run_ids[0]
     assert str(run.parent_run_id) == node_run_ids[0]
@@ -204,11 +206,11 @@ def test_early_return_still_has_batch_span_and_link(monkeypatch, traced_runs):
         def get_json(self, *a, **k):
             raise RuntimeError("unreachable")
 
-    monkeypatch.setattr(graph_state, "get_kv", lambda: BoomKV())
+    monkeypatch.setattr(hwk, "get_kv", lambda: BoomKV())
     with ls_trace("site-agent:analyze_hotwords") as root:
         out = hotword_graph.run_hotwords(limit=5)
 
-    run = next(r for r in traced_runs if r.name == hwk.RUN_TRACE_NAME)
+    run = next(r for r in traced_runs if r.name == TraceName.HOTWORD_RUN)
     assert str(run.parent_run_id) == str(root.id)
     assert "候选查询失败" in out["error"]
     assert out["traceRun"]["traceRunId"] == str(run.id)
@@ -228,7 +230,7 @@ def test_tracing_off_has_no_spans_and_plain_result(fake_kv, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 工具可见性：SERP / Trends / KV / 25 个 RuntimeTool 都要在 Smith 上看得到出入参
+# 工具可见性：热词线与常规线共用 registry 的 30 个 RuntimeTool，都要看得到出入参
 # ---------------------------------------------------------------------------
 def test_run_tool_spans_capture_serp_trend_kv_io(fake_kv, monkeypatch, traced_runs):
     """每词三条 tool span + 每轮一次取词 + 判例读一次，父链与出入参都要对。"""
@@ -240,50 +242,59 @@ def test_run_tool_spans_capture_serp_trend_kv_io(fake_kv, monkeypatch, traced_ru
     with ls_trace("site-agent:analyze_hotwords") as root:
         out = hotword_graph.run_hotwords(limit=3)
 
-    run = next(r for r in traced_runs if r.name == hwk.RUN_TRACE_NAME)
+    run = next(r for r in traced_runs if r.name == TraceName.HOTWORD_RUN)
     words = [r for r in traced_runs if r.name.startswith(hwk.WORD_TRACE_PREFIX)]
     tools = [r for r in traced_runs if r.run_type == "tool"]
     assert str(run.parent_run_id) == str(root.id)
     assert len(words) == 3
-    # 3 词 × (serp/trend/kv.write) + 3 次取词（达 limit 即停）+ 1 条判例读
+    # 3 词 × (fetch_serp/fetch_trend/write_hotword_result) + 3 次取词（达 limit 即停）+ 1 条判例读
     assert len(tools) == 13
 
-    readers = [r for r in tools if r.name == "tool:kv.next-candidate"]
+    readers = [r for r in tools if r.name == "tool:next_candidate"]
     assert len(readers) == 3 and all(_under(traced_runs, r, str(run.id)) for r in readers)
-    assert readers[0].inputs["seenCount"] == 0
-    assert readers[0].outputs["term"] == "term 0"
-    assert readers[-1].outputs["term"] == "term 2"
+    assert readers[0].inputs["seen"] == []
+    assert readers[0].outputs["ok"] is True
+    assert readers[0].outputs["result"]["term"] == "term 0"
+    assert readers[-1].outputs["result"]["term"] == "term 2"
 
-    ex_readers = [r for r in tools if r.name == "tool:kv.read-examples"]
+    ex_readers = [r for r in tools if r.name == "tool:read_examples"]
     assert len(ex_readers) == 1 and _under(traced_runs, ex_readers[0], str(run.id))
+    assert ex_readers[0].outputs["ok"] is True
 
     per_word = [r for r in tools if r not in readers and r not in ex_readers]
     word_ids = {str(w.id) for w in words}
     assert all(any(_under(traced_runs, r, wid) for wid in word_ids) for r in per_word)
-    for name in ("tool:serp", "tool:trend", "tool:kv.write"):
+    for name in ("tool:fetch_serp", "tool:fetch_trend", "tool:write_hotword_result"):
         assert sum(1 for r in per_word if r.name == name) == 3
 
-    serp = next(r for r in per_word if r.name == "tool:serp")
-    assert "term" in serp.inputs and serp.inputs["cacheKey"].startswith(kvk.SERP_PREFIX)
-    assert serp.outputs["fromCache"] is False
-    assert "itemCount" in serp.outputs and "competition" in serp.outputs
-    serp_keys = {w["key"] for w in serp.outputs["kvWrites"]}
+    serp = next(r for r in per_word if r.name == "tool:fetch_serp")
+    assert serp.inputs == {"term": "term 0"}
+    assert serp.outputs["ok"] is True
+    body = serp.outputs["result"]
+    assert body["fromCache"] is False
+    assert "itemCount" in body and "competition" in body
+    serp_keys = {w["key"] for w in body["writes"]}
     assert any(k.startswith(kvk.SERP_PREFIX) for k in serp_keys)
     assert kvk.COMPETITION_KEY in serp_keys
-    assert all(w["ok"] for w in serp.outputs["kvWrites"])
+    assert all(w["ok"] for w in body["writes"])
+    # 适配器 note 的诊断属于这次工具调用，不漂到外层词 span
+    assert serp.outputs["engine"] == "duckduckgo"
 
-    trend = next(r for r in per_word if r.name == "tool:trend")
-    assert trend.inputs["cacheKey"].startswith(kvk.TREND_PREFIX)
-    assert "pointCount" in trend.outputs and trend.outputs["kvWrites"]
+    trend = next(r for r in per_word if r.name == "tool:fetch_trend")
+    assert trend.inputs == {"term": "term 0"}
+    tbody = trend.outputs["result"]
+    assert tbody["ok"] is True and "pointCount" in tbody and tbody["writes"]
+    assert trend.outputs["pointCount"] == 1
 
-    kvwrite = next(r for r in per_word if r.name == "tool:kv.write")
-    assert kvwrite.inputs["aiCacheKey"].startswith(kvk.AI_CACHE_PREFIX)
+    kvwrite = next(r for r in per_word if r.name == "tool:write_hotword_result")
     assert kvwrite.inputs["verdict"] == "不做"
-    assert kvwrite.outputs["textChars"] > 0 and kvwrite.outputs["textPreview"]
-    assert kvwrite.outputs["status"] == "rejected"
-    assert kvk.AI_CACHE_PREFIX + kvk.term_key(kvwrite.inputs["term"]) in {
-        w["key"] for w in kvwrite.outputs["writes"]}
-    assert kvwrite.outputs["writeErrors"] == []
+    assert kvwrite.inputs["item"]["term"] == "term 0"
+    wbody = kvwrite.outputs["result"]
+    assert wbody["textChars"] > 0 and wbody["textPreview"]
+    assert wbody["status"] == "rejected"
+    assert kvk.AI_CACHE_PREFIX + kvk.term_key("term 0") in {
+        w["key"] for w in wbody["writes"]}
+    assert wbody["writeErrors"] == []
 
     llms = [r for r in traced_runs if r.name == "ChatOpenAI"]
     assert len(llms) == 3
@@ -293,7 +304,8 @@ def test_run_tool_spans_capture_serp_trend_kv_io(fake_kv, monkeypatch, traced_ru
 
 def test_source_down_marks_tool_spans_red_and_batch_continues(fake_kv, monkeypatch,
                                                              traced_runs):
-    """SERP/Trends 源整体挂掉：tool span 标红带真因，整轮不中止、降级提示可见。"""
+    """源整体挂掉：只撞一次，span 标红带真因且 retryable=True；后续词跳过取数
+    （没有工具调用就不伪造 span，只在词 span 上留 note），整轮不中止。"""
     _seed(fake_kv, monkeypatch, count=8)
 
     def serp_boom(term, session=None, limit=10):
@@ -308,13 +320,21 @@ def test_source_down_marks_tool_spans_red_and_batch_continues(fake_kv, monkeypat
     with ls_trace("site-agent:analyze_hotwords"):
         out = hotword_graph.run_hotwords(limit=8)
 
-    serp_spans = [r for r in traced_runs if r.name == "tool:serp"]
-    trend_spans = [r for r in traced_runs if r.name == "tool:trend"]
-    assert len(serp_spans) == 8 and len(trend_spans) == 8
-    assert any(r.error and "SourceUnavailable" in r.error for r in serp_spans)
-    assert any(r.error and "SourceUnavailable" in r.error for r in trend_spans)
-    assert any(r.outputs.get("skipped") for r in serp_spans)
-    assert any(r.outputs.get("skipped") for r in trend_spans)
+    serp_spans = [r for r in traced_runs if r.name == "tool:fetch_serp"]
+    trend_spans = [r for r in traced_runs if r.name == "tool:fetch_trend"]
+    assert len(serp_spans) == 1 and len(trend_spans) == 1
+    assert "连不上 DuckDuckGo 出口" in serp_spans[0].error
+    assert "Google Trends 连接超时" in trend_spans[0].error
+    assert serp_spans[0].outputs["ok"] is False
+    assert serp_spans[0].outputs["retryable"] is True
+    assert trend_spans[0].outputs["retryable"] is True
+
+    words = [r for r in traced_runs if r.name.startswith(hwk.WORD_TRACE_PREFIX)]
+    assert len(words) == 8
+    skipped = [w for w in words if w.outputs.get("serpSkipped")]
+    assert len(skipped) == 7                       # 首词真撞了一次，其余 7 词跳过
+    assert all(w.outputs.get("trendSkipped") for w in skipped)
+    assert any("SERP 未取到" in (w.outputs.get("notice") or "") for w in words)
 
     assert out["serpDisabled"] is True and out["trendsDisabled"] is True
     assert "SERP 源不可用" in out["note"] and "趋势源不可用" in out["note"]
@@ -322,7 +342,7 @@ def test_source_down_marks_tool_spans_red_and_batch_continues(fake_kv, monkeypat
 
 
 def test_kv_write_failure_is_visible_on_tool_span(fake_kv, monkeypatch, traced_runs):
-    """正文写失败：tool:kv.write 上直接看到失败的 key 与「已收手不写状态」。"""
+    """正文写失败：tool:write_hotword_result 上直接看到失败的 key 与「已收手不写状态」。"""
     _seed(fake_kv, monkeypatch, count=1)
     failed_key = kvk.AI_CACHE_PREFIX + "term 0"
     fake_kv.fail_keys.add(failed_key)
@@ -330,17 +350,17 @@ def test_kv_write_failure_is_visible_on_tool_span(fake_kv, monkeypatch, traced_r
     with ls_trace("site-agent:analyze_hotwords"):
         out = hotword_graph.run_hotwords(limit=1)
 
-    span = next(r for r in traced_runs if r.name == "tool:kv.write")
-    assert span.outputs["stoppedAfterTextFailure"] is True
-    assert failed_key in span.outputs["writeErrors"]
-    assert any(w["key"] == failed_key and w["ok"] is False
-               for w in span.outputs["writes"])
+    span = next(r for r in traced_runs if r.name == "tool:write_hotword_result")
+    body = span.outputs["result"]
+    assert body["stoppedAfterTextFailure"] is True
+    assert failed_key in body["writeErrors"]
+    assert any(w["key"] == failed_key and w["ok"] is False for w in body["writes"])
     assert out["failed"] == 1 and out["items"][0]["writeErrors"] == [failed_key]
     assert fake_kv.get_json("saved", []) == [] and fake_kv.get_json("rejected", []) == []
 
 
 def test_runtime_tools_emit_tool_spans_with_io(fake, traced_runs):
-    """25 个 RuntimeTool 统一打点：成功带返回体，Input 校验失败要让 span 标红。"""
+    """30 个 RuntimeTool 统一打点：成功带返回体，Input 校验失败要让 span 标红。"""
     ok = tool_registry.run("get_hotwords", limit=5)
     bad = tool_registry.run("get_flag")       # key 必填，故意不传
 

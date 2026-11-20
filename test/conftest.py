@@ -34,11 +34,12 @@ class FakeRuntime(PromotionOps):
         ]
 
     # ---- 读 ----
-    # 说明：生产里 HotwordsOps.hotwords / analyze_hotwords 已不再委托给这里的同名方法
-    #（2026-11-12 去接口化：改由 agent 直读共享 KV，见 ../cloudflare/kv.py）。但 FakeRuntime 作为
-    # RuntimeService 的测试替身，仍需提供 hotwords 数据桩——get_hotwords 工具经 tool_registry
-    # 走到 self.ops.hotwords。真正的 KV 读写由 test/test_kv_hotwords.py + test_hotwords.py
-    # 经 fake_kv 夹具覆盖。analyze_hotwords 现由 run_hotwords 直接测，这里不另立桩。
+    # 说明：生产里 HotwordsOps.hotwords 已不再委托给这里的同名方法（2026-11-12 去接口化：
+    # 改由 adapters/hotwords/curation 直读共享 KV）。但 FakeRuntime 作为 RuntimeService 的
+    # 测试替身，仍需提供 hotwords 数据桩——get_hotwords 工具经 tool_registry 走到
+    # self.ops.hotwords。真正的 KV 读写由 test_kv_hotwords.py + test_hotwords.py 经 fake_kv
+    # 夹具覆盖；热词线的 next_candidate / fetch_serp / fetch_trend / write_hotword_result
+    # 同样走真实 Ops + fake_kv，这里不另立桩。
 
     def hotwords(self, status="doing", limit=40):
         self.counts["hotwords"] += 1
@@ -237,13 +238,19 @@ class FakeKV:
 
 @pytest.fixture
 def fake_kv(monkeypatch):
-    """内存 KV 替身：生产函数一律自己取 get_kv()，测试只替换取数点。"""
+    """内存 KV 替身：生产函数一律自己取 get_kv()，测试只替换取数点。
+
+    热词线的 IO 已全部收进工具（next_candidate / read_examples / fetch_serp /
+    fetch_trend / write_hotword_result），句柄由这些适配器自取，所以逐个 patch
+    它们的 get_kv 引用；state 不再携带 kv 句柄。
+    """
     from src.app.tools.adapters.cloudflare import kv as kvmod
-    from src.app.tools.adapters.hotwords import curation
-    from src.app.graph import state as graph_state
+    from src.app.tools.adapters.hotwords import (
+        curation, hotword_contract, hotword_fetch, hotword_write,
+    )
 
     fake = FakeKV()
-    for mod in (kvmod, curation, graph_state):
+    for mod in (kvmod, curation, hotword_contract, hotword_fetch, hotword_write):
         monkeypatch.setattr(mod, "get_kv", lambda: fake)
     return fake
 

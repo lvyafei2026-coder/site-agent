@@ -88,7 +88,7 @@ class ToolKind(StrEnum):
 
     READ = "read"      # 只读，无副作用（缺省）
     LEDGER = "ledger"  # 写台账 / KV / 本地文件，可重复执行（幂等）
-    WRITE = "write"    # 不可逆的外部发布（git push / 发文章 / 批量分析回写）
+    WRITE = "write"    # 不可逆的外部动作（git push / 空提交重推构建 / 发 DEV 文章 / 发通知）
 
 
 class LlmThinking(StrEnum):

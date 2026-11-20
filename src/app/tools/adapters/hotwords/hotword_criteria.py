@@ -9,8 +9,8 @@
 
 拆分自 hotwords.py（2026-11-17）：该文件当时 1200+ 行，判据、LLM 调用、KV 写入、
 编排逻辑混在一起；本模块承载其中「判读」这一层。编排已于 2026-11-20 分层归位成
-graph（热词图装配 + 运行入口）、nodes（循环节点）、services（单词分析与回填）三层，
-hotwords.py 退为 adapters 门面。
+graph（热词图装配 + 运行入口）、nodes（循环节点）、services（单词编排）三层，
+IO 落在同包的 hotword_fetch / hotword_write / hotword_kv_io，经 tools 层的工具调用。
 """
 
 from __future__ import annotations

@@ -13,8 +13,9 @@
 
 切面入口：
   - `observed(...)`  装饰器：业务函数在**定义处**声明 span（名字/出入参/标红/回链），
-    函数体零 trace 代码。热词的 run / 取词 / 判例 / 逐词 / serp / trend / kv.write 全走它。
-  - `trace_tool(...)` 包裹一次调用：registry 给 25 个 RuntimeTool 统一打点用。
+    函数体零 trace 代码。两条线的运行入口（run_workflow / run_hotwords）与热词逐词走它。
+  - `trace_tool(...)` 包裹一次调用：registry 给 30 个 RuntimeTool 统一打点用。
+    两条线的 IO 都经 registry，所以 `tool:*` span 只有这一个来源（适配器不自打点）。
   - `traceable(name)` 装饰器：intent / extraction / metrics 三个实现类的方法用
     （import 期决定是否包装）。
 
@@ -200,22 +201,34 @@ def _call_span(func, *, name: str, run_type: str = "chain", inputs: dict | None 
 
     父子靠 contextvar 自动继承，不接 parent / pass_run——那是旧并发模型的残留。
     tracing 关闭时直接 func()，不 import SDK、不算出入参，零开销。
+    ★本 span 自己持有一个 note 桶：适配器在工具调用里挂的诊断（engine / attempts /
+      fetchError）属于这次调用，不能漂到外层词 span 上——一个词里 SERP 与 Trends
+      都写 fetchError，共用外层桶会互相覆盖。
     """
     if not tracing_enabled():
         return func()
 
     from langsmith import trace as ls_trace
 
-    with ls_trace(name, run_type=run_type,
-                  inputs=_compact_envelope(inputs or {}),
-                  tags=tags or [], metadata=metadata or {}) as run:
-        result = func()
-        out = outputs(result) if callable(outputs) else outputs
-        err = error(result) if callable(error) else error
-        if out is not None or err:
-            run.end(outputs=_compact_envelope(out or {}),
-                    error=str(err)[:1000] if err else None)
-        return result
+    notes: dict[str, Any] = {}
+    token = _span_notes.set(notes)
+    try:
+        with ls_trace(name, run_type=run_type,
+                      inputs=_compact_envelope(inputs or {}),
+                      tags=tags or [], metadata=metadata or {}) as run:
+            result = func()
+            out = outputs(result) if callable(outputs) else outputs
+            if isinstance(out, dict) and notes:
+                out = {**out, **notes}
+            elif out is None and notes:
+                out = notes
+            err = error(result) if callable(error) else error
+            if out is not None or err:
+                run.end(outputs=_compact_envelope(out or {}),
+                        error=str(err)[:1000] if err else None)
+            return result
+    finally:
+        _span_notes.reset(token)
 
 
 def trace_tool(func, *, name: str, inputs: dict | None = None,
@@ -237,8 +250,9 @@ def observed(name, *, kind: str = "chain", inputs=None, outputs=None,
     这是「装饰函数」的切面入口；包裹单次调用的场合用 `trace_tool`（registry）。
     业务函数只在**定义处**用装饰器声明观测方式，函数体不出现任何 trace 代码：
 
-        @observed("tool:serp", kind="tool", inputs=serp_inputs, outputs=serp_outputs)
-        def _throttled_serp(term, kv): ...
+        @observed(TraceName.HOTWORD_RUN, kind="chain", inputs=_run_inputs,
+                  outputs=_run_outputs, link="traceRun")
+        def run_hotwords(limit=20, prompt_version=None): ...
 
     关键约定：
       - 父子关系靠 LangSmith contextvar 自动继承，切面**不传 parent**。

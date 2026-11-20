@@ -19,7 +19,6 @@ from src.app.tools.adapters.hotwords import hotword_fetch
 from src.app.tools.adapters.hotwords import hotword_llm
 from src.app.tools.adapters.hotwords import scrape_serp, scrape_trend
 from src.app.graph import hotword_graph
-from src.app.graph import state as graph_state
 from src.app.services.hotword_service import _analyze_one
 from src.app.services.tool_service import INTENT_TOOLS
 from src.app.tools.registry import tool_registry
@@ -152,14 +151,17 @@ def test_serp_brief_fallback_to_domains():
 
 
 def test_analyze_hotwords_is_a_line_not_a_tool():
-    """热词分析是编排（走 graph 热词图），不是工具链里的一员。
+    """两条线都是编排：编排本身不进 registry，编排调用的 IO 才是工具。
 
     2026-11-20 分层归位：analyze_hotwords 从 tools 移除，由独立的 `POST /hotwords`
-    触发 graph 的 run_hotwords。工具层只剩纯 IO 工具。
+    触发 graph 的 run_hotwords；热词线的逐词 IO 与常规线一样经 tool_service 调 registry。
     """
     assert "analyze_hotwords" not in tool_registry.names()
     assert "analyze_hotwords" not in INTENT_TOOLS
     assert "get_hotwords" in INTENT_TOOLS[Intent.SELECT_PAGES.value]
+    for name in ("next_candidate", "read_examples", "fetch_serp",
+                 "fetch_trend", "write_hotword_result"):
+        assert name in tool_registry.names()
 
 
 # ---------------------------------------------------------------------------
@@ -538,17 +540,17 @@ def test_select_pending_excludes_curated(fake_kv):
     fake_kv.put_json("rejected", [{"key": kvk.term_key("b"), "term": "b", "status": "rejected"}])
     fake_kv.put_json("tags", {kvk.term_key("c"): ["工具查询"]})
     fake_kv.put_text(kvk.AI_CACHE_PREFIX + kvk.term_key("d"), "already analyzed")
-    pending = hwk.select_pending(fake_kv, set())
+    pending = hwk.select_pending(set())
     assert pending is None  # 已收藏 / 不做 / 打标签 / 已分析 全部剔除
 
 
 def test_select_pending_returns_one_and_respects_seen(fake_kv):
     """每轮只问一个词；seen 里的 key 被跳过（防 KV 最终一致导致重复取词）。"""
     fake_kv.put_json("candidates", [{"term": f"t{i}"} for i in range(3)])
-    first = hwk.select_pending(fake_kv, set())
+    first = hwk.select_pending(set())
     assert first["term"] == "t0"
-    assert hwk.select_pending(fake_kv, {first["key"]})["term"] == "t1"
-    assert hwk.select_pending(fake_kv, {kvk.term_key(f"t{i}") for i in range(3)}) is None
+    assert hwk.select_pending({first["key"]})["term"] == "t1"
+    assert hwk.select_pending({kvk.term_key(f"t{i}") for i in range(3)}) is None
 
 
 def test_select_pending_survives_shape_drift(fake_kv):
@@ -557,15 +559,15 @@ def test_select_pending_survives_shape_drift(fake_kv):
     fake_kv.put_json("tags", ["不是对象而是数组"])          # 期望 dict，实际 list
     fake_kv.put_json("saved", {"a": {"status": "saved"}})   # 期望 list，实际 dict
     fake_kv.put_json("rejected", "垃圾")
-    pending = hwk.select_pending(fake_kv, set())  # 不抛
+    pending = hwk.select_pending(set())  # 不抛
     assert pending["term"] == "a"  # 形状坏的当空，不误剔除
 
     fake_kv.put_json("candidates", {"a": 1})  # 期望 list，实际 dict
-    assert hwk.select_pending(fake_kv, set()) is None
+    assert hwk.select_pending(set()) is None
 
 
 def test_analyze_one_skips_blank(fake_kv):
-    out = _analyze_one({"term": ""}, fake_kv)
+    out = _analyze_one({"term": ""})
     assert out["error"] == "空词"
     # 不写任何 KV
     assert fake_kv.writes == 0
@@ -575,7 +577,7 @@ def test_run_hotwords_kv_unreachable_returns_error(fake_kv, monkeypatch):
     class BoomKV:
         def get_json(self, *a, **k):
             raise RuntimeError("unreachable")
-    monkeypatch.setattr(graph_state, "get_kv", lambda: BoomKV())
+    monkeypatch.setattr(hwk, "get_kv", lambda: BoomKV())
     out = hotword_graph.run_hotwords(limit=20)
     assert out["ok"] is False and "候选查询失败" in out["error"]
     assert out["fetched"] == 0  # 没读到候选，不写任何状态
@@ -631,7 +633,7 @@ def test_body_write_failure_never_writes_state(fake_kv, monkeypatch):
     assert fake_kv.get_json("rejected", []) == []
     assert fake_kv.get_json("aihints", {}) == {}
     assert fake_kv.get_text(key) is None
-    assert hwk.select_pending(fake_kv, set()) is not None   # 下次还会重跑
+    assert hwk.select_pending(set()) is not None   # 下次还会重跑
 
 
 def test_concurrent_table_updates_do_not_lose_rows(fake_kv, monkeypatch):

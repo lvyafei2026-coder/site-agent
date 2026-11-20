@@ -5,7 +5,7 @@
 """热词分析的 KV 写账本层：单词级写入成败记录 + 共享表形状兜底读取。
 
 拆分自 hotwords.py（2026-11-17）。只放「怎么安全地写 / 怎么容错地读」这一层；
-取数（_throttled_serp / _trend）在 hotword_fetch.py，单词分析 / 回填在
+取数（serp / trend）在 hotword_fetch.py，结论回写在 hotword_write.py，单词编排在
 services/hotword_service.py，逐词图在 graph/hotword_graph.py。
 
 ★_WriteLog 存在的理由：以前 `kv.put_json(...)` 的返回值被丢掉，Cloudflare 返回
@@ -28,8 +28,9 @@ log = logging.getLogger(__name__)
 class _WriteLog:
     """单词级写入账本：这个词的每一次 put_* 都记结果，失败则汇总成 error。
 
-    records 里的明细（key/kind/phase/ok）由切面汇入 tool:kv.write / tool:serp /
-    tool:trend 的 outputs；写入体积不在账本里算，Trace 层按需裁剪。
+    records 里的明细（key/kind/phase/ok）随工具结果返回，汇入 tool:fetch_serp /
+    tool:fetch_trend / tool:write_hotword_result 的 outputs；写入体积不在账本里算，
+    Trace 层按需裁剪。一个工具一本账（phase 固定），失败清单由编排层跨工具汇总。
     """
 
     def __init__(self, term: str = "") -> None:
@@ -66,10 +67,6 @@ class _WriteLog:
     def table(self, kv: Any, key: str, mutator, *, reader, ttl: Optional[int] = None) -> bool:
         ok, _updated = atomic_update(kv, key, mutator, reader=reader, ttl=ttl)
         return self._record(key, ok, "atomic_update")
-
-    def records_for(self, phase: AnalysisPhase) -> list[dict[str, Any]]:
-        """取某一阶段的写入明细，供切面挂到对应 tool span 的 outputs。"""
-        return [r for r in self.records if r["phase"] == phase.value]
 
     def error(self) -> str:
         return "KV 写入失败：" + "、".join(self.failed) if self.failed else ""

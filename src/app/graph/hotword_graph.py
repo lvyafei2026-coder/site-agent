@@ -14,8 +14,9 @@ run_hotwords() 与常规线 run_workflow() 是**同一套机制**：
 差别只在节点类型与 state 内容：这条线是逐词回环、收尾走 build_summary 节点，
 且 state 带 kv / degrade 运行时句柄，所以对外返回终态的 `summary` 而非整份 state。
 
-节点逻辑在 nodes/hotword_*_node.py（一节点一文件），单词分析在 services/hotword_service.py，
-取词/判据/IO 在 tools/adapters/hotwords/ 叶子层。依赖全程单向向下，无环、无函数内 import。
+节点逻辑在 nodes/hotword_*_node.py（一节点一文件），单词编排在 services/hotword_service.py；
+取词 / 补数据 / 回写与常规线一样经 tool_service 调 registry 里的工具（实现在
+tools/hotwords_tools.py + tools/adapters/hotwords/ 叶子）。依赖全程单向向下，无环、无函数内 import。
 """
 
 from __future__ import annotations

@@ -27,7 +27,7 @@ def analyze_one(state: HotwordLoopState) -> dict[str, Any]:
         return {"results": results, "loop_count": loop_count}
 
     result = _analyze_one(
-        item, state["kv"], state.get("degrade"),
+        item, state.get("degrade"),
         state.get("prompt_version"), state.get("examples", []),
     )
     results.append(result)

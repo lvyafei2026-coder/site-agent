@@ -13,8 +13,9 @@
 数据通道与业务读写（都落在共享 KV 上；KV 操作实现统一在 ../cloudflare/kv.py）：
     curation.py          词库整理域：候选池只读快照（candidates / meta / interests）
                          + 收藏 / 「不做」表写侧口径（与 console store.js 对齐）。
-    hotword_contract.py  共享契约叶子：候选筛选规则 + trace 常量 + 成功阈值（无上层依赖）。
+    hotword_contract.py  共享契约叶子：取下一词 / 读判例 + 成功阈值 + 词 span 前缀。
     hotword_fetch.py     取数层：SERP / Trends 读缓存 → 现抓 → 写回 + 全局节流。
+    hotword_write.py     回写层：一个词的正文 / 标签 / 状态落库（正文先写，失败即收手）。
     hotword_criteria.py  纯判据：提示词拼装、结论/红线/信号标签解析（无 IO）。
     hotword_llm.py       LLM 调用与空正文诊断。
     hotword_kv_io.py     KV 写账本（_WriteLog）+ 形状兜底读取。
@@ -23,8 +24,12 @@
     scrape_serp.py / scrape_trend.py
     source_errors.py  抓取层↔业务层的异常契约（SourceUnavailable：源级不可用 vs 单词降级）
 
-依赖单向无环：graph → nodes → services → adapters（本包叶子）→ cloudflare.kv。
-上层入口统一由 src.app.graph 包导出；本包不反向依赖 graph / nodes / services
+依赖单向无环：graph → nodes → services → tools（工具契约 + registry）→ adapters
+（本包叶子）→ cloudflare.kv。热词线与常规线走同一套工具契约：本包的 KV / 抓取 IO 由
+tools/hotwords_tools.py 的 6 个工具暴露，services/hotword_service.py 经 tool_service
+调用，不再自打 tool span。纯判据（hotword_criteria）与 LLM 传输（hotword_llm）不是
+工具，编排层直接复用——与常规线「LLM 走 llm/completion、不经 registry」一致。
+上层入口统一由 src.app.graph 包导出；本包不反向依赖 graph / nodes / services / tools 契约
 （见 test_architecture.py::test_adapters_are_leaves）。
 
 ★没有 re-export 门面：调用方（含测试）直接 import 需要的叶子模块，

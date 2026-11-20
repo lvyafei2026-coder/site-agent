@@ -24,7 +24,6 @@ from typing import Any, Optional, TypedDict
 
 from src.app.config import settings
 from src.app.services.hotword_service import _DegradeState
-from src.app.tools.adapters.cloudflare.kv import CloudflareKV, get_kv
 
 
 class WorkflowState(TypedDict, total=False):
@@ -113,13 +112,13 @@ def initial_workflow_state(
 class HotwordLoopState(TypedDict, total=False):
     """热词循环图在节点间流转的状态。字段全为名词，避免与节点名撞名。
 
-    与 WorkflowState 的差别只在内容：这里带本轮的运行时句柄（kv / degrade），
+    与 WorkflowState 的差别只在内容：这里带本轮的降级状态（degrade）与逐词明细，
     所以对外返回体取终态的 `summary` 字段，而不是整份 state。
+    KV 句柄不进 state：工具自己取 get_kv()，两条线一致。
     """
 
     # ——入口参数（initial_hotword_state 注入，节点只读）——
     limit: int                       # 本次最多分析的词数（= 最大循环次数）
-    kv: CloudflareKV                 # 候选池 / 账本读写门面
     prompt_version: Optional[str]    # 本轮提示词版本（None → 节点侧回退默认）
     degrade: _DegradeState           # 源级降级状态（SERP/Trends/LLM）
 
@@ -146,7 +145,6 @@ def initial_hotword_state(limit: int = 20,
     """
     return {
         "limit": max(1, min(int(limit or 20), 50)),
-        "kv": get_kv(),
         "prompt_version": prompt_version,
         "degrade": _DegradeState(),
         "seen": set(),

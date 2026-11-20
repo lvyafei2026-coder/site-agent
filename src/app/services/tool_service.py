@@ -2,10 +2,13 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""工具分发：按意图选一组工具采集事实。
+"""工具调用入口：两条线都经这里进 registry，契约与打点一致。
 
-默认集只含 read 工具。热词分析（analyze_hotwords）是编排而非工具，由独立的
-`POST /hotwords` 走 graph 的热词图，不经过本分发器。
+常规线按意图选一组工具采集事实（execute_for_intent，默认集只含 read 工具）；
+热词线按名逐个调（run）：取词 / 读判例 / 补 SERP 与趋势 / 回写结论。
+
+热词分析（POST /hotwords）与常规线（POST /run）都是「工具编排 + LLM + 落库」，
+本身都不是 registry 里的一个工具——差别只在节点类型：热词线逐词回环、收尾走汇总节点。
 """
 
 from __future__ import annotations
@@ -40,6 +43,10 @@ class ToolService:
         # 复用 tools/registry.py 的那个单例，避免工具被实例化两遍
         self.registry = tool_registry
 
+    def run(self, name: str, **kwargs):
+        """按名调一个工具，返回统一 ToolOutput dict（热词线的逐词 IO 走这里）。"""
+        return self.registry.run(name, **kwargs)
+
     def execute_for_intent(self, intent: str, text: str,
                            extracted: dict, tools: list[str] | None = None,
                            prompt_versions: dict[str, str] | None = None) -> dict:
@@ -53,7 +60,7 @@ class ToolService:
                 continue
             builder = TOOL_ARGS.get(name)
             kwargs = builder(text, extracted) if builder else {}
-            results[name] = self.registry.run(name, **kwargs)
+            results[name] = self.run(name, **kwargs)
         return results
 
 

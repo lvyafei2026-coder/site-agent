@@ -4,10 +4,13 @@
 
 """工具装配 + 注册。
 
-全包唯一同时认识「全部实现（6 个域 Ops）」和「全部工具（25 个类）」的模块，
+全包唯一同时认识「全部实现（6 个域 Ops）」和「全部工具（30 个类）」的模块，
 所以装配放在这里：RuntimeService 把 6 个域拼成一个门面，再逐个注入给工具。
 依赖方向固定为 registry → *_tools → base →（标准库 / pydantic），全程静态 import，
 不需要任何延迟导入；base 不反过来认识任何域，工具也不自己去取门面。
+
+两条线共用这一份注册表：常规线经 tool_service.execute_for_intent 按意图取一组工具，
+热词线经 tool_service.run 按名逐个调（取词 / 判例 / 补数据 / 回写），契约与打点一致。
 """
 
 from __future__ import annotations
@@ -55,11 +58,19 @@ from src.app.tools.publishing_tools import (
     RenderFilesTool,
     WaitBuildTool,
 )
-from src.app.tools.hotwords_tools import GetHotwordsTool, HotwordsOps
+from src.app.tools.hotwords_tools import (
+    FetchSerpTool,
+    FetchTrendTool,
+    GetHotwordsTool,
+    HotwordsOps,
+    NextCandidateTool,
+    ReadExamplesTool,
+    WriteHotwordResultTool,
+)
 
 
 def _tool_tracer(name: str, kind: str, method: str, kwargs: dict, call):
-    """25 个工具共用的 LangSmith span：入参、统一返回体、失败原因全留在一条 run 上。
+    """30 个工具共用的 LangSmith span：入参、统一返回体、失败原因全留在一条 run 上。
 
     ★`parent=None` 是刻意的：工具在 graph 节点里同步调用，LangSmith 会自动把 span
       挂到当前节点（LangChainTracer 注入的 run）下。热词图的每词 span 同样靠
@@ -81,7 +92,7 @@ def _tool_tracer(name: str, kind: str, method: str, kwargs: dict, call):
 
 class RuntimeService(HotwordsOps, DistributionOps, LedgerOps,
                      MeasurementOps, PromotionOps, PublishingOps):
-    """25 个工具的唯一门面：实现见各域 Ops 类，这里只有组合。"""
+    """30 个工具的唯一门面：实现见各域 Ops 类，这里只有组合。"""
 
 
 TOOL_CLASSES = (
@@ -110,6 +121,11 @@ TOOL_CLASSES = (
     GetLatestPlanTool,
     WritePromoSlotTool,
     GetHotwordsTool,
+    NextCandidateTool,
+    ReadExamplesTool,
+    FetchSerpTool,
+    FetchTrendTool,
+    WriteHotwordResultTool,
 )
 
 
@@ -120,7 +136,7 @@ class ToolRegistry:
         self.bind(RuntimeService())
 
     def bind(self, ops: Any) -> None:
-        """换门面并重建 25 个工具（初始化时绑生产 RuntimeService）。"""
+        """换门面并重建 30 个工具（初始化时绑生产 RuntimeService）。"""
         self.ops = ops
         # tracer 注入而不是在 base.py 里 import 追踪模块：分层守卫要求 base 是叶子。
         self._tools = {tool.name: tool for tool in

@@ -2,11 +2,12 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""工具层：25 个工具 = 声明（RuntimeTool 子类）+ 实现（同文件的 <Domain>Ops）。
+"""工具层：30 个工具 = 声明（RuntimeTool 子类）+ 实现（同文件的 <Domain>Ops）。
 
 六个域，业务域与 adapters 的包一一对应（cloudflare 是厂商层，各域共用）：
 
-    hotwords_tools.py      1 个  get_hotwords
+    hotwords_tools.py      6 个  get_hotwords / next_candidate / read_examples /
+                                 fetch_serp / fetch_trend / write_hotword_result
                                  → adapters/hotwords
     measurement_tools.py   2 个  get_click_stats / get_search_analytics
                                  → cloudflare.database + adapters/measurement
@@ -29,13 +30,17 @@
 工具类只声明 tool_name / method / kind / fixed / Input / docstring，不覆盖 run()：
 业务分支一律写在 Ops 里，覆盖 run() 会绕过 tracer 与失败分类。
 
-kind（真源 enums.ToolKind）：read 13 / ledger 8 / write 4。
+kind（真源 enums.ToolKind）：read 15 / ledger 11 / write 4。
     read    无副作用
-    ledger  写台账 / KV / 本地文件，幂等可重复执行
+    ledger  写台账 / KV / 本地文件，幂等可重复执行（含热词线的 fetch_serp /
+            fetch_trend 缓存回写与 write_hotword_result 的 upsert）
     write   不可逆的外部动作：git_push / wait_build（空提交重推）/
             publish_devto_article / send_notice
 生产没有按 kind 的闸门：默认集 INTENT_TOOLS 只含 read，write 只有请求显式传 tools 才跑。
 
-唯一入口 = services/tool_service.py（按意图分发）。热词分析是编排不是工具，
-绕过 registry 直连 adapters/hotwords 叶子（见 graph/hotword_graph.py）。
+唯一入口 = services/tool_service.py，两条线共用同一 registry：
+    常规线 execute_for_intent(intent) 按意图分发工具集；
+    热词线 run(name, **kwargs) 逐词调 next_candidate / fetch_serp / fetch_trend /
+    write_hotword_result（见 services/hotword_service.py、nodes/hotword_*_node.py）。
+两条线都是**编排**，编排本身不进 registry；LLM 与纯判据也不是工具（横切能力）。
 """

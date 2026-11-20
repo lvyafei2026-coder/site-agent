@@ -16,11 +16,11 @@ from langgraph.graph import END
 
 from src.app.enums import GraphNode, RouteTag
 from src.app.graph import get_hotword_graph, hotword_graph
-from src.app.graph import state as graph_state
 from src.app.graph.edges import HOTWORD_EDGE_MAP, route_after_analyze
+from src.app.graph.state import initial_hotword_state
 from src.app.nodes.hotword_fetch_node import fetch_one
-from src.app.services.hotword_service import _DegradeState
 from src.app.tools.adapters.cloudflare import kv as kvk
+from src.app.tools.adapters.hotwords import hotword_contract
 from src.app.tools.adapters.hotwords import hotword_llm
 from src.app.tools.adapters.hotwords import scrape_serp, scrape_trend
 
@@ -52,10 +52,7 @@ def test_fetch_one_asks_tool_each_round(fake_kv, monkeypatch):
     monkeypatch.setattr(scrape_trend, "fetch_interest", lambda *a, **k: {"points": [], "summary": {}, "attempts": []})
     monkeypatch.setattr(hotword_llm, "_llm", lambda m: ("7) 结论：观望\n8) 信号标签：无", "fake"))
 
-    s = dict(limit=10, kv=fake_kv, prompt_version=None,
-             degrade=_DegradeState(), seen=set(), examples_loaded=True,
-             examples=[], has_more=False, current=None, results=[],
-             loop_count=0, load_error="")
+    s = initial_hotword_state(limit=10)
     s1 = {**s, **fetch_one(s)}
     assert s1["has_more"] is True and s1["current"]["term"] == "t0"
     assert s1["seen"] == {kvk.term_key("t0")}
@@ -90,10 +87,13 @@ def test_loop_stops_at_limit(fake_kv, monkeypatch):
 def test_loop_kv_unreachable_short_circuits(monkeypatch):
     """候选查询抛异常时，图经条件边走 build_summary 收口为 ok=False。"""
     class BoomKV:
+        def get_json(self, *a, **k):
+            raise RuntimeError("kv down")
+
         def list_keys(self, *a, **k):
             raise RuntimeError("kv down")
 
-    monkeypatch.setattr(graph_state, "get_kv", lambda: BoomKV())
+    monkeypatch.setattr(hotword_contract, "get_kv", lambda: BoomKV())
     out = hotword_graph.run_hotwords(limit=5)
     assert out["ok"] is False and "候选查询失败" in out["error"]
     assert out["items"] == [] and out["fetched"] == 0
