@@ -148,10 +148,10 @@ def test_serp_brief_fallback_to_domains():
 
 
 def test_analyze_hotwords_is_a_line_not_a_tool():
-    """热词分析是编排（后台/用户线都走 graph 批次驱动），不是工具链里的一员。
+    """热词分析是编排（走 graph 热词图），不是工具链里的一员。
 
-    2026-11-20 分层归位：analyze_hotwords 从 tools 移除，用户线在 api 入口分流、
-    后台线由 main 驱动，二者都调 graph 的 run_hotwords。工具层只剩纯 IO 工具。
+    2026-11-20 分层归位：analyze_hotwords 从 tools 移除，由独立的 `POST /hotwords`
+    触发 graph 的 run_hotwords。工具层只剩纯 IO 工具。
     """
     assert "analyze_hotwords" not in tool_registry.names()
     assert "analyze_hotwords" not in INTENT_TOOLS

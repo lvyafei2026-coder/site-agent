@@ -2,36 +2,36 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""LangSmith 追踪：唯一开关处。
+"""LangSmith 追踪：唯一开关处 + 声明式切面。
 
 三条原则：
   1. 开关只认 `settings`（.env / Render 环境变量），业务代码不直接读 LANGSMITH_*。
   2. `LANGSMITH_TRACING=true` **且** 有 `LANGSMITH_API_KEY` 才算开启——只有开关没
      有 key 时发送必然 401，会在日志里刷一堆噪音，不如直接当关闭。
-  3. 关闭时零开销：`traceable` 原样返回函数，不 import langsmith 运行时。
+  3. 关闭时零开销：`traceable` 原样返回函数；`observed` / `trace_tool` 只多一次
+     bool 判断，不 import langsmith 运行时、不算出入参。
 
-开启后会自动产生五层 trace：
-  - 图级：LangGraph 每次 `invoke` 一条 run（名字由调用方传 run_name）
-  - 节点级：classify_intent / run_processing / validate_result / build_output …
-  - 工具级：`tool:<名字>`（本文件 `trace_tool`，run_type=tool）记 26 个 RuntimeTool
-    的入参/返回/错误；热词批次内部另有 `tool:serp` / `tool:trend` / `tool:kv.write`
-    等 IO span，把 SERP、Trends、KV 读写这些原本看不见的调用也挂到对应词下
-  - 整轮/逐词级：`run_traced`（本文件）给 run_hotwords 与每个热词各建一条 span
-  - LLM 级：`llm/provider.py` 用 `wrap_openai` 包过的客户端，请求体与返回值都在
+切面入口：
+  - `observed(...)`  装饰器：业务函数在**定义处**声明 span（名字/出入参/标红/回链），
+    函数体零 trace 代码。热词的 run / 取词 / 判例 / 逐词 / serp / trend / kv.write 全走它。
+  - `trace_tool(...)` 包裹一次调用：registry 给 25 个 RuntimeTool 统一打点用。
+  - `traceable(name)` 装饰器：llm_service 三个方法用（import 期决定是否包装）。
 
-★为什么要 `run_traced` 的显式 parent：ThreadPoolExecutor 的 worker 线程**不继承
-  主线程的 contextvars**，而 LangSmith 把父 run 存在 contextvar 里。并发逐词分析时
-  wrap_openai 找不到父，20 个 ChatOpenAI 全变成独立根 trace（Traces 页面「连不起来」）。
-  显式把父 run 传进去即可拼成 graph 根 → 批次 → 每词 → LLM 的一棵树。
+父子关系全靠 LangSmith contextvar 自动继承（链路已改串行），切面**不传 parent**：
+    外层 → 热词 run → LangGraph → 节点 → 每词 → IO / LLM
+不再需要旧并发模型的显式 parent / pass_run / 手动 thread_id。
+底层抓取的诊断用 `note(**fields)` 挂到当前 span，避免层层传 diag dict。
 """
 
 from __future__ import annotations
 
 import functools
+import inspect
 import json
 import os
 import time
 from collections.abc import Callable
+from contextvars import ContextVar
 from typing import Any
 
 from src.app.config import settings
@@ -45,6 +45,17 @@ logger = get_logger(__name__)
 MAX_IO_CHARS = 4000
 MAX_IO_ITEMS = 60
 MAX_IO_DEPTH = 6
+
+# 切面内数据通道：被观察函数在执行途中挂诊断数据（如抓取尝试明细、缓存命中），
+# 由 observed 在 span 退出时统一并入 outputs。这让底层 IO 不必再层层传 diag dict。
+_span_notes: ContextVar[dict[str, Any] | None] = ContextVar("span_notes", default=None)
+
+
+def note(**fields: Any) -> None:
+    """往当前 span 挂诊断字段；不在切面内或未开追踪时是 no-op（零开销）。"""
+    bucket = _span_notes.get()
+    if bucket is not None:
+        bucket.update(fields)
 
 
 def compact_io(value: Any, *, max_chars: int = MAX_IO_CHARS,
@@ -181,81 +192,128 @@ def traceable(name: str) -> Callable:
     return decorator
 
 
-def run_traced(func, *, name: str, inputs: dict | None = None,
+def _call_span(func, *, name: str, run_type: str = "chain", inputs: dict | None = None,
                tags: list[str] | None = None, metadata: dict | None = None,
-               parent=None, outputs=None, error=None,
-               pass_run: bool = False, run_type: str = "chain"):
-    """给任意同步函数套一条 LangSmith span —— 薄包，不改 graph、不改业务返回。
+               outputs=None, error=None):
+    """包裹一次调用建 span（trace_tool 的底层）。
 
-    与 `observability/trace.py` 的 `run_traced(graph, state, config)` 不是一回事：那个
-    抓的是 LangGraph 节点轨迹（返回给 /run 的 `trace` 字段），这个是给普通函数加 span。
-
-    参数：
-      parent: 显式父 run（RunTree / dotted_order 字符串）。**并发场景必须传**——
-              worker 线程没有主线程的 contextvar，不传就会新建一条根 trace。
-              None 时 SDK 自动取当前线程里的 run（主线程用它挂到 LangGraph 节点下）。
-      pass_run: True 时把本次创建的 run 作为唯一位置参数传给 func，批次要拿它当
-              逐词 span 的 parent。关闭追踪时传 None。
-      outputs / error: 可传 dict / str，也可传 `result -> dict / str` 的回调，
-              把结论与业务失败标在 LangSmith 上（error 非空会让该 span 标红）。
-
-    tracing 关闭时零开销：不 import langsmith 运行时，直接返回 func() 的结果。
+    父子靠 contextvar 自动继承，不接 parent / pass_run——那是旧并发模型的残留。
+    tracing 关闭时直接 func()，不 import SDK、不算出入参，零开销。
     """
     if not tracing_enabled():
-        return func(None) if pass_run else func()
+        return func()
 
     from langsmith import trace as ls_trace
 
-    with ls_trace(name, run_type=run_type, inputs=inputs or {},
-                  tags=tags or [], metadata=metadata or {}, parent=parent) as run:
-        result = func(run) if pass_run else func()
+    with ls_trace(name, run_type=run_type,
+                  inputs=_compact_envelope(inputs or {}),
+                  tags=tags or [], metadata=metadata or {}) as run:
+        result = func()
         out = outputs(result) if callable(outputs) else outputs
         err = error(result) if callable(error) else error
         if out is not None or err:
-            # SDK 的 __exit__ 只在抛异常时 end；主动 end 才能把 outputs/error 写进
-            # 这条 run（官方 trace 示例同款用法），随后 __exit__ 负责 patch 上报。
-            run.end(outputs=out or {}, error=err)
+            run.end(outputs=_compact_envelope(out or {}),
+                    error=str(err)[:1000] if err else None)
         return result
 
 
 def trace_tool(func, *, name: str, inputs: dict | None = None,
                tags: list[str] | None = None, metadata: dict | None = None,
-               parent=None, outputs=None, error=None, run_type: str = "tool"):
-    """给一次工具 / 外部 IO 调用建 `run_type=tool` 的 span，出入参全上 LangSmith。
+               outputs=None, error=None, run_type: str = "tool"):
+    """给一次工具 / 外部 IO 调用建 `run_type=tool` 的 span（registry 的统一打点入口）。
 
-    与 `run_traced` 的区别：那个是业务流程 span（chain），这个是**叶子调用** span，
-    名字统一 `tool:<名字>`，Inputs/Outputs 面板里就是这次调用的真实参数与返回摘要。
-
-    ★异常不吞：func 抛异常时 LangSmith 的 `__exit__` 会把异常类型、消息和 traceback
-      写进 `error` 并把该 span 标红，异常原样抛给业务方走降级/重试。这正是排查
-      「SERP 源不可用」这类降级时最需要的信息——以前它只出现在日志里，Smith 上
-      完全看不到 SERP 被调用过。
-
-    tracing 关闭时直接 `func()`：`compact_io`、`run_traced`、langsmith runtime 全部
-    不执行，业务返回与未接入追踪前逐字一致。
+    ★异常不吞：func 抛异常时 SDK 把 traceback 写进 span 并标红，异常原样抛给业务方
+      走降级/重试。关闭追踪时直接 func()，与未接入追踪前逐字一致。
     """
-    if not tracing_enabled():
-        return func()
+    return _call_span(func, name=name, run_type=run_type, inputs=inputs,
+                      tags=tags, metadata=metadata, outputs=outputs, error=error)
 
-    def _outputs(result):
-        raw = outputs(result) if callable(outputs) else outputs
-        return _compact_envelope(raw if raw is not None else {})
 
-    def _error(result):
-        raw = error(result) if callable(error) else error
-        return str(raw)[:1000] if raw else None
+def observed(name, *, kind: str = "chain", inputs=None, outputs=None,
+             error=None, tags=None, metadata=None, link: str | None = None):
+    """声明式追踪切面：把「建 span + 记出入参 + 标红 + 回链」一次声明在函数上。
 
-    return run_traced(
-        func,
-        name=name,
-        run_type=run_type,
-        inputs=_compact_envelope(inputs or {}),
-        tags=tags or [],
-        metadata=metadata or {},
-        parent=parent,
-        outputs=_outputs,
-        error=_error,
-    )
+    这是「装饰函数」的切面入口；包裹单次调用的场合用 `trace_tool`（registry）。
+    业务函数只在**定义处**用装饰器声明观测方式，函数体不出现任何 trace 代码：
+
+        @observed("tool:serp", kind="tool", inputs=serp_inputs, outputs=serp_outputs)
+        def _throttled_serp(term, kv): ...
+
+    关键约定：
+      - 父子关系靠 LangSmith contextvar 自动继承，切面**不传 parent**。
+        串行链路里被观察函数嵌套调用时，子 span 自然挂在调用方的当前 span 下；
+        这正是「去掉显式 parent 传递」能成立的前提。
+      - inputs / outputs / error 都是纯函数：inputs 收 (*args, **kwargs)，
+        outputs / error 收 (result)；关闭追踪时它们一个都不调用（零开销）。
+      - link: 若给出字段名，把本次根 run 的回链信息写进返回 dict 的该字段
+        （仅用于热词 run_hotwords 这种最外层入口）。
+      - 开关在**调用期**判断，不在装饰期：因为测试在运行期才打开追踪。
+        关闭时返回的函数体只多一次 `if` 判断，不 import SDK、不建 run。
+    """
+
+    def decorator(func: Callable) -> Callable:
+        # 为 name / inputs 预先算出「从业务实参里挑哪些传过去」的绑定器：
+        # 提取函数只需声明自己关心的参数，不必写 *args 兜底，也不受业务函数签名漂移影响。
+        def binder(extractor):
+            if extractor is None:
+                return None
+            sig = inspect.signature(extractor)
+
+            def bind(*args, **kwargs):
+                try:
+                    bound = sig.bind_partial(*args, **kwargs)
+                except TypeError:
+                    return None
+                return extractor(*bound.args, **bound.kwargs) if bound.arguments else extractor()
+
+            return bind
+
+        name_bind = binder(name) if callable(name) else None
+        inputs_bind = binder(inputs)
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            if not tracing_enabled():
+                return func(*args, **kwargs)
+
+            from langsmith import trace as ls_trace
+
+            span_name = name_bind(*args, **kwargs) if name_bind else name
+            in_data = inputs_bind(*args, **kwargs) if inputs_bind else {}
+            notes: dict[str, Any] = {}
+            token = _span_notes.set(notes)
+            try:
+                with ls_trace(span_name, run_type=kind,
+                              inputs=_compact_envelope(in_data or {}),
+                              tags=tags or [], metadata=metadata or {}) as run:
+                    result = func(*args, **kwargs)
+                    out = outputs(result) if outputs else None
+                    if out is None:
+                        out = notes or None
+                    elif notes:
+                        out = {**out, **notes}
+                    err = error(result) if error else None
+                    if out is not None or err:
+                        run.end(outputs=_compact_envelope(out or {}),
+                                error=str(err)[:1000] if err else None)
+                    if link and isinstance(result, dict):
+                        base = settings.langsmith_project_url.strip().rstrip("/")
+                        info: dict[str, Any] = {
+                            "traceRunId": str(run.id),
+                            "traceId": str(getattr(run, "trace_id", "") or run.id),
+                            "url": f"{base}/r/{run.id}?poll=true" if base else "",
+                        }
+                        # 被观察函数若自带业务 id（如 run_hotwords 的 runId），一并带进回链
+                        if result.get("runId"):
+                            info["runId"] = result["runId"]
+                        result[link] = info
+                    return result
+            finally:
+                _span_notes.reset(token)
+
+        return wrapper
+
+    return decorator
 
 
 # 模块级执行：只要有任何代码 import 到本模块（llm_service / routes / graph 都会），

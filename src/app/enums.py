@@ -39,7 +39,7 @@ class Intent(StrEnum):
     PLAN_PROMO = "plan_promo"              # 推广排期：最新排期 + 站点清单 + 待消费事件
     FIND_BACKLINKS = "find_backlinks"      # 找外链：外链台账 + Reddit + DEV 文章
     REVIEW_METRICS = "review_metrics"      # 复盘：站点点击/GSC/页面清单，再调 LLM 分析
-    ANALYZE_HOTWORDS = "analyze_hotwords"  # 热词逐词分析并回写状态（入口分流到 graph.run_hotwords，非工具）
+    ANALYZE_HOTWORDS = "analyze_hotwords"  # 热词逐词分析并回写状态（走独立入口 /hotwords，非工具）
     GENERAL = "general"                    # 通用兜底；无 LLM key 或非法意图都回退到它
 
 

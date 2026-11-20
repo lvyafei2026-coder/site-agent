@@ -24,7 +24,7 @@
 
 ```
 src/app/
-├── main.py            两条入口线：run()（用户线）+ run_background()（后台热词线）
+├── main.py            serve() 常驻入口 + run() 单跑一轮
 ├── config.py          Settings dataclass（.env 全量读口）
 ├── api/               /run · /health
 ├── graph/             builder · state · edges · constants · registry(Names/Nodes/Tags)
@@ -100,7 +100,7 @@ src/app/
 | `graph/` | 图装配 | 定义 state 形状、节点顺序、条件边、提供进程级单例 | 保留，去 registry |
 | `nodes/` | 单步逻辑 | 决定读/写 state 的哪些字段、失败怎么记进 `messages` | 保留改名 |
 | `services/` | 无 IO 的业务判断 | 意图分类、字段抽取、意图→工具集、覆盖率评分 | 保留 4 个 |
-| `tools/*_tools.py` | 26 个能力的实现 | Pydantic 参数校验、转调哪个 Ops 方法、`kind` 标注 | 全换 |
+| `tools/*_tools.py` | 25 个能力的实现 | Pydantic 参数校验、转调哪个 Ops 方法、`kind` 标注 | 全换 |
 | `tools/adapters/` | 唯一外部 IO 层 | HTTP / SQL / git / SMTP；超时、重试、错误归一成 `ok=false` | 新增 |
 | `tools/base.py` | 契约叶子 | `BaseTool` / `RuntimeTool` / `ToolOutput` / `stable_key`，不 import 任何 `src.app.*` | 保留 |
 | `tools/registry.py` | 装配 | `RuntimeService` 组合 6 个域 Ops + `ToolRegistry.bind()` | 保留 |
@@ -117,10 +117,9 @@ src/app/
 ```
 site-agent/
 ├── src/app/
-│   ├── main.py                  常驻双服务入口：serve()（uvicorn 主线程 + 后台守护线程）
-│   │                            + run() 用户线单跑 + run_background() 后台线单跑
+│   ├── main.py                  进程入口：serve()（uvicorn）+ run() 用户线单跑
 │   ├── config.py                Settings(settings) + INTENTS + FLEET_DOMAIN + SiteConfig/SITES
-│   ├── api/routes.py            FastAPI：POST /run、GET /health、POST /backfill
+│   ├── api/routes.py            FastAPI：POST /run、POST /hotwords、GET /health、POST /backfill
 │   ├── graph/
 │   │   ├── __init__.py          统一门面：两图（get_user_graph / get_hotword_graph）+ 两线入口（run_hotwords / run_backfill）
 │   │   ├── user_graph.py        用户线装配：get_user_graph()（主图，checkpointer）
@@ -149,7 +148,7 @@ site-agent/
 │   │   ├── publishing_tools.py  PublishingOps + 7 个工具
 │   │   └── adapters/
 │   │       ├── cloudflare/      client · database · kv（KV 唯一模块）· sql；`keyvalue`=WorkersKV 单例
-│   │       ├── terms/           curation（候选快照+整理写侧） · hotwords（adapters 只读门面，不 re-export 上层入口） + hotword_contract（共享叶子：候选筛选+trace 常量） + hotword_fetch · hotword_criteria/llm/kv_io · gsc · reddit · scrape_serp · scrape_trend · source_errors
+│   │       ├── terms/           curation（候选快照+整理写侧） · hotwords（adapters 只读门面，不 re-export 上层入口） + hotword_contract（共享叶子：候选筛选+trace 常量） + hotword_fetch（取数，@observed 切面） · hotword_criteria/llm/kv_io · gsc · reddit · scrape_serp · scrape_trend · source_errors
 │   │                            上层归位：graph/hotword_graph.py（图+运行入口）· nodes/hotword_nodes.py · services/{hotword_service,backfill_service}.py
 │   │       ├── hosting/         github_repo · renderer · verification
 │   │       └── publishing/      devto · email
@@ -224,7 +223,7 @@ class ToolRegistry:
 tool_registry = ToolRegistry()
 ```
 
-工具类的固定写法（26 个一致）：
+工具类的固定写法（25 个一致）：
 
 ```python
 class GetHotwordsTool(RuntimeTool):

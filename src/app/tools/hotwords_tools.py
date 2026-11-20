@@ -4,9 +4,8 @@
 
 """hotwords 域：选题雷达取数（定义 + 实现同文件）。
 
-2026-11-20 分层归位：`analyze_hotwords` 不是工具而是编排（invoke 循环图），已上移到
-graph 层，用户线由 api/routes.py 入口分流、后台线由 main.py 驱动。本域只保留
-`get_hotwords` 这一个纯读工具。
+2026-11-20 分层归位：`analyze_hotwords` 不是工具而是编排（invoke 热词图），已上移到
+graph 层，由独立的 `POST /hotwords` 触发。本域只保留 `get_hotwords` 这一个纯读工具。
 """
 
 from __future__ import annotations

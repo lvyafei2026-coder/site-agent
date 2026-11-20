@@ -51,9 +51,6 @@ class Settings:
     langsmith_project_url: str = os.getenv("LANGSMITH_PROJECT_URL", "")
     default_prompt_versions: dict[str, str] | None = None
     max_validation_retries: int = int(env("MAX_VALIDATION_RETRIES", "2"))
-    # 常驻双服务的后台线周期（秒）；<=0 关闭自动循环，仅保留 HTTP 用户线。
-    # 默认 6h 对齐 radar 的 0 */6 抓取节奏，避免抓到词就立刻空跑一轮。
-    background_interval_sec: int = int(env("BACKGROUND_INTERVAL_SEC", "21600"))
 
     def __post_init__(self) -> None:
         if self.default_prompt_versions is None:

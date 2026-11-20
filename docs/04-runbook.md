@@ -17,7 +17,7 @@ cp .env.example .env                              # 不填任何凭据也能跑
 
 ```bash
 pytest -q                                          # 全量单测
-python -m src.app.main                             # 常驻双服务：HTTP 用户线 + 定时后台线
+python -m src.app.main                             # 常驻 HTTP：/run 用户线 + /hotwords 热词线
 curl -s localhost:10000/health
 curl -s localhost:10000/llm-quota                  # LLM 剩余额度（每次消耗 1 次请求额度）
 curl -s -X POST localhost:10000/run \
@@ -135,37 +135,35 @@ API 的 `LLM_MODEL` 要写 **`openai/gpt-4o-mini`**（vendor/model）——以�
 | 图级 | 整轮输入输出、总耗时、thread_id、input_text | `routes.py` 的 `run_name` / `metadata` |
 | 节点级 | classify_intent / run_processing / validate_result / build_output | LangGraph 自动打点 |
 | 工具级 | `tool:<工具名>`（25 个 RuntimeTool）：真实入参、统一返回体，`ok=False` 标红 | `tools/registry.py` 注入的 `trace_tool` |
-| 整轮级 | `site-agent:hotword-run`：analyzed / failed / successRate / 降级提示 | `graph/hotword_graph.py:run_hotwords` 的 `run_traced` |
-| 取词 IO | `tool:next-candidate`：每轮问 tool 要一个词、看到底取到了谁 | `nodes/hotword_nodes.py` 的 `fetch_one` |
-| 判例 IO | `tool:kv.read-examples`：人工判例只读一次 | `nodes/hotword_nodes.py` 的 `_load_examples` |
-| 逐词级 | `site-agent:hotword:<词>`：verdict / status / serp / trend / error（失败标红） | `nodes/hotword_nodes.py` 的 `analyze_one` |
-| 逐词内 IO | `tool:serp` / `tool:trend` / `tool:kv.write`：抓取出入参、缓存命中、尝试明细、每个 KV 键写入成败 | `services/hotword_service.py` 的 `_tool_step` |
+| 整轮级 | `site-agent:hotword-run`：fetched / analyzed / failed / successRate / 降级提示 | `@observed` 装饰在 `graph/hotword_graph.py:run_hotwords` |
+| 取词 IO | `tool:kv.next-candidate`：每轮问 tool 要一个词、看到底取到了谁 | `@observed` 装饰在 `nodes/hotword_nodes.py` 的取词函数 |
+| 判例 IO | `tool:kv.read-examples`：人工判例只读一次 | `@observed` 装饰在 `_load_examples` |
+| 逐词级 | `site-agent:hotword:<词>`：verdict / status / serp / trend / error（失败标红） | `@observed` 装饰在 `services/hotword_service.py:_analyze_one` |
+| 逐词内 IO | `tool:serp` / `tool:trend` / `tool:kv.write`：抓取出入参、缓存命中、尝试明细、每个 KV 键写入成败 | `@observed` 装饰在 `hotword_fetch` / `_write_result` |
 | LLM 级 | 实际发送的 messages、返回 JSON、token 数与延迟 | `llm/provider.py` 的 `wrap_openai` |
 
 **整轮是一棵树，不是一堆散根**（2026-11-13 修）：
 
 ```
-site-agent:hotword-run                       ← 唯一根（用户线由入口分流，不走主图节点）
-├─ tool:kv.read-examples                     ← 判例，整轮只读一次
-├─ tool:next-candidate                       ← 每轮问 tool 取一个词（逐词一条）
-├─ site-agent:hotword:<词 1>                 ← 每词一条
-│  ├─ tool:serp      → SERP 前 10、竞争度、是否命中缓存、4 发尝试明细
-│  ├─ tool:trend     → 趋势点数/摘要、是否命中缓存
-│  ├─ ChatOpenAI     → 完整 messages 与返回
-│  └─ tool:kv.write  → 写了哪些键、每个键 ok 与否、正文预览、失败清单
-├─ tool:next-candidate                       ← 处理完再问「还有吗」
-└─ site-agent:hotword:<词 2> …               ← 有就继续，取尽/达上限就 END
+site-agent:hotword-run                       ← 根 span（POST /hotwords 触发）
+└─ LangGraph                                 ← 图级 span（一次 invoke 一条）
+   ├─ fetch_one                              ← 节点 span
+   │  ├─ tool:kv.read-examples               ← 判例，整轮只读一次
+   │  └─ tool:kv.next-candidate              ← 每轮问 tool 取一个词
+   └─ analyze_one                            ← 节点 span（逐词回环，每词一遍）
+      └─ site-agent:hotword:<词>             ← 逐词 span
+         ├─ tool:serp      → SERP 前 10、竞争度、是否命中缓存、4 发尝试明细
+         ├─ tool:trend     → 趋势点数/摘要、是否命中缓存
+         ├─ ChatOpenAI     → 完整 messages 与返回
+         └─ tool:kv.write  → 写了哪些键、每个键 ok 与否、正文预览、失败清单
 ```
 
-`analyze_hotwords` 是编排不是工具：用户线在 `api/routes.py` 入口分流到同一个
-`graph.run_hotwords()`，返回体包装成与主图一致的 state 结构，前端无需区分走了哪条线。
+热词分析是编排不是工具，走独立入口 `POST /hotwords`，直接返回热词图的结果，不套主图 state。
 
-历史上根因是 `ThreadPoolExecutor` 的 worker 线程**不继承主线程的 contextvars**，而
-LangSmith 把父 run 存在 contextvar 里；并发逐词时 `wrap_openai` 找不到父，每个 LLM 都
-成了独立根 trace。修法在工具层：根 span 自动挂到 LangGraph 节点下，逐词 span **显式传
-`parent=`**（`observability/langsmith.py:run_traced`），并把本词 run 继续传给所有 `tool:*`
-子 span。2026-11-19 起逐词调度改为独立的条件边回环图（现 `nodes/hotword_nodes.py`，串行），显式
-parent 链路保留以维持上面这棵层级树；不是「每词一条独立 trace」。
+这棵树的父子关系**全部由 contextvar 自动继承**：逐词串行执行，`@observed` 声明的
+span 天然挂在当前节点 run 下，所以代码里没有 `parent=`、没有 `pass_run`、没有手工拼
+`thread_id`/`word_id`。历史上并发 worker 需要显式传父（线程不继承 contextvars），
+2026-11-20 改成串行后那套链路已全部删除。
 
 **工具可见性**（2026-11-13）：以前只有 `wrap_openai` 自动打点，SERP / Trends / KV 读写在
 Smith 上完全看不见，页面只显示「SERP 源不可用，本轮已跳过 SERP」这类结果文字，无法判断
@@ -243,9 +241,9 @@ checkpointer 的表由 `langgraph-checkpoint-sqlite` 自动创建，不要手工
 |---|---|
 | 计划 | `free`（文件系统临时；单轮流水线无跨轮状态，重启无损失） |
 | 构建 | `pip install -e .` |
-| 启动 | `python -m src.app.main`（常驻双服务：主线程 uvicorn + 后台守护线程） |
+| 启动 | `python -m src.app.main`（常驻 uvicorn，两个业务入口按需触发，无后台线程） |
 | 健康检查 | `/health` |
-| 关键 env | `MEMORY_BACKEND=memory`、`BACKGROUND_INTERVAL_SEC=21600`（<=0 关后台线）、`FLEET_DOMAIN`、`GH_ORG` |
+| 关键 env | `MEMORY_BACKEND=memory`、`FLEET_DOMAIN`、`GH_ORG`、`BACKFILL_TOKEN`（线上必配） |
 
 要 checkpoint 持久化时升级：`plan: starter` + Disk（1GB 挂 `/data`），
 env 改 `MEMORY_BACKEND=sqlite`、`DATABASE_URL=sqlite:////data/agent.sqlite`、

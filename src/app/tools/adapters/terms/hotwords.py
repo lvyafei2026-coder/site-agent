@@ -19,7 +19,7 @@ from __future__ import annotations
 
 # ---- 候选筛选规则 + trace 常量（本层契约叶子）----
 from .hotword_contract import (  # noqa: F401
-    select_pending, OK_MIN_RATE, RUN_TRACE_NAME, WORD_TRACE_PREFIX,
+    select_pending, OK_MIN_RATE, RUN_TRACE_NAME, WORD_TRACE_PREFIX, TOOL_KV_PREFIX,
 )
 
 # ---- 外部抓取模块对象 ----

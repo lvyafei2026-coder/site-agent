@@ -47,7 +47,7 @@ def test_adapters_are_leaves():
 def test_entry_depends_only_on_graph():
     """入口层（main / api）只依赖 graph + 横切基础设施，不穿透 services / tools / adapters。
 
-    取图、驱动批次、运维回填都从 graph 包走（graph/__init__.py 统一门面）。
+    取图、跑热词图、运维回填都从 graph 包走（graph/__init__.py 统一门面）。
     config / enums / observability / llm / utils / models 是横切，各层皆可读。
     api 属于入口层自身：main.py 装配 uvicorn app 时必须 import api.routes，
     这不算穿透下层（api/routes.py 本身也受同一守卫约束）。

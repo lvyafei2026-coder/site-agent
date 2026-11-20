@@ -2,12 +2,17 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""HTTP 入站：POST /run 跑完一轮，GET /health 报状态与进程内计数，
-POST /backfill 补写「正文已落库、状态表丢了」的热词（运维入口）。
+"""HTTP 入站：每个场景一个入口，入口之间不互相分流。
 
-分层：入口只依赖 graph 包——取图、驱动批次、运维回填都从 graph 走，不穿透到
-services / tools / adapters。用户线的 analyze_hotwords 意图在入口分流到 graph 的
-批次驱动（它是编排不是工具），返回体包装成与其余意图一致的 state 结构，前端零感知。
+    POST /run        用户线主图（意图分类 → 取数 → 校验 → 输出）
+    POST /hotwords   热词分析独立入口（逐词循环图，前端按需触发）
+    GET  /health     状态与进程内计数
+    POST /backfill   补写「正文已落库、状态表丢了」的热词（运维）
+    GET  /llm-quota  DeepSeek 余额与用量
+
+热词分析原本混在 /run 里靠 `intent=analyze_hotwords` 分流，现拆成独立入口：
+它是一张独立的循环图，不是主图的一个节点，也不经过工具注册表；入口直接返回
+graph 的运行结果，不再伪造主图的 state 结构。分层上入口只依赖 graph 包。
 """
 
 from __future__ import annotations
@@ -19,7 +24,6 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 from src.app.config import BACKFILL_TOKEN, settings
-from src.app.enums import Intent
 from src.app.graph import get_user_graph, run_backfill, run_hotwords
 from src.app.graph.state import initial_state
 from src.app.llm.quota import check_quota
@@ -36,41 +40,13 @@ class WorkflowRequest(BaseModel):
     thread_id: str | None = None
 
 
-def _hotwords_state(payload: dict) -> dict:
-    """用户线热词分析：入口分流到 graph 批次驱动，包装成与其余意图一致的 /run 返回体。
-
-    为什么不在主图里用工具触发：批量分析是编排（invoke 循环图），属 graph 层；
-    放在 tools 层会形成 tools → graph 反向依赖。入口分流后工具层只剩纯 IO，依赖单向。
-    返回字段与主图一致（intent / confidence / validation / output / tool_results /
-    langsmith）；批次自己的 traceRun 在 out 里供 LangSmith 回链，前端无需区分走了哪条线。
-    """
-    versions = payload.get("prompt_versions") or {}
-    out = run_hotwords(prompt_version=versions.get("hotwords"))
-    ok = bool(out.get("ok"))
-    reason = out.get("error") or out.get("note") or "本批热词分析完成"
-    output = (f"intent=analyze_hotwords; tools=1; analyzed={out.get('analyzed', 0)}; "
-              f"failed={out.get('failed', 0)}; ok={ok}")
-    # 热词图自己的 traceRun{runId,url} 已在 out 里，前端可直接回链 LangSmith；
-    # 这里不伪造主图的节点轨迹——这条意图走的是后台批次线，没有主图的 5 个节点。
-    return {
-        "intent": Intent.ANALYZE_HOTWORDS.value,
-        "confidence": 1.0,
-        "validation": {"is_valid": ok, "reason": reason,
-                       "tool_failures": out.get("failed", 0)},
-        "output": output,
-        "tool_results": {
-            "analyze_hotwords": {"tool": "analyze_hotwords", "ok": ok,
-                                 "result": out, "error": out.get("error", "")},
-        },
-        "langsmith": langsmith_config(),
-    }
+class HotwordsRequest(BaseModel):
+    limit: int = 20
+    prompt_version: str | None = None
 
 
 def invoke_workflow(payload: dict) -> dict:
-    """跑完整一轮；thread_id 决定 checkpointer 的会话归属。"""
-    if payload.get("intent") == Intent.ANALYZE_HOTWORDS.value:
-        return _hotwords_state(payload)
-
+    """跑完整一轮用户线主图；thread_id 决定 checkpointer 的会话归属。"""
     state = initial_state(
         payload["input_text"],
         intent=payload.get("intent"),
@@ -101,7 +77,18 @@ api = FastAPI(title=settings.project_name)
 
 @api.post("/run")
 def run(request: WorkflowRequest) -> dict:
+    """用户线主图：和其余场景共用一张图，热词分析不在这里。"""
     return invoke_workflow(request.model_dump())
+
+
+@api.post("/hotwords")
+def hotwords(request: HotwordsRequest) -> dict:
+    """热词分析：独立的逐词循环图，前端在本页按需触发。
+
+    直接返回 graph 的运行结果（ok / analyzed / failed / items / traceRun …），
+    不套主图 state——它本就不是主图节点。limit 最大 50，由 graph 层收口。
+    """
+    return run_hotwords(limit=request.limit, prompt_version=request.prompt_version)
 
 
 @api.get("/health")

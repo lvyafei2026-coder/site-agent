@@ -22,9 +22,10 @@ from src.app.tools.adapters.cloudflare.kv import (
 )
 from .hotword_kv_io import _kv_list, _kv_dict
 
-OK_MIN_RATE = 0.5          # 整轮成功判定：成功率低于此值即视为失败
+OK_MIN_RATE = 0.5                    # 整轮成功判定：成功率低于此值即视为失败
 RUN_TRACE_NAME = "site-agent:hotword-run"   # 一次 invoke 的根 span（旧名 hotword-batch）
-WORD_TRACE_PREFIX = "site-agent:hotword:"
+WORD_TRACE_PREFIX = "site-agent:hotword:"   # 逐词 span 前缀
+TOOL_KV_PREFIX = "tool:kv."          # 取词 / 判例读等 KV 工具 span 前缀
 
 
 def select_pending(kv: CloudflareKV, seen: set[str]) -> dict[str, Any] | None:

@@ -4,19 +4,18 @@
 
 """热词循环图的**节点逻辑**：问 tool 取一词 → 分析 → 问「还有吗」→ 继续 / 结束。
 
-这就是用户视角的固定流程，没有批次概念、没有快照队列：
     START → fetch_one → analyze_one → should_continue ─┬─ fetch_one（tool 还给得出词）
                                                       └─ END（没有 / 达上限 / KV 失败）
-每轮 fetch_one 都真去问一次 tool「下一个词」，取到就分析，取不到（tool 返回 None）
-就结束。循环由**图的条件边驱动**，Python 层不写 while/for。
 
-节点名刻意用动词（FETCH_NODE / ANALYZE_NODE 公开常量），State 字段用名词
-（queue / seen / results…）——langgraph 0.3.x 不允许节点名与 State 字段同名。
+每轮 fetch_one 都真去问一次 tool「下一个词」，取到就分析，取不到（None）就结束。
+循环由**图的条件边驱动**，Python 层不写 while/for。
 
-trace：根 span 由 graph/hotword_graph.py 的 run_hotwords 创建，root_run 经 state 显式
-传给每个节点，保住「根 → 每词 → LLM」层级契约（串行下 contextvar 本可继承，显式传更稳）。
+节点名刻意用动词（FETCH_NODE / ANALYZE_NODE 公开常量），State 字段用名词，
+避免 langgraph 0.3.x「节点名与 State 字段同名」的限制。
 
-单词逻辑（补数/LLM/降级/回写）在 services/hotword_service.py 的 _analyze_one，本模块不碰。
+trace 是声明式切面：取词 / 判例读在函数定义处用 @observed 声明 tool span；
+analyze_one 直接调已被切面装饰的 _analyze_one。父子靠 contextvar 自动继承，
+节点里没有任何 parent / run_id / outputs 拼装代码。
 """
 
 from __future__ import annotations
@@ -27,18 +26,16 @@ from typing import Any, Optional, TypedDict
 from langgraph.graph import END
 
 from src.app.enums import Verdict
-from src.app.observability.langsmith import run_traced as _span, trace_tool
+from src.app.observability.langsmith import observed
 
-from src.app.services.hotword_service import (
-    _analyze_one, _DegradeState, _word_outputs, _word_error, TOOL_TRACE_PREFIX,
-)
+from src.app.services.hotword_service import _analyze_one, _DegradeState
 from src.app.tools.adapters.cloudflare.kv import (
-    CloudflareKV, term_key, AI_CACHE_PREFIX, SAVED_KEY, REJECTED_KEY, TAGS_KEY,
+    CloudflareKV, AI_CACHE_PREFIX, SAVED_KEY, REJECTED_KEY, TAGS_KEY,
 )
 from src.app.tools.adapters.terms.hotword_kv_io import _kv_list
 from src.app.tools.adapters.terms.hotword_criteria import pick_examples
 from src.app.tools.adapters.terms.hotword_contract import (
-    select_pending, WORD_TRACE_PREFIX, OK_MIN_RATE,
+    select_pending, OK_MIN_RATE, TOOL_KV_PREFIX,
 )
 
 log = logging.getLogger(__name__)
@@ -56,13 +53,11 @@ class HotwordLoopState(TypedDict, total=False):
     limit: int                       # 本次最多分析的词数（= 最大循环次数）
     kv: CloudflareKV
     prompt_version: Optional[str]
-    root_run: Any                    # 根 span 的 run，作每词 span 的显式父
-    run_id: str
     degrade: _DegradeState           # 源级降级状态（SERP/Trends/LLM）
 
     # ——节点间流转——
     seen: set[str]                   # 本轮已取过的 key（防 KV 最终一致导致重复取词）
-    examples_loaded: bool            # 人工判例是否已读（只读一次，挂在根 span 下）
+    examples_loaded: bool            # 人工判例是否已读（只读一次）
     examples: list[dict[str, str]]
     has_more: bool                   # fetch_one 本轮是否取到词（False → 条件边收尾）
     current: dict[str, Any]          # 本轮取出的待分析词
@@ -71,58 +66,47 @@ class HotwordLoopState(TypedDict, total=False):
     load_error: str                  # 候选池读取失败信息（非空 → 直接 END）
 
 
-def _load_examples(state: HotwordLoopState) -> dict[str, Any]:
-    """首次进入时读一次人工判例，带一条 tool span（挂在根 run 下）。
+@observed(TOOL_KV_PREFIX + "read-examples", kind="tool",
+          inputs=lambda kv: {"key": REJECTED_KEY},
+          outputs=lambda rows: {"rejected": len(rows) if isinstance(rows, list) else 0})
+def _read_examples(kv: CloudflareKV) -> list:
+    return _kv_list(kv, REJECTED_KEY)
 
-    判例来自 rejected 表，一轮只读一次即可——它不随单词分析变化。
-    失败只降级掉判例（examples=[]），不让整轮因这张表挂掉。
-    """
-    root_run = state.get("root_run")
-    run_id = state.get("run_id", "")
-    meta = {"run_id": run_id, "component": "analyze_hotwords"}
-    examples: list[dict[str, str]] = []
+
+@observed(TOOL_KV_PREFIX + "next-candidate", kind="tool",
+          inputs=lambda kv, seen: {
+              "seenCount": len(seen),
+              "keys": ["candidates", SAVED_KEY, REJECTED_KEY, TAGS_KEY, AI_CACHE_PREFIX],
+          },
+          outputs=lambda res: {"term": (res or {}).get("term", ""),
+                               "key": (res or {}).get("key", "")})
+def _next_candidate(kv: CloudflareKV, seen: set[str]) -> dict[str, Any] | None:
+    return select_pending(kv, seen)
+
+
+def _load_examples(state: HotwordLoopState) -> dict[str, Any]:
+    """首次进入时读一次人工判例；失败只降级掉判例，不让整轮因这张表挂掉。"""
     try:
-        rejected_rows = trace_tool(
-            lambda: _kv_list(state["kv"], REJECTED_KEY),
-            name=TOOL_TRACE_PREFIX + "kv.read-examples",
-            parent=root_run,
-            inputs={"key": REJECTED_KEY},
-            tags=["site-agent", "hotword-tool", "loop"],
-            metadata=meta,
-            outputs=lambda res: {"rejected": len(res) if isinstance(res, list) else 0},
-        )
-        examples = pick_examples(rejected_rows)
+        examples = pick_examples(_read_examples(state["kv"]))
     except Exception as exc:  # noqa: BLE001
         log.warning("判例读取失败，本轮不带判例继续：%s", str(exc)[:120])
+        examples = []
     return {"examples_loaded": True, "examples": examples}
 
 
 def fetch_one(state: HotwordLoopState) -> dict[str, Any]:
     """问 tool 要下一个词；取到就放进 current，取不到就标记 has_more=False。
 
-    每轮都是一次真实的 tool 调用（候选查询）——没有「首次加载整个候选池到内存、
-    之后游标推进」这回事。KV 最终一致可能让本轮刚取的词仍留在候选池里，故传入 seen
-    排除本轮已取过的 key。
+    每轮都是一次真实的 tool 调用——没有「首次加载整个候选池、之后游标推进」。
+    KV 最终一致可能让刚取的词仍留在候选池里，故传 seen 排除本轮已取过的 key。
     """
     updates: dict[str, Any] = {}
     if not state.get("examples_loaded"):
         updates.update(_load_examples(state))
 
-    root_run = state.get("root_run")
-    run_id = state.get("run_id", "")
     seen: set[str] = set(state.get("seen") or set())
     try:
-        item = trace_tool(
-            lambda: select_pending(state["kv"], seen),
-            name=TOOL_TRACE_PREFIX + "next-candidate",
-            parent=root_run,
-            inputs={"seenCount": len(seen), "keys": ["candidates", SAVED_KEY,
-                                                     REJECTED_KEY, TAGS_KEY, AI_CACHE_PREFIX]},
-            tags=["site-agent", "hotword-tool", "loop"],
-            metadata={"run_id": run_id, "component": "analyze_hotwords"},
-            outputs=lambda res: {"term": (res or {}).get("term", ""),
-                                 "key": (res or {}).get("key", "")},
-        )
+        item = _next_candidate(state["kv"], seen)
     except Exception as exc:  # noqa: BLE001 - KV 不可达 → 整轮失败，不写任何状态
         log.warning("候选查询失败：%s", exc)
         return {**updates, "current": None, "has_more": False,
@@ -145,31 +129,9 @@ def analyze_one(state: HotwordLoopState) -> dict[str, Any]:
     if not item:
         return {"results": results, "loop_count": loop_count}
 
-    kv = state["kv"]
-    root_run = state.get("root_run")
-    run_id = state.get("run_id", "")
-    idx = loop_count
-    term = str(item.get("term") or "").strip()
-    key = term_key(item.get("key") or term)
-    degrade = state.get("degrade")  # type: ignore[assignment]  # _DegradeState 实例
-
-    result = _span(
-        lambda word_run: _analyze_one(
-            item, kv, degrade, word_run,
-            state.get("prompt_version"), state.get("examples", [])),
-        name=WORD_TRACE_PREFIX + (term or key)[:60],
-        parent=root_run,
-        inputs={"term": term, "key": key, "index": idx},
-        tags=["site-agent", "hotword", "loop"],
-        metadata={
-            "run_id": run_id,
-            "thread_id": run_id,
-            "word_id": f"{run_id}/{idx}/{key}",
-            "term": term, "key": key, "index": idx,
-        },
-        outputs=_word_outputs,
-        error=_word_error,
-        pass_run=True,
+    result = _analyze_one(
+        item, state["kv"], state.get("degrade"),
+        state.get("prompt_version"), state.get("examples", []),
     )
     results.append(result)
     return {"results": results, "loop_count": loop_count + 1}

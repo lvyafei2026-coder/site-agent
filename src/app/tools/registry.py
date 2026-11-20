@@ -4,7 +4,7 @@
 
 """工具装配 + 注册。
 
-全包唯一同时认识「全部实现（6 个域 Ops）」和「全部工具（26 个类）」的模块，
+全包唯一同时认识「全部实现（6 个域 Ops）」和「全部工具（25 个类）」的模块，
 所以装配放在这里：RuntimeService 把 6 个域拼成一个门面，再逐个注入给工具。
 依赖方向固定为 registry → *_tools → base →（标准库 / pydantic），全程静态 import，
 不需要任何延迟导入；base 不反过来认识任何域，工具也不自己去取门面。
@@ -62,8 +62,8 @@ def _tool_tracer(name: str, kind: str, method: str, kwargs: dict, call):
     """25 个工具共用的 LangSmith span：入参、统一返回体、失败原因全留在一条 run 上。
 
     ★`parent=None` 是刻意的：工具在 graph 节点里同步调用，LangSmith 会自动把 span
-      挂到当前节点（LangChainTracer 注入的 run）下。热词逐词循环图的每词 span 走
-      hotword_nodes.py / hotword_service.py 的显式 parent 链路（保住「批次→词→LLM」层级）。
+      挂到当前节点（LangChainTracer 注入的 run）下。热词图的每词 span 同样靠
+      contextvar 自动挂到 nodes 的节点下（保住「根 → 节点 → 词 → IO/LLM」层级）。
     ★`ok=False` 也要让 span 标红：RuntimeTool 把异常吞进 ToolOutput 返回体，
       不抛异常的话 LangSmith 自己看不出失败。
     """

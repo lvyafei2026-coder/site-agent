@@ -4,9 +4,10 @@
 
 """编排层的统一门面：两条线在这里并列可见，入口（main / api）只依赖本包。
 
-线 1｜对外用户输入  get_user_graph()  ← user_graph.py
-线 2｜后台自动运行  run_hotwords()    ← hotword_graph.py（循环图 + 运行入口）
+线 1｜用户输入  get_user_graph()  ← user_graph.py（POST /run）
+线 2｜热词分析  run_hotwords()    ← hotword_graph.py（循环图 + 运行入口，POST /hotwords）
 
+两条线互不嵌套、各有独立 API，由前端按需触发；进程内没有后台线程或定时循环。
 运维入口 run_backfill() 委托 services 层的状态回填（本包只做转发，不承载业务逻辑）。
 入口层不再穿透到 tools / adapters：取图、驱动热词图、回填都从本包走。
 """

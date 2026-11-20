@@ -42,7 +42,7 @@ START → classify_intent → run_processing → validate_result
                                                   └── error    → handle_error → END
 ```
 
-线 2｜后台线 `build_hotword_graph()` → `get_hotword_graph()`（逐词循环）：
+线 2｜热词线 `build_hotword_graph()` → `get_hotword_graph()`（逐词循环）：
 ```python
 START → fetch_one（每轮问 tool 要一个词）→ analyze_one → should_continue
                     ├─ fetch_one（tool 还给得出词、未达 limit）
@@ -52,12 +52,11 @@ START → fetch_one（每轮问 tool 要一个词）→ analyze_one → should_c
 没有就结束，串行推进。`nodes/hotword_nodes.py` 里没有快照队列和 Python `while/for`——
 循环完全由条件边驱动；`seen` 集合只在本轮内排除已取过的 key（KV 最终一致兜底）。
 运行入口 `run_hotwords()` 与图装配同处 `graph/hotword_graph.py`。
-装配真身在 `graph/hotword_graph.py`，只依赖 `nodes/hotword_nodes.py` 的节点逻辑；
-两图经 `graph/__init__.py` 统一导出，`graph/hotword_graph.py` 顶层静态取图，无函数内 import。
-节点逻辑在 `nodes/hotword_nodes.py`，单词分析在 `services/hotword_service.py`；
-入口是 `main.py:run_background()`（单跑）与 `main.py:serve()` 里的守护线程
-（常驻自动，周期 `BACKGROUND_INTERVAL_SEC`）。用户线 `analyze_hotwords` 意图在
-`api/routes.py` 直接分流到同一个 `graph.run_hotwords()`，返回体包装成主图一致的 state 结构。
+装配只依赖 `nodes/hotword_nodes.py` 的节点逻辑，两图经 `graph/__init__.py` 统一导出，
+顶层静态取图，无函数内 import。节点逻辑在 `nodes/hotword_nodes.py`，单词分析在
+`services/hotword_service.py`。
+入口只有一个：`POST /hotwords`（`api/routes.py`）直接返回 `graph.run_hotwords()` 的
+原生结果，不套主图 state；**进程内没有后台线程或定时循环**，由前端按需触发。
 
 | 组件 | 内容 |
 |---|---|
@@ -65,6 +64,8 @@ START → fetch_one（每轮问 tool 要一个词）→ analyze_one → should_c
 | `constants.Tags` | `retry` / `complete` / `error` |
 | `edges.route_after_validation` | `is_valid` → complete；`retry_count < MAX_VALIDATION_RETRIES` → retry；否则 error |
 | `user_graph.get_user_graph()` | `@lru_cache(1)`：checkpointer 持连接（SQLite 尤甚），不能每请求重建 |
+| `hotword_graph.get_hotword_graph()` | 同上 `@lru_cache(1)`；无 checkpointer，一次 invoke 跑完即弃 |
+| `hotword_graph.run_hotwords()` | 唯一运行入口：构造 state → invoke（`recursion_limit=limit*2+4`）→ summarize |
 
 节点名必须带动词前缀：LangGraph 0.3.x 不允许节点名与 state 字段同名，
 否则 `add_node` 抛 `'intent' is already being used as a state key`。

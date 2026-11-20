@@ -46,25 +46,28 @@ def test_http_validation_error():
     assert client.post("/run", json={}).status_code == 422
 
 
-def test_analyze_hotwords_is_dispatched_at_entry(fake, monkeypatch):
-    """用户线 analyze_hotwords 在入口分流到 graph 批次驱动，返回结构同其余意图。"""
+def test_hotwords_is_a_separate_entry(fake, monkeypatch):
+    """热词分析是独立入口，不再混在 /run 的 intent 分流里。"""
     import src.app.api.routes as routes
 
     seen = {}
 
-    def fake_run(*, prompt_version=None):
+    def fake_run(*, limit=20, prompt_version=None):
+        seen["limit"] = limit
         seen["prompt_version"] = prompt_version
         return {"ok": True, "analyzed": 3, "failed": 0, "items": []}
 
     monkeypatch.setattr(routes, "run_hotwords", fake_run)
-    r = invoke_workflow({"input_text": "分析热词", "intent": "analyze_hotwords",
-                         "prompt_versions": {"hotwords": "v2"}})
-    assert seen == {"prompt_version": "v2"}
-    assert r["intent"] == "analyze_hotwords"
-    assert r["tool_results"]["analyze_hotwords"]["ok"] is True
-    assert r["tool_results"]["analyze_hotwords"]["result"]["analyzed"] == 3
-    assert r["validation"]["is_valid"] is True
-    assert "output" in r and "langsmith" in r
+    client = TestClient(api)
+
+    r = client.post("/hotwords", json={"limit": 5, "prompt_version": "v2"})
+    assert r.status_code == 200 and seen == {"limit": 5, "prompt_version": "v2"}
+    assert r.json()["analyzed"] == 3
+
+    # /run 仍走主图，不再因 intent=analyze_hotwords 分流到热词图
+    r2 = client.post("/run", json={"input_text": "分析热词", "intent": "analyze_hotwords"})
+    assert r2.status_code == 200 and r2.json()["intent"] == "analyze_hotwords"
+    assert "analyzed" not in r2.json()   # 没有热词结果字段，说明走的是主图
 
 
 def test_http_backfill_defaults_to_dry_run(monkeypatch):

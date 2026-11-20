@@ -10,8 +10,8 @@
      既烧时间又加重封禁。
   ② **单词问题**（这个词没结果、CSV 解析空）：降级即可，不影响其它词。
 
-★2026-11-13 改：源级不可用**不再中止整批**。scrape_serp / scrape_trend 抛出后，
-  hotwords._analyze_one 把该词的这一步降级成 notice，并置批次级 serp_off / trends_off
+★2026-11-13 改：源级不可用**不再中止整轮**。scrape_serp / scrape_trend 抛出后，
+  services/hotword_service 把该词的这一步降级成 notice，并置本轮级 serp_off / trends_off
   让后续词跳过取数；LLM 与状态回写照常进行（完成一个结束一个、互不影响）。
 """
 

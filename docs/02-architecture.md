@@ -7,9 +7,9 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ 入口      main.py:serve() 常驻双线：主线程 uvicorn + 守护线程定时循环             │
-│           线1 用户线 api/routes.py(/run)·run()；线2 后台线 run_background()        │
-│           python -m src.app.main 直接起双服务；run()/run_background() 可单跑       │
+│ 入口      main.py:serve() 只起 uvicorn；两个业务入口各一条线                       │
+│           线1 用户线 POST /run；线2 热词线 POST /hotwords（前端按需触发）          │
+│           python -m src.app.main 常驻 HTTP；run() 可单跑用户线                     │
 ├──────────────────────────────────────────────────────────────┤
 │ 编排      graph/（user_graph · hotword_graph〔图+运行入口〕· state · constants · edges）│
 ├──────────────────────────────────────────────────────────────┤
@@ -64,7 +64,7 @@
 | 实现门面 | `tools/registry.py:RuntimeService` | 6 个域 Ops 的多继承组合，本身没有实现 |
 | 工具实例 | `tools/registry.py:tool_registry` | 把门面注入 25 个工具，一次构造 |
 | 图（用户线） | `graph/user_graph.py:get_user_graph()` | `lru_cache(1)`，checkpointer 连接跟着复用 |
-| 图（后台线） | `graph/hotword_graph.py:get_hotword_graph()` | 热词逐词循环图，`lru_cache(1)`，无 checkpointer |
+| 图（热词线） | `graph/hotword_graph.py:get_hotword_graph()` | 热词逐词循环图，`lru_cache(1)`，无 checkpointer |
 | 运行入口 | `graph/hotword_graph.py:run_hotwords()` | 构造 state → invoke 循环图 → summarize，与图同文件 |
 
 工具拿实现的唯一途径是构造注入：
@@ -161,13 +161,13 @@ flowchart LR
 starter + 1GB 磁盘挂 `/data` 并设 `MEMORY_BACKEND=sqlite` +
 `DATABASE_URL=sqlite:////data/agent.sqlite`。
 
-触发方式：一个常驻进程同时跑两条线（见 `main.py:serve`）——
-主线程 uvicorn 承载 `/run`（用户线，console「Agent入口」页透传或手动 POST）；
-守护线程按 `BACKGROUND_INTERVAL_SEC`（默认 6h）自动跑热词分析（后台线），启动即跑一轮。
-单跑调试直接调 `run()` / `run_background()`。console 的 `*/10 1-15 * * *`（UTC）cron
-只做心跳保活与额度预警，不再负责触发 agent 任务。
+触发方式：进程只起 uvicorn（见 `main.py:serve`），两条业务线各是一个 HTTP 入口——
+`POST /run`（用户线主图，console「Agent入口」页透传或手动 POST）和
+`POST /hotwords`（热词逐词循环图，console 页面按需触发，跑完即返回）。
+**进程内没有后台线程、没有定时循环**，因此也没有后台周期配置。
+console 的 `*/10 1-15 * * *`（UTC）cron 只做心跳保活与额度预警，不触发 agent 任务。
 
-为什么不用 Workers：agent 现在是常驻双服务进程，需要长驻线程承载后台定时循环；
+为什么不用 Workers：需要持久化图状态与本地 git 仓库副本，Workers 两者都给不了；
 Workers AI 是账户级额度，出图站已经占了大部分。
 
 ## 6. 与站群其它系统的边界
@@ -203,4 +203,5 @@ Workers AI 是账户级额度，出图站已经占了大部分。
 | 写动作靠 `tools` 显式声明 | 闸门放在请求体而不是代码分支，进程不用保存「等谁批」的状态 |
 | SQL 集中在 `adapters/cloudflare/sql.py` | 表名与列名只来自白名单契约，值一律占位符，热路径不拼字符串 |
 | 工具实现用构造注入 | 装配在一个文件里看得见，测试一次性替换 25 个工具 |
-| 两图并列不嵌套 | 用户线 / 后台线各自一张 StateGraph，入口分流而非把编排塞进工具层 |
+| 两图并列不嵌套 | 用户线 / 热词线各自一张 StateGraph、各自一个 HTTP 入口，不把编排塞进工具层 |
+| trace 靠切面不靠手写 | `observability.observed` 在函数定义处声明 span，父子由 contextvar 继承 |

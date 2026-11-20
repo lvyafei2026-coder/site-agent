@@ -6,8 +6,9 @@
 
 2026-11-20 分层归位：原 builder.py 拆成两张对称命名的装配文件——
     user_graph.py     用户线主图（本文件）：classify_intent → run_processing → … → output
-    hotword_graph.py  后台线循环图：fetch_one → analyze_one → should_continue 回环
-两图并列、互不嵌套，由 graph/__init__.py 统一导出，入口一眼可见两条线。
+    hotword_graph.py  热词线循环图：fetch_one → analyze_one → should_continue 回环
+两图并列、互不嵌套，由 graph/__init__.py 统一导出；两条线各有独立入口
+（用户线 `POST /run`，热词线 `POST /hotwords`），按需调用，进程内无常驻循环。
 
 本文件只装配结构，节点逻辑在 nodes/，依赖单向向下（graph → nodes → services → tools → adapters）。
 """

@@ -24,8 +24,8 @@ POST /run → classify_intent → run_processing → validate_result
 | 记住这一条 | 含义 |
 |---|---|
 | **只读默认** | 默认编排一般只调 `read` 工具；`write`（`git_push`、`publish_devto_article`）必须由请求 `tools` 显式列出 |
-| **热词分析不是工具** | `analyze_hotwords` 是编排：入口把它分流到 `graph.run_hotwords()`（逐词循环图），不经过工具注册表。★上线前必须加访问控制 |
-| **写动作靠显式声明** | 不保存待审状态；`write` 工具必须由请求 `tools` 列出，热词分析的状态写入由后台循环图自身负责 |
+| **热词分析不是工具** | 它是编排：独立入口 `POST /hotwords` 走 `graph.run_hotwords()`（逐词循环图），不经过工具注册表。★上线前必须加访问控制 |
+| **写动作靠显式声明** | 不保存待审状态；`write` 工具必须由请求 `tools` 列出，热词分析的状态写入由热词图自身负责 |
 | **无 LLM 也能跑** | 没有 `LLM_API_KEY` 时意图回退 `general`、抽取走本地正则，图照样跑完；热词分析拿不到 LLM 正文会跳过该词、不编造结论 |
 | **工具失败不抛异常** | 单个数据源挂了只记 `ok=false`，由校验环节决定重试还是报错 |
 
@@ -34,26 +34,33 @@ POST /run → classify_intent → run_processing → validate_result
 ```bash
 pip install -e .
 cp .env.example .env
-python -m src.app.main                 # 常驻双服务：HTTP 用户线 + 定时后台线
+python -m src.app.main                 # 常驻 HTTP：/run 用户线 + /hotwords 热词线
 pytest -q                              # 全量单测（含 test_hotwords.py）
 ```
 
-`python -m src.app.main` 直接进 `serve()`：一个进程同时起两条线——主线程 uvicorn
-承载 `/run`（对外用户输入），守护线程按 `BACKGROUND_INTERVAL_SEC`（默认 21600 秒
-= 6h，对齐 radar 抓取节奏）自动跑热词分析，启动即跑一轮，`<=0` 关闭自动循环。
-单跑调试直接调函数（`from src.app.main import run, run_background`）。本地开发若
-只要 HTTP，可设 `BACKGROUND_INTERVAL_SEC=0` 或直接用 `uvicorn ... --reload`。
+`python -m src.app.main` 直接进 `serve()`：只起 uvicorn，两个业务线各是一个 HTTP
+入口——`POST /run`（用户线主图）与 `POST /hotwords`（热词逐词循环图）。**没有后台
+线程、没有定时任务**：热词分析由前端按需触发，跑完即返回（一轮 1-2 分钟）。
+单跑调试直接调函数（`from src.app.main import run`；热词走 `graph.run_hotwords()`）。
 
 ```bash
 curl -s -X POST localhost:10000/run -H 'Content-Type: application/json' \
   -d '{"input_text":"复盘近期点击","intent":"review_metrics"}'
 ```
 
-`intent` 可选 `select_pages` / `plan_promo` / `find_backlinks` / `review_metrics` /
-**`analyze_hotwords`（热词分析，每批 20 条未跟进词，会写状态）** / `general`；
+`intent` 可选 `select_pages` / `plan_promo` / `find_backlinks` / `review_metrics` / `general`；
 不传则由 LLM 分类。请求还能传 `tools`（覆盖默认工具集）、`prompt_versions`
-（如 `{"intent":"v2"}`）、`thread_id`。`analyze_hotwords` 在入口直接分流到热词循环图，
-不走主图节点，返回体包装成同一结构、前端零感知。
+（如 `{"intent":"v2"}`）、`thread_id`。
+
+热词分析是另一条线，走独立入口：
+
+```bash
+curl -s -X POST localhost:10000/hotwords -H 'Content-Type: application/json' \
+  -d '{"limit":20,"prompt_version":"v2"}'
+```
+
+它返回热词图自己的结果（`ok / fetched / analyzed / failed / successRate / items / traceRun`），
+不套主图 state——它本就不是主图节点。
 
 热词分析链路：直读三方共用的共享 KV（radar 写入的候选池 + console 整理的
 `saved`/`rejected`/`tags`）→ 补 SERP 竞争度与 30 天趋势（读缓存，缺失现抓并写回）
@@ -72,8 +79,8 @@ should_continue ─┬→ fetch_one（还有词）└→ END（没有 / 达上�
 ```
 src/app/
 ├── enums.py                 ★枚举唯一真源：29 个 StrEnum 族（意图/状态/类型/kind…），逐值注释含义
-├── main.py / config.py      进程入口（双线常驻）/ Settings 单例 + 站群清单 + 意图兼容别名
-├── api/routes.py            FastAPI /run /health /backfill
+├── main.py / config.py      进程入口（uvicorn）/ Settings 单例 + 站群清单 + 意图兼容别名
+├── api/routes.py            FastAPI /run /hotwords /health /backfill
 ├── graph/                   user_graph（用户线）· hotword_graph（热词循环图 + 运行入口）
 │                            · state · constants(Names/Tags) · edges
 ├── nodes/                   intent · processing · validation · output · error · hotword_nodes（逐词）
@@ -110,7 +117,7 @@ migrations/0001_agent_tables.sql  D1 台账表
    `tools/base.py` 只依赖标准库与 pydantic。
    函数内 import、运行入口与图装配的分层穿透都已清零：两张图在 `graph/` 下对称命名
    （`user_graph.py` / `hotword_graph.py`），统一门面是 `graph/__init__.py`；
-   `analyze_hotwords` 在入口分流到 `graph.run_hotwords`，不再经过工具注册表。
+   热词分析走独立入口 `POST /hotwords` → `graph.run_hotwords`，不经过工具注册表。
    包内 `src.app.*` 依赖一律顶层声明（第三方 SDK 按需加载除外）。
    这些约束由 `test/test_architecture.py` 的 AST 守卫守着。
    `src.app.enums` 是零依赖纯数据模块，是唯一被放行给 base/sql 叶子引用的包内模块。

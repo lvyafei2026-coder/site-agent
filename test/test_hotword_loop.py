@@ -44,7 +44,7 @@ def test_fetch_one_asks_tool_each_round(fake_kv, monkeypatch):
     monkeypatch.setattr(hw.scrape_trend, "fetch_interest", lambda *a, **k: {"points": [], "summary": {}, "attempts": []})
     monkeypatch.setattr(hotword_llm, "_llm", lambda m: ("7) 结论：观望\n8) 信号标签：无", "fake"))
 
-    s = dict(limit=10, kv=fake_kv, root_run=None, run_id="loop-test",
+    s = dict(limit=10, kv=fake_kv, prompt_version=None,
              degrade=_DegradeState(), seen=set(), examples_loaded=True,
              examples=[], has_more=False, current=None, results=[],
              loop_count=0, load_error="")

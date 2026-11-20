@@ -4,8 +4,8 @@
 
 """工具分发：按意图选一组工具采集事实。
 
-默认集只含 read 工具。热词分析（analyze_hotwords）是编排而非工具，已在
-api/routes.py 入口分流到 graph 的批次驱动，不经过本分发器。
+默认集只含 read 工具。热词分析（analyze_hotwords）是编排而非工具，由独立的
+`POST /hotwords` 走 graph 的热词图，不经过本分发器。
 """
 
 from __future__ import annotations

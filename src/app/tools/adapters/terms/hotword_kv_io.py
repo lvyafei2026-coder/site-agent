@@ -15,7 +15,6 @@ services/hotword_service.py / services/backfill_service.py，逐词图在 graph/
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Optional
 
@@ -29,8 +28,8 @@ log = logging.getLogger(__name__)
 class _WriteLog:
     """单词级写入账本：这个词的每一次 put_* 都记结果，失败则汇总成 error。
 
-    records 里的明细（key/kind/phase/ok）供 LangSmith 的 tool:kv.write /
-    tool:serp / tool:trend 输出；关闭追踪时只记四个小字段，不算体积、零额外开销。
+    records 里的明细（key/kind/phase/ok）由切面汇入 tool:kv.write / tool:serp /
+    tool:trend 的 outputs；写入体积不在账本里算，Trace 层按需裁剪。
     """
 
     def __init__(self, term: str = "") -> None:
@@ -38,13 +37,10 @@ class _WriteLog:
         self.failed: list[str] = []
         self.records: list[dict[str, Any]] = []
         self.phase = AnalysisPhase.ANALYSIS.value   # serp / trend / analysis
-        self.capture = False      # tracing 开启时才计算写入字节数
 
-    def _record(self, key: str, ok: bool, kind: str, value: Any = None) -> bool:
+    def _record(self, key: str, ok: bool, kind: str) -> bool:
         rec: dict[str, Any] = {"key": key, "kind": kind,
                                "phase": self.phase, "ok": bool(ok)}
-        if self.capture:
-            rec["bytes"] = _io_size(value)
         self.records.append(rec)
         if not ok:
             self.failed.append(key)
@@ -57,7 +53,7 @@ class _WriteLog:
         except Exception as exc:  # noqa: BLE001 - 单词级写失败不拖垮其它词
             log.warning("KV 写入异常 term=%s key=%s: %s", self.term, key, exc)
             ok = False
-        return self._record(key, ok, "put_text", value)
+        return self._record(key, ok, "put_text")
 
     def json(self, kv: Any, key: str, obj: Any, ttl: Optional[int] = None) -> bool:
         try:
@@ -65,24 +61,18 @@ class _WriteLog:
         except Exception as exc:  # noqa: BLE001
             log.warning("KV 写入异常 term=%s key=%s: %s", self.term, key, exc)
             ok = False
-        return self._record(key, ok, "put_json", obj)
+        return self._record(key, ok, "put_json")
 
     def table(self, kv: Any, key: str, mutator, *, reader, ttl: Optional[int] = None) -> bool:
-        ok, updated = atomic_update(kv, key, mutator, reader=reader, ttl=ttl)
-        return self._record(key, ok, "atomic_update", updated)
+        ok, _updated = atomic_update(kv, key, mutator, reader=reader, ttl=ttl)
+        return self._record(key, ok, "atomic_update")
+
+    def records_for(self, phase: AnalysisPhase) -> list[dict[str, Any]]:
+        """取某一阶段的写入明细，供切面挂到对应 tool span 的 outputs。"""
+        return [r for r in self.records if r["phase"] == phase.value]
 
     def error(self) -> str:
         return "KV 写入失败：" + "、".join(self.failed) if self.failed else ""
-
-
-def _io_size(value: Any) -> int:
-    """只在 tracing 开启时调用：给 span 里的「写了多大」一个可解释的量级。"""
-    if isinstance(value, str):
-        return len(value)
-    try:
-        return len(json.dumps(value, ensure_ascii=False, default=str))
-    except Exception:  # noqa: BLE001
-        return 0
 
 
 def _kv_list(kv: CloudflareKV, key: str) -> list:
