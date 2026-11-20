@@ -16,9 +16,10 @@ def test_registry_has_25_tools():
 
 
 def test_kind_split():
+    # write = git_push / wait_build（空提交重推）/ publish_devto_article / send_notice
     assert len(tool_registry.by_kind("read")) == 13
-    assert len(tool_registry.by_kind("ledger")) == 10
-    assert len(tool_registry.by_kind("write")) == 2
+    assert len(tool_registry.by_kind("ledger")) == 8
+    assert len(tool_registry.by_kind("write")) == 4
 
 
 def test_every_tool_is_basetool_with_pydantic_input():
@@ -49,6 +50,12 @@ def test_unknown_tool_is_reported():
     from src.app.services.tool_service import tool_service
     out = tool_service.execute_for_intent("general", "x", {}, tools=["not_a_tool"])
     assert out["not_a_tool"]["ok"] is False
+
+
+def test_no_tool_overrides_run():
+    """业务分支一律在 Ops 里：覆盖 run() 会绕过 tracer 与 retryable 分类。"""
+    for name in tool_registry.names():
+        assert "run" not in type(tool_registry.get(name)).__dict__, name
 
 
 def test_every_tool_method_is_implemented_and_used():

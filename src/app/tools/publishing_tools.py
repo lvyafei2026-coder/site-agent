@@ -14,14 +14,14 @@ from pydantic import BaseModel, Field
 
 from src.app.config import SITES
 from src.app.enums import EventKind, EventStatus, PageQueryMode, ToolKind
-from src.app.tools.adapters import hosting
+from src.app.tools.adapters import publishing
 from src.app.tools.adapters.cloudflare import database
 from src.app.tools.adapters.cloudflare.sql import PAGE_QUERIES
 from src.app.tools.base import RuntimeTool, stable_key
 
 
 class PublishingOps:
-    """publishing 域的实现：D1 台账 + hosting 渲染/git/验活。
+    """publishing 域的实现：D1 台账 + publishing 适配器（渲染 / git / 验活）。
 
     跨域复用直接写 self.<method>（门面组合后可见，如 queue_indexing 落 ledger 事件），
     不额外 import 其它域的 Ops——换实现只换门面，一处生效。
@@ -34,23 +34,23 @@ class PublishingOps:
         return database.query(f"{query.sql} LIMIT ?", [*params, limit])
 
     def build_status(self, repo, sha):
-        return hosting.check_runs(repo, sha)
+        return publishing.check_runs(repo, sha)
 
     def live_page(self, site_name, slug, expect=""):
         site = SITES.get(site_name)
         if not site:
             return {"ok": False, "detail": f"未知站点 {site_name}"}
-        ok, detail = hosting.verify_live(site, slug, expect)
+        ok, detail = publishing.verify_live(site, slug, expect)
         return {"ok": ok, "url": detail, "detail": detail}
 
     def render_files(self, site_name, page):
-        return hosting.render_files(SITES[site_name], page)
+        return publishing.render_files(SITES[site_name], page)
 
     def git_push(self, site_name, page, work):
-        return hosting.push_files(SITES[site_name], page, work)
+        return publishing.push_files(SITES[site_name], page, work)
 
     def wait_build(self, repo, sha, work="", branch="main"):
-        return hosting.wait_build(repo, sha, work=work, branch=branch)
+        return publishing.wait_build(repo, sha, work=work, branch=branch)
 
     def queue_indexing(self, url):
         # 普通内容页 Indexing API 不生效；sitemap 已在 render_files 阶段写入。
@@ -108,11 +108,11 @@ class RenderFilesTool(RuntimeTool):
 
 
 class WaitBuildTool(RuntimeTool):
-    """等待 GitHub 上的 Workers Builds check run 完成，失败时做一次空提交重推。"""
+    """等待 GitHub 上的 Workers Builds check run 完成；未成功时做一次空提交重推。不可逆：重推会真 commit + push。"""
 
     tool_name = "wait_build"
     method = "wait_build"
-    kind = ToolKind.LEDGER.value
+    kind = ToolKind.WRITE.value
 
     class Input(BaseModel):
         repo: str = Field(..., description="owner/repo")

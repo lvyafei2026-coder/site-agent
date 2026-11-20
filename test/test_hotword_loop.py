@@ -20,8 +20,9 @@ from src.app.graph import state as graph_state
 from src.app.graph.edges import HOTWORD_EDGE_MAP, route_after_analyze
 from src.app.nodes.hotword_fetch_node import fetch_one
 from src.app.services.hotword_service import _DegradeState
-from src.app.tools.adapters.terms import hotwords as hw
-from src.app.tools.adapters.terms import hotword_llm
+from src.app.tools.adapters.cloudflare import kv as kvk
+from src.app.tools.adapters.hotwords import hotword_llm
+from src.app.tools.adapters.hotwords import scrape_serp, scrape_trend
 
 
 def test_loop_graph_topology():
@@ -47,8 +48,8 @@ def test_route_after_analyze():
 def test_fetch_one_asks_tool_each_round(fake_kv, monkeypatch):
     """每轮 fetch 都真问一次 tool 取一个词；seen 排除本轮已取的，避免重复。"""
     fake_kv.put_json("candidates", [{"term": f"t{i}"} for i in range(4)])
-    monkeypatch.setattr(hw.scrape_serp, "fetch_serp", lambda *a, **k: {"engine": "duckduckgo", "items": [], "attempts": []})
-    monkeypatch.setattr(hw.scrape_trend, "fetch_interest", lambda *a, **k: {"points": [], "summary": {}, "attempts": []})
+    monkeypatch.setattr(scrape_serp, "fetch_serp", lambda *a, **k: {"engine": "duckduckgo", "items": [], "attempts": []})
+    monkeypatch.setattr(scrape_trend, "fetch_interest", lambda *a, **k: {"points": [], "summary": {}, "attempts": []})
     monkeypatch.setattr(hotword_llm, "_llm", lambda m: ("7) 结论：观望\n8) 信号标签：无", "fake"))
 
     s = dict(limit=10, kv=fake_kv, prompt_version=None,
@@ -57,11 +58,11 @@ def test_fetch_one_asks_tool_each_round(fake_kv, monkeypatch):
              loop_count=0, load_error="")
     s1 = {**s, **fetch_one(s)}
     assert s1["has_more"] is True and s1["current"]["term"] == "t0"
-    assert s1["seen"] == {hw.term_key("t0")}
+    assert s1["seen"] == {kvk.term_key("t0")}
     # 第二轮：再问一次 tool，取到下一个词（不是从内存游标推进）
     s2 = {**s1, **fetch_one(s1)}
     assert s2["has_more"] is True and s2["current"]["term"] == "t1"
-    assert s2["seen"] == {hw.term_key("t0"), hw.term_key("t1")}
+    assert s2["seen"] == {kvk.term_key("t0"), kvk.term_key("t1")}
     # 取尽后 tool 返回 None → has_more=False，条件边收尾
     s3 = {**s2, **fetch_one(s2)}
     s4 = {**s3, **fetch_one(s3)}
@@ -73,17 +74,17 @@ def test_fetch_one_asks_tool_each_round(fake_kv, monkeypatch):
 def test_loop_stops_at_limit(fake_kv, monkeypatch):
     """给 8 个候选、limit=3，端到端只分析 3 个词——limit 是图路由的真实封顶。"""
     fake_kv.put_json("candidates", [{"term": f"term {i}"} for i in range(8)])
-    monkeypatch.setattr(hw.scrape_serp, "fetch_serp", lambda *a, **k: {"engine": "duckduckgo", "items": [], "attempts": []})
-    monkeypatch.setattr(hw.scrape_trend, "fetch_interest", lambda *a, **k: {"points": [], "summary": {}, "attempts": []})
+    monkeypatch.setattr(scrape_serp, "fetch_serp", lambda *a, **k: {"engine": "duckduckgo", "items": [], "attempts": []})
+    monkeypatch.setattr(scrape_trend, "fetch_interest", lambda *a, **k: {"points": [], "summary": {}, "attempts": []})
     monkeypatch.setattr(hotword_llm, "_llm", lambda m: ("7) 结论：观望\n8) 信号标签：无", "fake"))
 
     out = hotword_graph.run_hotwords(limit=3)
     assert out["fetched"] == 3 and len(out["items"]) == 3
     # 未分析的词不会写 AI 缓存（只回写了 3 个）
-    analyzed_keys = {hw.term_key(f"term {i}") for i in range(3)}
-    left_keys = {hw.term_key(f"term {i}") for i in range(3, 8)}
-    assert all(fake_kv.get_text(hw.AI_CACHE_PREFIX + k) for k in analyzed_keys)
-    assert not any(fake_kv.get_text(hw.AI_CACHE_PREFIX + k) for k in left_keys)
+    analyzed_keys = {kvk.term_key(f"term {i}") for i in range(3)}
+    left_keys = {kvk.term_key(f"term {i}") for i in range(3, 8)}
+    assert all(fake_kv.get_text(kvk.AI_CACHE_PREFIX + k) for k in analyzed_keys)
+    assert not any(fake_kv.get_text(kvk.AI_CACHE_PREFIX + k) for k in left_keys)
 
 
 def test_loop_kv_unreachable_short_circuits(monkeypatch):

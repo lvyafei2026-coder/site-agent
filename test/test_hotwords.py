@@ -12,8 +12,12 @@ run_hotwords 经共享 KV 的端到端写回（不碰 console / radar / OpenAI /
 import pytest
 
 from src.app.enums import Intent
-from src.app.tools.adapters.terms import hotwords as hw
-from src.app.tools.adapters.terms import hotword_llm
+from src.app.tools.adapters.cloudflare import kv as kvk
+from src.app.tools.adapters.hotwords import hotword_contract as hwk
+from src.app.tools.adapters.hotwords import hotword_criteria as hwc
+from src.app.tools.adapters.hotwords import hotword_fetch
+from src.app.tools.adapters.hotwords import hotword_llm
+from src.app.tools.adapters.hotwords import scrape_serp, scrape_trend
 from src.app.graph import hotword_graph
 from src.app.graph import state as graph_state
 from src.app.services.hotword_service import _analyze_one
@@ -22,7 +26,7 @@ from src.app.tools.registry import tool_registry
 
 
 def test_build_messages_keeps_serp_titles():
-    msgs = hw.build_messages({
+    msgs = hwc.build_messages({
         "term": "nayyi naveli",
         "related": ["a", "b", "c", "d", "e", "f", "g"],
         "hints": ["工具查询"],
@@ -41,7 +45,7 @@ def test_build_messages_keeps_serp_titles():
 
 
 def test_build_messages_without_serp():
-    user = hw.build_messages({"term": "x", "related": [], "hints": []})[1]["content"]
+    user = hwc.build_messages({"term": "x", "related": [], "hints": []})[1]["content"]
     assert "关联查询：（无）" in user
     assert "现有搜索结果" not in user
     assert "未命中明显常青信号" in user
@@ -59,7 +63,7 @@ def test_pick_examples_only_manual_with_generic_reason():
         {"term": "baz", "reason": "", "source": "manual", "updatedAt": 450},
         {"term": "欧盟新规什么时候生效", "reason": "查的是当期政策资讯，内容很快过时", "source": "manual", "updatedAt": 440},
     ]
-    ex = hw.pick_examples(rows)
+    ex = hwc.pick_examples(rows)
     terms = [e["term"] for e in ex]
     assert "how to sound better" in terms
     assert "欧盟新规什么时候生效" in terms
@@ -78,73 +82,73 @@ def test_pick_examples_dedup_by_reason_and_limit():
         for i in range(10)
     ]
     # 取足够多时验证「同理由只留一条」：5 条 old 同理由 → 只剩 1 条
-    all_ex = hw.pick_examples(rows, limit=99)
+    all_ex = hwc.pick_examples(rows, limit=99)
     assert sum(1 for e in all_ex if e["term"].startswith("old-")) == 1
     assert sum(1 for e in all_ex if e["term"].startswith("uniq-")) == 10
     # limit 生效
-    assert len(hw.pick_examples(rows, limit=3)) == 3
+    assert len(hwc.pick_examples(rows, limit=3)) == 3
     assert len(all_ex) <= 20
 
 
 def test_pick_examples_handles_bad_input():
-    assert hw.pick_examples(None) == []
-    assert hw.pick_examples("not a list") == []
-    assert hw.pick_examples([None, 3, "x"]) == []
+    assert hwc.pick_examples(None) == []
+    assert hwc.pick_examples("not a list") == []
+    assert hwc.pick_examples([None, 3, "x"]) == []
 
 
 def test_examples_line_format():
-    assert hw.examples_line([]) == ""
-    line = hw.examples_line([{"term": "abc", "reason": "理由一"}])
+    assert hwc.examples_line([]) == ""
+    line = hwc.examples_line([{"term": "abc", "reason": "理由一"}])
     assert "过去判定「不做」" in line and "abc — 理由一" in line
 
 
 def test_verdict_of():
-    assert hw.verdict_of("1) 词义…\n7) 结论：做，理由") == "做"
-    assert hw.verdict_of("7) 结论: 观望，等长尾") == "观望"
-    assert hw.verdict_of("8) 结论：不做，人名") == "不做"
-    assert hw.verdict_of("结论：观望但明显不做") == "不做"   # 小节号变了也能兜住
-    assert hw.verdict_of("没有结论小节") == ""
+    assert hwc.verdict_of("1) 词义…\n7) 结论：做，理由") == "做"
+    assert hwc.verdict_of("7) 结论: 观望，等长尾") == "观望"
+    assert hwc.verdict_of("8) 结论：不做，人名") == "不做"
+    assert hwc.verdict_of("结论：观望但明显不做") == "不做"   # 小节号变了也能兜住
+    assert hwc.verdict_of("没有结论小节") == ""
 
 
 def test_redline_of():
-    assert "姓名权" in hw.redline_of("这是真人姓名，有侵权风险")
-    assert "版权" in hw.redline_of("这是一部电影，涉版权")
-    assert hw.redline_of("看着像电影但其实不是") == ""       # 不能误杀
+    assert "姓名权" in hwc.redline_of("这是真人姓名，有侵权风险")
+    assert "版权" in hwc.redline_of("这是一部电影，涉版权")
+    assert hwc.redline_of("看着像电影但其实不是") == ""       # 不能误杀
 
 
 def test_work_signal_needs_two_hits():
     two = [{"title": "Foo (2026 film)", "domain": "imdb.com"},
            {"title": "Foo box office", "domain": " variety.com"}]
-    assert "具体作品" in hw.work_signal(two)
-    assert hw.work_signal(two[:1]) == ""
-    assert hw.work_signal([]) == ""
+    assert "具体作品" in hwc.work_signal(two)
+    assert hwc.work_signal(two[:1]) == ""
+    assert hwc.work_signal([]) == ""
 
 
 def test_signals_of():
-    assert hw.signals_of("8) 信号标签：工具查询、日程日期") == ["工具查询", "日程日期"]
-    assert hw.signals_of("8) 信号标签：无") == []
-    assert hw.signals_of("没有第 8 节") is None
-    assert len(hw.signals_of("8) 信号标签：工具查询、价格规格、日程日期、资格政策")) == 3
+    assert hwc.signals_of("8) 信号标签：工具查询、日程日期") == ["工具查询", "日程日期"]
+    assert hwc.signals_of("8) 信号标签：无") == []
+    assert hwc.signals_of("没有第 8 节") is None
+    assert len(hwc.signals_of("8) 信号标签：工具查询、价格规格、日程日期、资格政策")) == 3
 
 
 def test_decide_priority():
-    assert hw.decide("7) 结论：做，工具站") == ("做", "")
-    assert hw.decide("7) 结论：观望") == ("观望", "")
-    assert hw.decide("7) 结论：不做") == ("不做", "")
-    verdict, reason = hw.decide("7) 结论：观望，但是真人姓名有侵权风险")
+    assert hwc.decide("7) 结论：做，工具站") == ("做", "")
+    assert hwc.decide("7) 结论：观望") == ("观望", "")
+    assert hwc.decide("7) 结论：不做") == ("不做", "")
+    verdict, reason = hwc.decide("7) 结论：观望，但是真人姓名有侵权风险")
     assert verdict == "不做" and "姓名权" in reason
-    verdict, reason = hw.decide(
+    verdict, reason = hwc.decide(
         "7) 结论：做",
         "SERP 标题显示这是具体作品（Foo (2026 film)）")
     assert verdict == "不做" and "具体作品" in reason
 
 
 def test_serp_brief_fallback_to_domains():
-    assert hw.serp_brief({"items": [{"domain": "a.com", "title": "A"}]}) == [
+    assert hwc.serp_brief({"items": [{"domain": "a.com", "title": "A"}]}) == [
         {"domain": "a.com", "title": "A"}]
-    assert hw.serp_brief({"competition": {"domains": ["b.com"]}}) == [
+    assert hwc.serp_brief({"competition": {"domains": ["b.com"]}}) == [
         {"domain": "b.com", "title": ""}]
-    assert hw.serp_brief(None) == []
+    assert hwc.serp_brief(None) == []
 
 
 def test_analyze_hotwords_is_a_line_not_a_tool():
@@ -171,14 +175,14 @@ def _seed_candidates(fake_kv):
 
 
 def _patch_external(monkeypatch):
-    monkeypatch.setattr(hw.scrape_serp, "fetch_serp",
+    monkeypatch.setattr(scrape_serp, "fetch_serp",
                         lambda term, session=None, limit=10: {
                             "engine": "duckduckgo",
                             "items": [{"url": "https://calc.example/x", "domain": "calc.example",
                                        "title": "Invoice Calculator"}],
                             "attempts": [],
                         })
-    monkeypatch.setattr(hw.scrape_trend, "fetch_interest",
+    monkeypatch.setattr(scrape_trend, "fetch_interest",
                         lambda term, session=None, geo="": {
                             "points": [{"d": "2026-01-01", "v": 50}, {"d": "2026-01-02", "v": 60}],
                             "summary": {"avg": 55, "max": 60, "last": 60, "delta": 20, "direction": "up"},
@@ -205,14 +209,14 @@ def test_run_hotwords_writes_kv(fake_kv, monkeypatch):
 
     # 做 → saved(status=todo)
     saved = fake_kv.get_json("saved", [])
-    assert any(x["key"] == hw.term_key("free invoice calculator") and x["status"] == "todo" for x in saved)
+    assert any(x["key"] == kvk.term_key("free invoice calculator") and x["status"] == "todo" for x in saved)
     # 不做 → rejected(source=ai)
     rejected = fake_kv.get_json("rejected", [])
-    assert any(x["key"] == hw.term_key("Taylor Swift net worth") and x["source"] == "ai" for x in rejected)
+    assert any(x["key"] == kvk.term_key("Taylor Swift net worth") and x["source"] == "ai" for x in rejected)
     # 正文回写 ai:v3:，标签回写 aihints
-    assert fake_kv.get_text(hw.AI_CACHE_PREFIX + hw.term_key("free invoice calculator"))
+    assert fake_kv.get_text(kvk.AI_CACHE_PREFIX + kvk.term_key("free invoice calculator"))
     hints = fake_kv.get_json("aihints", {})
-    assert hints.get(hw.term_key("free invoice calculator")) == ["工具查询"]
+    assert hints.get(kvk.term_key("free invoice calculator")) == ["工具查询"]
     # 竞争度 / 趋势摘要表被更新
     assert fake_kv.get_json("competition")
     assert fake_kv.get_json("interests")
@@ -223,9 +227,9 @@ def test_run_hotwords_serp_source_down_only_skips_serp(fake_kv, monkeypatch):
 
     仍要避免 12 个词各撞一遍 4 发超时（第一批并发发现后就置 serp_off）。
     """
-    monkeypatch.setattr(hw, "SERP_GAP_SEC", 0)
+    monkeypatch.setattr(hotword_fetch, "SERP_GAP_SEC", 0)
     fake_kv.put_json("candidates", [{"term": f"term {i}"} for i in range(12)])
-    monkeypatch.setattr(hw.scrape_trend, "fetch_interest",
+    monkeypatch.setattr(scrape_trend, "fetch_interest",
                         lambda term, session=None, geo="": {
                             "points": [{"d": "2026-01-01", "v": 50}],
                             "summary": {"avg": 50}, "attempts": []})
@@ -234,9 +238,9 @@ def test_run_hotwords_serp_source_down_only_skips_serp(fake_kv, monkeypatch):
 
     def boom(term, session=None, limit=10):
         calls["n"] += 1
-        raise hw.scrape_serp.SourceUnavailable("duckduckgo", "连不上 DuckDuckGo", [])
+        raise scrape_serp.SourceUnavailable("duckduckgo", "连不上 DuckDuckGo", [])
 
-    monkeypatch.setattr(hw.scrape_serp, "fetch_serp", boom)
+    monkeypatch.setattr(scrape_serp, "fetch_serp", boom)
     monkeypatch.setattr(hotword_llm, "_llm", lambda m: ("7) 结论：观望", "fake"))
 
     out = hotword_graph.run_hotwords(limit=20)
@@ -247,14 +251,14 @@ def test_run_hotwords_serp_source_down_only_skips_serp(fake_kv, monkeypatch):
     assert calls["n"] <= 1   # 发现源挂后本批不再撞 DDG
     assert all(r["serp"] is False for r in out["items"])
     assert any("SERP 未取到" in (r.get("notice") or "") for r in out["items"])
-    assert len(fake_kv.list_keys(hw.AI_CACHE_PREFIX)) == 12
+    assert len(fake_kv.list_keys(kvk.AI_CACHE_PREFIX)) == 12
 
 
 def test_run_hotwords_skips_serp_but_still_writes_states(fake_kv, monkeypatch):
     """SERP 降级只影响取数，不影响 LLM 结论与 saved/rejected 状态回写。"""
-    monkeypatch.setattr(hw, "SERP_GAP_SEC", 0)
+    monkeypatch.setattr(hotword_fetch, "SERP_GAP_SEC", 0)
     fake_kv.put_json("candidates", [{"term": f"term {i}"} for i in range(5)])
-    monkeypatch.setattr(hw.scrape_trend, "fetch_interest",
+    monkeypatch.setattr(scrape_trend, "fetch_interest",
                         lambda term, session=None, geo="": {
                             "points": [{"d": "2026-01-01", "v": 50}],
                             "summary": {"avg": 50}, "attempts": []})
@@ -262,9 +266,9 @@ def test_run_hotwords_skips_serp_but_still_writes_states(fake_kv, monkeypatch):
 
     def boom(term, session=None, limit=10):
         calls["n"] += 1
-        raise hw.scrape_serp.SourceUnavailable("duckduckgo", "被挑战页占满", [])
+        raise scrape_serp.SourceUnavailable("duckduckgo", "被挑战页占满", [])
 
-    monkeypatch.setattr(hw.scrape_serp, "fetch_serp", boom)
+    monkeypatch.setattr(scrape_serp, "fetch_serp", boom)
     monkeypatch.setattr(hotword_llm, "_llm", lambda m: ("7) 结论：做，工具站\n8) 信号标签：工具查询", "fake"))
 
     out = hotword_graph.run_hotwords(limit=20)
@@ -278,9 +282,9 @@ def test_run_hotwords_skips_serp_but_still_writes_states(fake_kv, monkeypatch):
 
 def test_run_hotwords_keeps_going_when_trends_down(fake_kv, monkeypatch):
     """趋势只是辅助证据：源不可用时本批禁用，但分析继续（不能因它整批白跑）。"""
-    monkeypatch.setattr(hw, "SERP_GAP_SEC", 0)
+    monkeypatch.setattr(hotword_fetch, "SERP_GAP_SEC", 0)
     fake_kv.put_json("candidates", [{"term": f"term {i}"} for i in range(5)])
-    monkeypatch.setattr(hw.scrape_serp, "fetch_serp",
+    monkeypatch.setattr(scrape_serp, "fetch_serp",
                         lambda term, session=None, limit=10: {
                             "engine": "duckduckgo", "items": [], "attempts": []})
 
@@ -288,9 +292,9 @@ def test_run_hotwords_keeps_going_when_trends_down(fake_kv, monkeypatch):
 
     def trends_down(term, session=None, geo=""):
         trend_calls["n"] += 1
-        raise hw.scrape_trend.SourceUnavailable("google-trends", "连不上 Google Trends", [])
+        raise scrape_trend.SourceUnavailable("google-trends", "连不上 Google Trends", [])
 
-    monkeypatch.setattr(hw.scrape_trend, "fetch_interest", trends_down)
+    monkeypatch.setattr(scrape_trend, "fetch_interest", trends_down)
     monkeypatch.setattr(hotword_llm, "_llm", lambda m: ("7) 结论：观望", "fake"))
 
     out = hotword_graph.run_hotwords(limit=20)
@@ -300,17 +304,17 @@ def test_run_hotwords_keeps_going_when_trends_down(fake_kv, monkeypatch):
     assert out["analyzed"] == 5
     # 只撞一次超时就把趋势关掉，不是 5 个词各撞一次
     assert trend_calls["n"] <= 1
-    assert len(fake_kv.list_keys(hw.AI_CACHE_PREFIX)) == 5
+    assert len(fake_kv.list_keys(kvk.AI_CACHE_PREFIX)) == 5
 
 
 def test_run_hotwords_llm_failures_are_word_local(fake_kv, monkeypatch):
     """★LLM 连败/单词失败只记该词 error，其它词照常跑完并回写状态。"""
-    monkeypatch.setattr(hw, "SERP_GAP_SEC", 0)
+    monkeypatch.setattr(hotword_fetch, "SERP_GAP_SEC", 0)
     fake_kv.put_json("candidates", [{"term": f"term {i}"} for i in range(12)])
-    monkeypatch.setattr(hw.scrape_serp, "fetch_serp",
+    monkeypatch.setattr(scrape_serp, "fetch_serp",
                         lambda term, session=None, limit=10: {
                             "engine": "duckduckgo", "items": [], "attempts": []})
-    monkeypatch.setattr(hw.scrape_trend, "fetch_interest",
+    monkeypatch.setattr(scrape_trend, "fetch_interest",
                         lambda term, session=None, geo="": {
                             "points": [{"d": "2026-01-01", "v": 50}],
                             "summary": {"avg": 50}, "attempts": []})
@@ -328,7 +332,7 @@ def test_run_hotwords_llm_failures_are_word_local(fake_kv, monkeypatch):
     assert out["llmFailures"] == 1
     assert out["fetched"] == 12 and out["analyzed"] == 11 and out["failed"] == 1
     assert "LLM 调用失败" in out["items"][0]["error"]
-    assert len(fake_kv.list_keys(hw.AI_CACHE_PREFIX)) == 11
+    assert len(fake_kv.list_keys(kvk.AI_CACHE_PREFIX)) == 11
     assert len(fake_kv.get_json("saved", [])) == 11
 
 
@@ -370,11 +374,11 @@ def test_llm_uses_shared_client_and_normalizes_dict(monkeypatch, caplog):
     monkeypatch.setattr("src.app.config.LLM_THINKING", "auto")
 
     with caplog.at_level(logging.WARNING):
-        text, model = hw._llm([{"role": "user", "content": "x"}])
+        text, model = hotword_llm._llm([{"role": "user", "content": "x"}])
 
     assert text == "7) 结论：观望"
     assert model == "deepseek-flash"
-    assert calls["max_tokens"] == hw.MAX_TOKENS == 2000  # 不再被推理 token 吃光预算
+    assert calls["max_tokens"] == hotword_llm.MAX_TOKENS == 2000  # 不再被推理 token 吃光预算
     assert calls["temperature"] == 0 and calls["timeout"] == 60
     # DeepSeek 思考模式默认开，逐词分析必须显式关掉，否则 2000 全被 reasoning 吃掉
     assert calls["extra_body"] == {"thinking": {"type": "disabled"}}
@@ -411,8 +415,8 @@ def test_llm_empty_content_reports_real_cause(monkeypatch, caplog):
     monkeypatch.setattr("src.app.config.LLM_THINKING", "auto")
 
     with caplog.at_level(logging.WARNING):
-        with pytest.raises(hw.LLMEmptyContent) as ei:
-            hw._llm([{"role": "user", "content": "x"}])
+        with pytest.raises(hotword_llm.LLMEmptyContent) as ei:
+            hotword_llm._llm([{"role": "user", "content": "x"}])
 
     diag = ei.value.diag
     assert diag["finish_reason"] == "length"
@@ -441,8 +445,8 @@ def test_empty_content_without_reasoning_blames_text_budget(monkeypatch):
 
     monkeypatch.setattr(provider, "get_llm", lambda: FakeClient())
     monkeypatch.setattr("src.app.config.LLM_API_KEY", "sk-test")
-    with pytest.raises(hw.LLMEmptyContent) as ei:
-        hw._llm([{"role": "user", "content": "x"}])
+    with pytest.raises(hotword_llm.LLMEmptyContent) as ei:
+        hotword_llm._llm([{"role": "user", "content": "x"}])
     assert "正文超出 MAX_TOKENS" in ei.value.diag["reason"]
     assert "思考推理" not in ei.value.diag["reason"]
     assert "调大 MAX_TOKENS" in ei.value.diag["hint"]
@@ -452,16 +456,16 @@ def test_analyze_one_error_matches_real_cause(fake_kv, monkeypatch):
     """整批 items[].error 要带真实诊断，且空正文时绝不回写状态。"""
     term = "ato unpaid super recovery"
     fake_kv.put_json("candidates", [{"term": term}])
-    fake_kv.put_json(hw.SERP_PREFIX + term,
+    fake_kv.put_json(kvk.SERP_PREFIX + term,
                      {"items": [], "competition": {"score": 1, "level": "low"}})
-    fake_kv.put_json(hw.TREND_PREFIX + term, {"points": [], "summary": ""})
+    fake_kv.put_json(kvk.TREND_PREFIX + term, {"points": [], "summary": ""})
 
     diag = {"reason": "输出预算耗尽（思考推理吃光 max_tokens，正文未生成）",
             "finish_reason": "length", "reasoning_tokens": 2000,
             "max_tokens": 2000}
 
     def fake_llm(_messages):
-        raise hw.LLMEmptyContent("LLM 返回空正文：输出预算耗尽；finish_reason=length", diag)
+        raise hotword_llm.LLMEmptyContent("LLM 返回空正文：输出预算耗尽；finish_reason=length", diag)
 
     monkeypatch.setattr(hotword_llm, "_llm", fake_llm)
     out = hotword_graph.run_hotwords(limit=1)
@@ -480,8 +484,8 @@ def test_no_key_error_message(monkeypatch):
 
     monkeypatch.setattr(provider, "get_llm", lambda: 1 / 0)   # 被调用就炸
     monkeypatch.setattr("src.app.config.LLM_API_KEY", "")
-    with pytest.raises(hw.LLMEmptyContent) as ei:
-        hw._llm([{"role": "user", "content": "x"}])
+    with pytest.raises(hotword_llm.LLMEmptyContent) as ei:
+        hotword_llm._llm([{"role": "user", "content": "x"}])
     assert "LLM_API_KEY" in str(ei.value)
     assert ei.value.diag["no_key"] is True
 
@@ -490,24 +494,24 @@ def test_thinking_kwargs_scope(monkeypatch):
     """auto 只作用于 DeepSeek，换 provider 不误传专属参数；on/off 可显式覆盖。"""
     monkeypatch.setattr("src.app.config.LLM_BASE_URL", "https://api.groq.com/openai/v1")
     monkeypatch.setattr("src.app.config.LLM_THINKING", "auto")
-    assert hw._thinking_kwargs() == {}
+    assert hotword_llm._thinking_kwargs() == {}
     monkeypatch.setattr("src.app.config.LLM_THINKING", "on")
-    assert hw._thinking_kwargs() == {}
+    assert hotword_llm._thinking_kwargs() == {}
     monkeypatch.setattr("src.app.config.LLM_THINKING", "off")
-    assert hw._thinking_kwargs() == {"extra_body": {"thinking": {"type": "disabled"}}}
+    assert hotword_llm._thinking_kwargs() == {"extra_body": {"thinking": {"type": "disabled"}}}
     monkeypatch.setattr("src.app.config.LLM_BASE_URL", "https://api.deepseek.com")
     monkeypatch.setattr("src.app.config.LLM_THINKING", "auto")
-    assert hw._thinking_kwargs() == {"extra_body": {"thinking": {"type": "disabled"}}}
+    assert hotword_llm._thinking_kwargs() == {"extra_body": {"thinking": {"type": "disabled"}}}
 
 
 def test_run_hotwords_ok_requires_success_rate(fake_kv, monkeypatch):
     """整批 ok 按成功率判定：11 失败 / 1 成功不能再被报成 success。"""
-    monkeypatch.setattr(hw, "SERP_GAP_SEC", 0)
+    monkeypatch.setattr(hotword_fetch, "SERP_GAP_SEC", 0)
     fake_kv.put_json("candidates", [{"term": f"term {i}"} for i in range(4)])
-    monkeypatch.setattr(hw.scrape_serp, "fetch_serp",
+    monkeypatch.setattr(scrape_serp, "fetch_serp",
                         lambda term, session=None, limit=10: {
                             "engine": "duckduckgo", "items": [], "attempts": []})
-    monkeypatch.setattr(hw.scrape_trend, "fetch_interest",
+    monkeypatch.setattr(scrape_trend, "fetch_interest",
                         lambda term, session=None, geo="": {
                             "points": [{"d": "2026-01-01", "v": 50}],
                             "summary": {"avg": 50}, "attempts": []})
@@ -530,21 +534,21 @@ def test_select_pending_excludes_curated(fake_kv):
     fake_kv.put_json("candidates", [
         {"term": "a"}, {"term": "b"}, {"term": "c"}, {"term": "d"},
     ])
-    fake_kv.put_json("saved", [{"key": hw.term_key("a"), "term": "a", "status": "saved"}])
-    fake_kv.put_json("rejected", [{"key": hw.term_key("b"), "term": "b", "status": "rejected"}])
-    fake_kv.put_json("tags", {hw.term_key("c"): ["工具查询"]})
-    fake_kv.put_text(hw.AI_CACHE_PREFIX + hw.term_key("d"), "already analyzed")
-    pending = hw.select_pending(fake_kv, set())
+    fake_kv.put_json("saved", [{"key": kvk.term_key("a"), "term": "a", "status": "saved"}])
+    fake_kv.put_json("rejected", [{"key": kvk.term_key("b"), "term": "b", "status": "rejected"}])
+    fake_kv.put_json("tags", {kvk.term_key("c"): ["工具查询"]})
+    fake_kv.put_text(kvk.AI_CACHE_PREFIX + kvk.term_key("d"), "already analyzed")
+    pending = hwk.select_pending(fake_kv, set())
     assert pending is None  # 已收藏 / 不做 / 打标签 / 已分析 全部剔除
 
 
 def test_select_pending_returns_one_and_respects_seen(fake_kv):
     """每轮只问一个词；seen 里的 key 被跳过（防 KV 最终一致导致重复取词）。"""
     fake_kv.put_json("candidates", [{"term": f"t{i}"} for i in range(3)])
-    first = hw.select_pending(fake_kv, set())
+    first = hwk.select_pending(fake_kv, set())
     assert first["term"] == "t0"
-    assert hw.select_pending(fake_kv, {first["key"]})["term"] == "t1"
-    assert hw.select_pending(fake_kv, {hw.term_key(f"t{i}") for i in range(3)}) is None
+    assert hwk.select_pending(fake_kv, {first["key"]})["term"] == "t1"
+    assert hwk.select_pending(fake_kv, {kvk.term_key(f"t{i}") for i in range(3)}) is None
 
 
 def test_select_pending_survives_shape_drift(fake_kv):
@@ -553,11 +557,11 @@ def test_select_pending_survives_shape_drift(fake_kv):
     fake_kv.put_json("tags", ["不是对象而是数组"])          # 期望 dict，实际 list
     fake_kv.put_json("saved", {"a": {"status": "saved"}})   # 期望 list，实际 dict
     fake_kv.put_json("rejected", "垃圾")
-    pending = hw.select_pending(fake_kv, set())  # 不抛
+    pending = hwk.select_pending(fake_kv, set())  # 不抛
     assert pending["term"] == "a"  # 形状坏的当空，不误剔除
 
     fake_kv.put_json("candidates", {"a": 1})  # 期望 list，实际 dict
-    assert hw.select_pending(fake_kv, set()) is None
+    assert hwk.select_pending(fake_kv, set()) is None
 
 
 def test_analyze_one_skips_blank(fake_kv):
@@ -580,11 +584,11 @@ def test_run_hotwords_kv_unreachable_returns_error(fake_kv, monkeypatch):
 # ---- 2026-11-13：整表原子写 / 写失败记 error / 状态回填 ----
 
 def _patch_ok_sources(monkeypatch):
-    monkeypatch.setattr(hw, "SERP_GAP_SEC", 0)
-    monkeypatch.setattr(hw.scrape_serp, "fetch_serp",
+    monkeypatch.setattr(hotword_fetch, "SERP_GAP_SEC", 0)
+    monkeypatch.setattr(scrape_serp, "fetch_serp",
                         lambda term, session=None, limit=10: {
                             "engine": "duckduckgo", "items": [], "attempts": []})
-    monkeypatch.setattr(hw.scrape_trend, "fetch_interest",
+    monkeypatch.setattr(scrape_trend, "fetch_interest",
                         lambda term, session=None, geo="": {
                             "points": [{"d": "2026-01-01", "v": 50}],
                             "summary": {"avg": 50}, "attempts": []})
@@ -600,20 +604,20 @@ def test_status_table_write_failure_marks_error_but_keeps_body(fake_kv, monkeypa
     _patch_ok_sources(monkeypatch)
     monkeypatch.setattr(hotword_llm, "_llm",
                         lambda m: ("7) 结论：做，工具站\n8) 信号标签：工具查询", "fake"))
-    fake_kv.fail_keys.add(hw.SAVED_KEY)
+    fake_kv.fail_keys.add(kvk.SAVED_KEY)
 
     out = hotword_graph.run_hotwords(limit=1)
     item = out["items"][0]
-    assert "KV 写入失败" in item["error"] and hw.SAVED_KEY in item["writeErrors"]
+    assert "KV 写入失败" in item["error"] and kvk.SAVED_KEY in item["writeErrors"]
     assert out["analyzed"] == 0
     assert fake_kv.get_json("saved", []) == []
-    assert fake_kv.get_text(hw.AI_CACHE_PREFIX + hw.term_key(term))  # 正文在，状态丢了
+    assert fake_kv.get_text(kvk.AI_CACHE_PREFIX + kvk.term_key(term))  # 正文在，状态丢了
 
 
 def test_body_write_failure_never_writes_state(fake_kv, monkeypatch):
     """正文写失败就收手：绝不留下「有状态、没正文」的悬空词，且该词仍可重跑。"""
     term = "free invoice calculator"
-    key = hw.AI_CACHE_PREFIX + hw.term_key(term)
+    key = kvk.AI_CACHE_PREFIX + kvk.term_key(term)
     fake_kv.put_json("candidates", [{"term": term}])
     _patch_ok_sources(monkeypatch)
     monkeypatch.setattr(hotword_llm, "_llm",
@@ -627,7 +631,7 @@ def test_body_write_failure_never_writes_state(fake_kv, monkeypatch):
     assert fake_kv.get_json("rejected", []) == []
     assert fake_kv.get_json("aihints", {}) == {}
     assert fake_kv.get_text(key) is None
-    assert hw.select_pending(fake_kv, set()) is not None   # 下次还会重跑
+    assert hwk.select_pending(fake_kv, set()) is not None   # 下次还会重跑
 
 
 def test_concurrent_table_updates_do_not_lose_rows(fake_kv, monkeypatch):
@@ -663,7 +667,7 @@ def test_concurrent_table_updates_do_not_lose_rows(fake_kv, monkeypatch):
     out = hotword_graph.run_hotwords(limit=20)
 
     assert out["analyzed"] == n
-    assert len(fake_kv.list_keys(hw.AI_CACHE_PREFIX)) == n
+    assert len(fake_kv.list_keys(kvk.AI_CACHE_PREFIX)) == n
     assert len(fake_kv.get_json("saved", [])) + len(fake_kv.get_json("rejected", [])) == n
     assert len(fake_kv.get_json("aihints", {})) == n
     assert len(fake_kv.get_json("competition", {})) == n

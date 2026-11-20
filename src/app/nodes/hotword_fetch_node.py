@@ -24,9 +24,9 @@ from src.app.observability.langsmith import observed
 from src.app.tools.adapters.cloudflare.kv import (
     CloudflareKV, AI_CACHE_PREFIX, SAVED_KEY, REJECTED_KEY, TAGS_KEY,
 )
-from src.app.tools.adapters.terms.hotword_kv_io import _kv_list
-from src.app.tools.adapters.terms.hotword_criteria import pick_examples
-from src.app.tools.adapters.terms.hotword_contract import select_pending, TOOL_KV_PREFIX
+from src.app.tools.adapters.hotwords.hotword_kv_io import _kv_list
+from src.app.tools.adapters.hotwords.hotword_criteria import pick_examples
+from src.app.tools.adapters.hotwords.hotword_contract import select_pending, TOOL_KV_PREFIX
 
 log = logging.getLogger(__name__)
 

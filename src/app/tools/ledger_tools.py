@@ -20,7 +20,7 @@ from src.app.tools.base import RuntimeTool, stable_key
 
 
 class LedgerOps:
-    """ledger 域的实现：白名单台账表 + agent: 命名空间 KV。"""
+    """ledger 域的实现：白名单台账表 + agent: 命名空间 KV + 通知发信。"""
 
     def reflections(self, limit=8):
         return database.query(Sql.REFLECTIONS, [limit])
@@ -185,11 +185,11 @@ class ConsumeEventTool(RuntimeTool):
 
 
 class SendNoticeTool(RuntimeTool):
-    """给运营者发一封站内通知邮件（日报、告警、已批准草稿）。"""
+    """给运营者发一封通知邮件（日报、告警、已批准草稿）。不可逆：经 Resend 真发信，发出去收不回。"""
 
     tool_name = "send_notice"
     method = "send_notice"
-    kind = ToolKind.LEDGER.value
+    kind = ToolKind.WRITE.value
 
     class Input(BaseModel):
         subject: str = Field(..., description="标题")

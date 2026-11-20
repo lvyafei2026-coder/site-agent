@@ -2,7 +2,10 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""Dev.to 官方发布驱动：无 DEVTO_API_KEY 时返回 blocked，不抛异常。"""
+"""Dev.to 官方 API：list_articles 只读列热门（无需 key）/ publish 发文。
+
+发文无 DEVTO_API_KEY 时返回 blocked，不抛异常。
+"""
 
 from __future__ import annotations
 
@@ -11,7 +14,29 @@ from typing import Any
 
 import requests
 
-from src.app.enums import DevtoStatus
+from src.app.enums import BacklinkChannel, DevtoStatus
+
+
+def list_articles(tags: list | None = None) -> list[dict[str, Any]]:
+    """按标签取热门文章；单个标签失败只跳过它，不拖垮整次取数。"""
+    out = []
+    for tag in (tags or ["ai", "webdev", "productivity"]):
+        try:
+            resp = requests.get(
+                "https://dev.to/api/articles",
+                params={"tag": tag, "top": 7, "per_page": 5}, timeout=20,
+            )
+            if resp.status_code != 200:
+                continue
+            for art in resp.json():
+                out.append({
+                    "channel": BacklinkChannel.DEVTO.value, "title": art.get("title", ""),
+                    "url": art.get("url", ""), "tags": art.get("tag_list", []),
+                    "reactions": art.get("public_reactions_count", 0),
+                })
+        except (requests.RequestException, ValueError):
+            continue
+    return out
 
 
 def publish(payload: dict[str, Any]) -> dict[str, Any]:

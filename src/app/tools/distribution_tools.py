@@ -8,14 +8,12 @@ from __future__ import annotations
 
 from typing import Any
 
-import requests
 from pydantic import BaseModel, Field
 
-from src.app.enums import BacklinkChannel, ToolKind
+from src.app.enums import ToolKind
 from src.app.tools.adapters.cloudflare import database
 from src.app.tools.adapters.cloudflare.sql import Sql
-from src.app.tools.adapters.publishing import devto
-from src.app.tools.adapters.terms import reddit
+from src.app.tools.adapters.distribution import devto, reddit
 from src.app.tools.base import RuntimeTool
 
 
@@ -29,24 +27,7 @@ class DistributionOps:
         return reddit.search(query, limit=limit)
 
     def devto_articles(self, tags=None):
-        out = []
-        for tag in (tags or ["ai", "webdev", "productivity"]):
-            try:
-                resp = requests.get(
-                    "https://dev.to/api/articles",
-                    params={"tag": tag, "top": 7, "per_page": 5}, timeout=20,
-                )
-                if resp.status_code != 200:
-                    continue
-                for art in resp.json():
-                    out.append({
-                        "channel": BacklinkChannel.DEVTO.value, "title": art.get("title", ""),
-                        "url": art.get("url", ""), "tags": art.get("tag_list", []),
-                        "reactions": art.get("public_reactions_count", 0),
-                    })
-            except (requests.RequestException, ValueError):
-                continue
-        return out
+        return devto.list_articles(tags)
 
     def publish_devto(self, payload):
         return devto.publish(payload)

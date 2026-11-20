@@ -5,7 +5,7 @@
 """提示词集中化守卫（D1 真源版）：所有发给 LLM 的文本只能来自 radar-rules D1。
 
 回归背景（2026-11-13 → 11-17）：逐词分析的 ``AI_SYSTEM``（1600 余字）与 user 模板
-原本硬编码在 ``tools/adapters/terms/hotwords.py``（其判据层现为 hotword_criteria.py），先收拢到本地 versions/*.txt，
+原本硬编码在热词判据模块（现 ``tools/adapters/hotwords/hotword_criteria.py``），先收拢到本地 versions/*.txt，
 再整体迁进 D1（prompts / prompt_defaults 两表），本地 txt 已删除。这里同时守住：
   1. 业务代码里不再出现整段提示词（反粘回）；
   2. task 清单 / config 默认版本 / D1 桩三者对应；
@@ -22,8 +22,7 @@ from pathlib import Path
 
 from src.app.config import settings
 from src.app.prompts import PROMPT_TASKS, available_versions, load_prompt
-from src.app.tools.adapters.terms import hotwords as hw
-from src.app.tools.adapters.terms import hotword_criteria as hwc  # _prompt_pair 真身所在
+from src.app.tools.adapters.hotwords import hotword_criteria as hwc
 
 APP = Path(__file__).resolve().parents[1] / "src" / "app"
 
@@ -73,7 +72,7 @@ def test_hotword_system_structure_contract():
     v2 = load_prompt("hotwords", "v2")
     assert "7) 结论：做 / 观望 / 不做" in v2
     assert load_prompt("hotwords") == v2          # 默认就是 v2
-    assert hw._prompt_pair()[0] == v2
+    assert hwc._prompt_pair()[0] == v2
 
 
 def test_hotword_user_template_placeholders():
@@ -88,13 +87,13 @@ def test_hotword_user_template_placeholders():
 def test_examples_injected_only_when_present():
     """判例只在带 {examples_line} 的模板里注入，且格式含「过去判定不做」提示。"""
     ex = [{"term": "how to sound better", "reason": "改写润色，一次性答案"}]
-    msgs = hw.build_messages({"term": "make this text better", "related": [], "hints": []},
+    msgs = hwc.build_messages({"term": "make this text better", "related": [], "hints": []},
                              examples=ex)
     assert "过去判定「不做」" in msgs[1]["content"]
     assert "how to sound better — 改写润色，一次性答案" in msgs[1]["content"]
 
     # v1 模板无 {examples_line} 占位符：即使传 examples 也不注入、不报 KeyError
-    msgs_v1 = hw.build_messages({"term": "x", "related": [], "hints": []},
+    msgs_v1 = hwc.build_messages({"term": "x", "related": [], "hints": []},
                                 prompt_version="v1", examples=ex)
     assert "{examples_line}" not in msgs_v1[1]["content"]
     assert "人工判定" not in msgs_v1[1]["content"]
@@ -103,7 +102,7 @@ def test_examples_injected_only_when_present():
 
 def test_build_messages_renders_all_fields():
     """占位符全部被真实数据替换：不留裸 {}、关联词截断 6 条、SERP 标题进 user。"""
-    msgs = hw.build_messages({
+    msgs = hwc.build_messages({
         "term": "demo term", "related": ["a", "b", "c", "d", "e", "f", "g"],
         "hints": ["工具查询"], "geoCount": 3, "traffic": 900,
         "serp": [{"domain": "imdb.com", "title": "Demo (2026 film)"}],
@@ -120,7 +119,7 @@ def test_build_messages_renders_all_fields():
 
 def test_prompt_pair_is_cached():
     """一批 20 词只读一次 D1 快照：system + user 各一次，之后全走缓存。"""
-    hw._prompt_pair.cache_clear()
+    hwc._prompt_pair.cache_clear()
     calls = {"n": 0}
     real = hwc.load_prompt
 
@@ -130,9 +129,9 @@ def test_prompt_pair_is_cached():
 
     from unittest.mock import patch
     with patch.object(hwc, "load_prompt", counting):
-        hw._prompt_pair()
-        hw._prompt_pair()
+        hwc._prompt_pair()
+        hwc._prompt_pair()
     assert calls["n"] == 2
-    hw._prompt_pair.cache_clear()
+    hwc._prompt_pair.cache_clear()
 
 

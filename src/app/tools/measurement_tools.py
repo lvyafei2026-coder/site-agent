@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from src.app.tools.adapters.cloudflare import database
 from src.app.tools.adapters.cloudflare.sql import Sql
-from src.app.tools.adapters.terms import gsc
+from src.app.tools.adapters.measurement import gsc
 from src.app.tools.base import RuntimeTool
 
 

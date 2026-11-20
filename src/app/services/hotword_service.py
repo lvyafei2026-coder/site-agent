@@ -4,9 +4,9 @@
 
 """热词分析的单词编排层：一个词走完「补数据 → LLM → 结论解析 → 回写状态」。
 
-拆自原 adapters/terms/hotword_worker.py（2026-11-20 分层归位）。本层把取数
+拆自原 adapters/hotwords/hotword_worker.py（2026-11-20 分层归位）。本层把取数
 （hotword_fetch）、判据（hotword_criteria）、LLM（hotword_llm）、写账本（hotword_kv_io）、
-整理写侧（curation）拼成一个词的分析——这些 IO 实现都在 tools/adapters/terms 叶子层，
+整理写侧（curation）拼成一个词的分析——这些 IO 实现都在 tools/adapters/hotwords 叶子层，
 本层是 services，单向依赖它们。
 
 ★不抛异常给上层：SERP/Trends/LLM/KV 任一环出问题都写进 items[].error，其它词继续跑。
@@ -29,15 +29,15 @@ from src.app.tools.adapters.cloudflare.kv import (
     AI_CACHE_PREFIX,
     SAVED_KEY, REJECTED_KEY, HINTS_KEY,
 )
-from src.app.tools.adapters.terms.hotword_fetch import _throttled_serp, _trend
-from src.app.tools.adapters.terms.hotword_criteria import (
+from src.app.tools.adapters.hotwords.hotword_fetch import _throttled_serp, _trend
+from src.app.tools.adapters.hotwords.hotword_criteria import (
     serp_brief, work_signal, build_messages, decide, signals_of,
 )
-from src.app.tools.adapters.terms import hotword_llm
-from src.app.tools.adapters.terms.hotword_llm import LLMEmptyContent
-from src.app.tools.adapters.terms.hotword_kv_io import _WriteLog, _kv_list, _kv_dict
-from src.app.tools.adapters.terms.curation import upsert_saved, upsert_rejected, set_hint_override
-from src.app.tools.adapters.terms.source_errors import SourceUnavailable
+from src.app.tools.adapters.hotwords import hotword_llm
+from src.app.tools.adapters.hotwords.hotword_llm import LLMEmptyContent
+from src.app.tools.adapters.hotwords.hotword_kv_io import _WriteLog, _kv_list, _kv_dict
+from src.app.tools.adapters.hotwords.curation import upsert_saved, upsert_rejected, set_hint_override
+from src.app.tools.adapters.hotwords.source_errors import SourceUnavailable
 
 log = logging.getLogger(__name__)
 

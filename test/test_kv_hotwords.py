@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""terms 适配器的纯逻辑测试：KV 读写、SERP/Trend 纯函数、整理写侧、候选快照。
+"""hotwords 适配器的纯逻辑测试：KV 读写、SERP/Trend 纯函数、整理写侧、候选快照。
 
 全部走内存 FakeKV + monkeypatch 外部 IO，不碰 Cloudflare / Google / DuckDuckGo / OpenAI。
 KV 实现在 ../cloudflare/kv.py（全项目唯一 KV 模块），这些模块是
@@ -19,10 +19,10 @@ import pytest
 import requests as _requests
 
 from src.app.tools.adapters.cloudflare import kv as kvmod
-from src.app.tools.adapters.terms import scrape_serp as ss
-from src.app.tools.adapters.terms import scrape_trend as st
-from src.app.tools.adapters.terms import curation as cur
-from src.app.tools.adapters.terms.source_errors import SourceUnavailable
+from src.app.tools.adapters.hotwords import scrape_serp as ss
+from src.app.tools.adapters.hotwords import scrape_trend as st
+from src.app.tools.adapters.hotwords import curation as cur
+from src.app.tools.adapters.hotwords.source_errors import SourceUnavailable
 
 
 @pytest.fixture(autouse=True)

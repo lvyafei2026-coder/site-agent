@@ -14,9 +14,13 @@ from typing import Any
 import pytest
 
 from src.app.tools.adapters.cloudflare.sql import LEDGER_TABLES
+from src.app.tools.promotion_tools import PromotionOps
 from src.app.tools.registry import RuntimeService, tool_registry
 
-class FakeRuntime:
+class FakeRuntime(PromotionOps):
+    """内存台账替身。继承 PromotionOps 只为拿到 write_promo_slot 的真实现：
+    它只用 self.latest_plan / self.ledger_upsert，两者都被下面的内存版覆盖。"""
+
     def __init__(self, hotwords_meta: dict | None = None):
         self.kv: dict[str, Any] = {}
         self.tables: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -33,7 +37,7 @@ class FakeRuntime:
     # 说明：生产里 HotwordsOps.hotwords / analyze_hotwords 已不再委托给这里的同名方法
     #（2026-11-12 去接口化：改由 agent 直读共享 KV，见 ../cloudflare/kv.py）。但 FakeRuntime 作为
     # RuntimeService 的测试替身，仍需提供 hotwords 数据桩——get_hotwords 工具经 tool_registry
-    # 走到 self.ops.hotwords。真正的 KV 读写由 test/test_kv_terms.py + test_hotwords.py
+    # 走到 self.ops.hotwords。真正的 KV 读写由 test/test_kv_hotwords.py + test_hotwords.py
     # 经 fake_kv 夹具覆盖。analyze_hotwords 现由 run_hotwords 直接测，这里不另立桩。
 
     def hotwords(self, status="doing", limit=40):
@@ -235,7 +239,7 @@ class FakeKV:
 def fake_kv(monkeypatch):
     """内存 KV 替身：生产函数一律自己取 get_kv()，测试只替换取数点。"""
     from src.app.tools.adapters.cloudflare import kv as kvmod
-    from src.app.tools.adapters.terms import curation
+    from src.app.tools.adapters.hotwords import curation
     from src.app.graph import state as graph_state
 
     fake = FakeKV()
@@ -324,7 +328,7 @@ def fake_prompt_store(monkeypatch):
     是同一个单例）。测试内部若自行 monkeypatch configured / prompt_store，优先级更高。
     """
     from src.app.prompts.d1_source import D1PromptStore, prompt_store
-    from src.app.tools.adapters.terms import hotwords as hw
+    from src.app.tools.adapters.hotwords import hotword_criteria
 
     def fetch(_account, _token, _db):
         # 深拷贝，避免某测试改动桩数据污染其它测试
@@ -334,7 +338,7 @@ def fake_prompt_store(monkeypatch):
     monkeypatch.setattr(D1PromptStore, "configured", staticmethod(lambda: True))
     monkeypatch.setattr(prompt_store, "_fetcher", fetch)
     prompt_store._cache = None
-    hw._prompt_pair.cache_clear()
+    hotword_criteria._prompt_pair.cache_clear()
     yield
     prompt_store._cache = None
-    hw._prompt_pair.cache_clear()
+    hotword_criteria._prompt_pair.cache_clear()

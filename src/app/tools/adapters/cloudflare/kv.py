@@ -13,7 +13,7 @@
                   建立在同一个 CloudflareKV 底层请求之上。
 
 架构约束（2026-11-12 定）：radar / console / agent 共用这个 KV 命名空间，agent 直接经
-REST API 读写，不调任何 App 接口；写侧口径在 terms/curation.py 复刻 store.js。
+REST API 读写，不调任何 App 接口；写侧口径在 hotwords/curation.py 复刻 store.js。
 """
 
 from __future__ import annotations

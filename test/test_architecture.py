@@ -91,6 +91,27 @@ def test_base_is_a_pure_leaf():
     assert not offenders, f"base.py 顶层 import 了包内模块：{sorted(offenders)}"
 
 
+def test_tools_layer_does_no_direct_io():
+    """外部 IO 只在 adapters 里发生：工具层不得自己发请求 / 起子进程。
+
+    base.py 例外——它只 import requests / socket 的**异常类型**做重试分类，不发请求。
+    """
+    banned = {"requests", "subprocess", "socket", "httpx", "urllib"}
+    offenders = set()
+    for path in (APP / "tools").glob("*.py"):
+        if path.name == "base.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            names = ([a.name for a in node.names] if isinstance(node, ast.Import)
+                     else [node.module] if isinstance(node, ast.ImportFrom) and node.module
+                     else [])
+            for name in names:
+                if name.split(".")[0] in banned:
+                    offenders.add(f"{path.name}::{name}")
+    assert not offenders, f"工具层自己做了 IO：{sorted(offenders)}"
+
+
 def test_tools_have_no_deferred_imports():
     """工具层不用函数内 import 解循环：顺序由模块层级保证 registry → *_tools → base。
 

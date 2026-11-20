@@ -14,7 +14,7 @@ from typing import Any
 
 from src.app.enums import Verdict
 from src.app.graph.state import HotwordLoopState
-from src.app.tools.adapters.terms.hotword_contract import OK_MIN_RATE
+from src.app.tools.adapters.hotwords.hotword_contract import OK_MIN_RATE
 
 
 def summary_node(state: HotwordLoopState) -> dict[str, Any]:

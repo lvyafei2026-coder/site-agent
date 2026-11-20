@@ -13,12 +13,12 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from src.app.enums import CandidateStatus
-from src.app.tools.adapters.terms import curation as candidates
+from src.app.tools.adapters.hotwords import curation as candidates
 from src.app.tools.base import RuntimeTool
 
 
 class HotwordsOps:
-    """hotwords 域的实现：只碰 terms 适配器。"""
+    """hotwords 域的实现：只碰 hotwords 适配器。"""
 
     def hotwords(self, status=CandidateStatus.DOING.value, limit=40):
         return candidates.snapshot(status=status, limit=limit)

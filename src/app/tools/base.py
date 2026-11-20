@@ -98,6 +98,7 @@ class RuntimeTool(BaseTool):
 
     子类只写三样：docstring（= 作用说明）、tool_name / method、嵌套 Input。
     kind 缺省 read；ledger / write 必须显式声明，方便一眼看出哪些会落库或不可逆。
+    ★不要覆盖 run()：业务分支写在 Ops 里，覆盖会绕过 tracer 与 retryable 分类。
 
     ★tracer 是**注入**进来的横切钩子（registry.py 装配时传入），不是 import：
       base 必须保持「只依赖标准库 + pydantic」的叶子身份（见 test_architecture.py），
