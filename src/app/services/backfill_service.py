@@ -4,8 +4,10 @@
 
 """状态回填：把「正文已写、状态表丢了」的词补回去（否则永远不会被重跑，也看不见）。
 
-拆分自 hotwords.py（2026-11-17）。**不调 LLM、不重抓 SERP/Trends**——重解析已落库
-正文的结论与信号标签，按同一套 upsert_* / set_hint_override 口径补写状态。
+拆分自原 adapters/terms/hotword_backfill.py（2026-11-20 分层归位）：状态回填是业务
+服务，本层是 services，单向依赖 tools/adapters/terms 的 curation / criteria / kv_io
+叶子实现。**不调 LLM、不重抓 SERP/Trends**——重解析已落库正文的结论与信号标签，按
+同一套 upsert_* / set_hint_override 口径补写状态。
 
 触发场景：正文写成功、但 5 张整表里某次 put_json 失败（或历史上并发 lost update），
 于是 `_select_pending` 因「已有正文」永久剔除该词，saved/rejected 里却查不到它——
@@ -23,9 +25,9 @@ from src.app.tools.adapters.cloudflare.kv import (
     get_kv, term_key, table_lock,
     AI_CACHE_PREFIX, SAVED_KEY, REJECTED_KEY, TAGS_KEY, HINTS_KEY,
 )
-from .curation import upsert_saved, upsert_rejected, set_hint_override
-from .hotword_criteria import decide, signals_of
-from .hotword_kv_io import _WriteLog, _kv_list, _kv_dict
+from src.app.tools.adapters.terms.curation import upsert_saved, upsert_rejected, set_hint_override
+from src.app.tools.adapters.terms.hotword_criteria import decide, signals_of
+from src.app.tools.adapters.terms.hotword_kv_io import _WriteLog, _kv_list, _kv_dict
 
 log = logging.getLogger(__name__)
 

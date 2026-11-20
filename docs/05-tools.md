@@ -1,19 +1,26 @@
 # 05 · 工具与配置速查
 
-> 26 个工具一张表；意图到工具集的映射；站点清单字段；新增工具的检查清单。
+> 25 个工具一张表；意图到工具集的映射；站点清单字段；新增工具的检查清单。
 > 契约与实现细节见 `03-tech-design.md §5`。
+> 热词分析不是工具：它是 `graph.run_batch()` 编排，在 API 入口按意图分流。
 
-## 1. 全量工具（26）
+## 1. 全量工具（25）
 
 `kind` 说明：`read` 只读；`ledger` 写台账 / KV / 本地文件，可重复执行；
 `write` 不可逆的外部发布。
 
-### 1.1 hotwords（2）
+### 1.1 hotwords（1）
 
 | name | kind | method | 参数 | 用途 |
 |---|---|---|---|---|
 | `get_hotwords` | read | `hotwords` | `status=doing`、`limit=40` | 读共享 KV 的候选词（radar 抓取写入），返回 `items` + `meta`（`updatedMs` / `geosOk` / `raw`）。**判断有没有新数据要看 meta** |
-| `analyze_hotwords` | **write** | `analyze_hotwords` | `limit=20` | 热词分析：直接读三方共用的共享 KV（radar 写入的候选池 + console 整理的 `saved`/`rejected`/`tags`），补 SERP 竞争度（直读 `serp:v1:`，缺失时现抓 DuckDuckGo 并写回）与 30 天趋势（直读 `trend:v1:`，缺失时现抓 Google Trends 并写回），外部 LLM 出 8 小节站点方案，再直写 KV（`ai:v3:` 正文 / `aihints` 信号 / `rejected` 不做 / `saved` 待开发）。**不调 console 的 /api/hotwords，也不调 radar 的 /api/serp、/api/trend——只有「存储介质依赖」没有「服务接口依赖」**。★`analyze_hotwords` 意图的默认集就是它本身，分类到该意图即执行；也可显式传 `tools` 触发 |
+
+> `analyze_hotwords` 已从工具注册表移除。它是编排：读三方共用的共享 KV
+> （radar 候选池 + console 整理的 `saved`/`rejected`/`tags`）→ 补 SERP 竞争度与
+> 30 天趋势（读缓存，缺失现抓并写回）→ LLM 出 8 小节站点方案 → 直写 KV
+> （`ai:v3:` 正文 / `aihints` / `rejected` / `saved`）。实现见
+> `graph/hotword_batch.py` → `graph/hotword_graph.py` → `nodes/hotword_nodes.py`
+> → `services/hotword_service.py`。**只依赖存储介质，不调 console / radar 的 API**。
 
 ### 1.2 measurement（2）
 
@@ -72,11 +79,11 @@
 | `plan_promo` | `get_latest_plan` + `get_page_inventory` + `get_pending_events` |
 | `find_backlinks` | `get_backlink_ledger` + `search_reddit` + `list_devto_articles` |
 | `review_metrics` | `get_click_stats` + `get_search_analytics` + `get_page_inventory` | `get_click_stats` 现按站点×事件类型聚合；取数后 `run_processing` 再调 LLM `analyze_metrics`（提示词在 D1 的 `review_metrics` task）比对各站 PV/UV/点击/搜索，输出「表现好的站点」排名与理由，并入 `output` 报告 |
-| **`analyze_hotwords`** | **`analyze_hotwords`**（★唯一的默认集里带 write 工具的意图：这个意图的业务本身就是「分析并改状态」，LLM 分类到它即会执行，无需显式传 `tools`） |
+| **`analyze_hotwords`** | **不走工具集：`api/routes.py` 入口直接分流到 `graph.run_batch()`**，返回体包装成主图一致的 state 结构 |
 | `general` | `get_pending_events` + `get_reflections` |
 
-默认集一般只含 read 工具，唯一例外是 `analyze_hotwords`：它的产出就是状态变更。
-`TOOL_ARGS`（`services/tool_service.py`）给几个工具预置参数：热词取 20 条、分析批次 20 条、页面台账取 `mode=new` 10 条、Reddit 搜索词取请求文本前 80 字等。
+默认集只含 read 工具。`analyze_hotwords` 是编排而非工具，由入口按意图分流，不占工具注册表。
+`TOOL_ARGS`（`services/tool_service.py`）给几个工具预置参数：热词取 20 条、页面台账取 `mode=new` 10 条、Reddit 搜索词取请求文本前 80 字等。
 
 请求里传 `tools` 会完全覆盖默认集，包含写工具也一样——这是触发不可逆动作的
 唯一开关：

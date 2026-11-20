@@ -4,9 +4,8 @@
 
 """工具分发：按意图选一组工具采集事实。
 
-默认集只含 read 工具——唯一例外是 analyze_hotwords：这个意图的语义就是
-「批量分析并回写候选状态」，所以它默认带一个 write 工具。其余 ledger / write
-工具仍只在请求显式传 tools 时触发。
+默认集只含 read 工具。热词分析（analyze_hotwords）是编排而非工具，已在
+api/routes.py 入口分流到 graph 的批次驱动，不经过本分发器。
 """
 
 from __future__ import annotations
@@ -19,7 +18,6 @@ INTENT_TOOLS: dict[str, tuple[str, ...]] = {
     Intent.PLAN_PROMO.value: ("get_latest_plan", "get_page_inventory", "get_pending_events"),
     Intent.FIND_BACKLINKS.value: ("get_backlink_ledger", "search_reddit", "list_devto_articles"),
     Intent.REVIEW_METRICS.value: ("get_click_stats", "get_search_analytics", "get_page_inventory"),
-    Intent.ANALYZE_HOTWORDS.value: ("analyze_hotwords",),
     Intent.GENERAL.value: ("get_pending_events", "get_reflections"),
 }
 
@@ -34,13 +32,12 @@ TOOL_ARGS = {
     "list_devto_articles": lambda t, e: {"tags": ["ai"]},
     "get_click_stats": lambda t, e: {"days": 7},
     "get_search_analytics": lambda t, e: {"days": 7},
-    "analyze_hotwords": lambda t, e: {"limit": 20},
 }
 
 
 class ToolService:
     def __init__(self) -> None:
-        # 复用 tools/registry.py 的那个单例，避免 26 个工具被实例化两遍
+        # 复用 tools/registry.py 的那个单例，避免工具被实例化两遍
         self.registry = tool_registry
 
     def execute_for_intent(self, intent: str, text: str,
@@ -56,12 +53,6 @@ class ToolService:
                 continue
             builder = TOOL_ARGS.get(name)
             kwargs = builder(text, extracted) if builder else {}
-            # 热词分析是唯一自己调 LLM 的工具，把 /run 里的 prompt_versions.hotwords 透传下去，
-            # 让「换提示词 = /rules/prompts 新增版本 + 请求里带版本」在整条链路上都成立。
-            if name == "analyze_hotwords" and prompt_versions:
-                version = prompt_versions.get("hotwords")
-                if version:
-                    kwargs["prompt_version"] = version
             results[name] = self.registry.run(name, **kwargs)
         return results
 

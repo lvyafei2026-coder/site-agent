@@ -2,16 +2,18 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""热词分析的批次外壳：批次 trace 根 + 对外契约 + 循环图加载。
+"""热词分析的批次驱动（后台线的执行入口）：批次 trace 根 + 构造 state → invoke → 汇总。
 
-本文件是热词子系统对外的执行入口（run_batch）。单词内部（补数/LLM/回写）在
-hotword_worker.py，取数在 hotword_fetch.py，候选筛选规则与 trace 常量在
-共享叶子 hotword_contract.py。
+2026-11-20 分层归位：本文件从 adapters/terms/hotword_batch.py 上移到 graph 层——
+它是「驱动循环图」的编排，invoke 图是 graph 的本职。依赖全部单向向下：
+    graph/hotword_batch.py → graph/hotword_graph（图）+ nodes/hotword_nodes（state/summarize）
+                           → services/hotword_service（_BatchAbort）→ tools/adapters（判据/IO）
+单词内部在 services/hotword_service.py，取数在 adapters/terms，候选规则与 trace 常量在
+adapters/terms/hotword_contract.py。
 
-★逐词调度由 graph/builder.py 装配的 StateGraph 回环图承担（fetch_one → analyze_one
-  → should_continue 回环）；节点逻辑在 hotword_loop.py。本文件只做三件事：
-  构造循环图 initial state → invoke → summarize；外层套批次 trace + traceRun 回链。
-  图从 graph/hotword_graph.py 顶层静态 import（叶子装配模块，只依赖 loop，无环）。
+★逐词调度由 graph/hotword_graph.py 装配的 StateGraph 回环图承担（fetch_one → analyze_one
+  → should_continue 回环）。本文件只做三件事：构造循环图 initial state → invoke → summarize；
+  外层套批次 trace + traceRun 回链。无 while/for、无函数内 import。
 
 ★2026-11-13：不再有「整批中止」。每个词独立跑完并把自己的失败写进 items[].error；
   源级故障只把「取数」这一步降级（serpDisabled / trendsDisabled），其它词照常出结论。
@@ -32,10 +34,10 @@ from src.app.config import settings
 from src.app.graph.hotword_graph import get_hotword_graph
 from src.app.observability.langsmith import run_traced
 
+from src.app.nodes.hotword_nodes import HotwordLoopState, summarize
+from src.app.services.hotword_service import _BatchAbort
 from src.app.tools.adapters.cloudflare.kv import get_kv
-from .hotword_worker import _BatchAbort
-from .hotword_contract import BATCH_TRACE_NAME
-from .hotword_loop import HotwordLoopState, summarize
+from src.app.tools.adapters.terms.hotword_contract import BATCH_TRACE_NAME
 
 log = logging.getLogger(__name__)
 
@@ -79,7 +81,7 @@ def run_batch(limit: int = 20,
               prompt_version: Optional[str] = None) -> dict[str, Any]:
     """读 KV 候选池 → 逐词分析（循环图驱动）→ 汇总。KV 不可达时整批失败，不写状态。
 
-    ★逐词调度交给 graph/builder.py 装配的 StateGraph 回环图（节点逻辑在 hotword_loop.py），
+    ★逐词调度交给 graph/hotword_graph.py 装配的 StateGraph 回环图（节点在 nodes/hotword_nodes.py），
       一次一词、串行推进，limit 即最大循环数。
 
     ★不再有「整批中止」。每个词独立跑完并把自己的失败写进 items[].error；
@@ -112,7 +114,7 @@ def _run_batch(limit: int, batch_run, batch_id: str,
     """run_batch 的执行体：构造循环图 initial state → invoke → 聚合回对外结构。
 
     batch_run 是批次 span 的 run，经 state 显式传给图里每个节点（每词 span 的父）。
-    逐词循环、limit 封顶、候选/判例读取全部在 hotword_loop.py 的图里完成；
+    逐词循环、limit 封顶、候选/判例读取全部在 nodes/hotword_nodes.py 的图节点里完成；
     本函数不写任何 while/for 调度，只做一次 invoke。
     """
     kv = get_kv()

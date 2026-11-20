@@ -2,17 +2,14 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""后台线（热词逐词循环图）的装配：只认识 hotword_loop，不拉主图依赖链。
+"""后台线（热词逐词循环图）的装配：只认识 nodes 的循环节点，不拉主图依赖链。
 
-为什么单独成模块（而不是放在 graph/builder.py）：
-    builder 顶层 import nodes → services → tool_service → registry → hotwords_tools
-    → hotwords 门面 → hotword_batch。若 batch 顶层再 import builder 取图，就成加载期环。
-    本模块只 import hotword_loop（它一路向下到 worker/fetch/criteria/llm/kv_io/contract，
-    都不回指 graph 或 batch），所以 batch 可以安全地顶层 import 这里。
+2026-11-20 分层归位：节点逻辑在 nodes/hotword_nodes.py（本层单向依赖 nodes），
+批次驱动在 graph/hotword_batch.py（invoke 本图），单词分析与回填在 services/，
+判据与 IO 在 tools/adapters/terms/ 叶子层。依赖全程单向向下，无环、无函数内 import。
 
-builder.py 仍是「两张图的统一装配门面」：它 re-export 本模块的 build/get 函数，
-入口（main.py / api）照旧从 builder 同时看到两条线。本文件只是把后台图的装配下沉成叶子，
-让依赖恢复单向：batch → hotword_graph → loop → worker → …，全程静态 import，无惰性边界。
+两图装配并列在 graph/：user_graph.py（用户线主图）与本模块（后台线循环图），
+graph/__init__.py 统一导出，入口一眼可见两条线。
 """
 
 from __future__ import annotations
@@ -21,25 +18,25 @@ from functools import lru_cache
 
 from langgraph.graph import END, START, StateGraph
 
-from src.app.tools.adapters.terms import hotword_loop as _hwloop
+from src.app.nodes import hotword_nodes as _nodes
 
 
 def build_hotword_graph():
     """后台线：fetch_one → analyze_one → should_continue 回环。
 
     读一个热词 → 分析 → 回环，直到词用完或达到 limit（最大循环数）。循环完全由
-    条件边驱动，Python 层不写 while/for。节点逻辑在 hotword_loop.py，本函数只装配结构。
+    条件边驱动，Python 层不写 while/for。节点逻辑在 nodes/hotword_nodes.py，本函数只装配结构。
     不传 checkpointer：单次 invoke 跑完即弃，不跨请求续跑。
     """
-    graph = StateGraph(_hwloop.HotwordLoopState)
-    graph.add_node(_hwloop.FETCH_NODE, _hwloop.fetch_one)
-    graph.add_node(_hwloop.ANALYZE_NODE, _hwloop.analyze_one)
-    graph.add_edge(START, _hwloop.FETCH_NODE)
-    graph.add_edge(_hwloop.FETCH_NODE, _hwloop.ANALYZE_NODE)
+    graph = StateGraph(_nodes.HotwordLoopState)
+    graph.add_node(_nodes.FETCH_NODE, _nodes.fetch_one)
+    graph.add_node(_nodes.ANALYZE_NODE, _nodes.analyze_one)
+    graph.add_edge(START, _nodes.FETCH_NODE)
+    graph.add_edge(_nodes.FETCH_NODE, _nodes.ANALYZE_NODE)
     graph.add_conditional_edges(
-        _hwloop.ANALYZE_NODE,
-        _hwloop.should_continue,
-        {_hwloop.FETCH_NODE: _hwloop.FETCH_NODE, END: END},
+        _nodes.ANALYZE_NODE,
+        _nodes.should_continue,
+        {_nodes.FETCH_NODE: _nodes.FETCH_NODE, END: END},
     )
     return graph.compile()
 

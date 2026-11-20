@@ -235,10 +235,12 @@ class FakeKV:
 def fake_kv(monkeypatch):
     """内存 KV 替身：生产函数一律自己取 get_kv()，测试只替换取数点。"""
     from src.app.tools.adapters.cloudflare import kv as kvmod
-    from src.app.tools.adapters.terms import curation, hotword_backfill, hotword_batch
+    from src.app.tools.adapters.terms import curation
+    from src.app.graph import hotword_batch
+    from src.app.services import backfill_service
 
     fake = FakeKV()
-    for mod in (kvmod, curation, hotword_backfill, hotword_batch):
+    for mod in (kvmod, curation, hotword_batch, backfill_service):
         monkeypatch.setattr(mod, "get_kv", lambda: fake)
     return fake
 
@@ -253,8 +255,8 @@ def fake():
 
 @pytest.fixture
 def graph(fake):
-    from src.app.graph.builder import build_graph
-    return build_graph()
+    from src.app.graph import build_user_graph
+    return build_user_graph()
 
 
 # ---------------------------------------------------------------------------

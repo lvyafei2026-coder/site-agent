@@ -11,11 +11,11 @@
 │           线1 用户线 api/routes.py(/run)·run()；线2 后台线 run_background()        │
 │           python -m src.app.main 直接起双服务；run()/run_background() 可单跑       │
 ├──────────────────────────────────────────────────────────────┤
-│ 编排      graph/（builder · hotword_graph · state · constants · edges）│
+│ 编排      graph/（user_graph · hotword_graph · hotword_batch · state · constants · edges）│
 ├──────────────────────────────────────────────────────────────┤
-│ 节点      nodes/（intent · processing · validation · output · error）│
+│ 节点      nodes/（intent · processing · validation · output · error · hotword_nodes）│
 ├──────────────────────────────────────────────────────────────┤
-│ 服务      services/（llm · prompt · tool · evaluation）         │
+│ 服务      services/（llm · prompt · tool · evaluation · hotword_service · backfill_service）│
 ├──────────────────────────────────────────────────────────────┤
 │ 工具      tools/（base 契约 · 6 个域 · registry 装配 · adapters）│
 ├──────────────────────────────────────────────────────────────┤
@@ -27,10 +27,10 @@
 | 层 | 职责 | 允许依赖 |
 |---|---|---|
 | `api` / `main` | 收请求、构造入口 state、常驻拉起双线、返回结果 | graph |
-| `graph` | 图组装、状态契约、路由条件 | nodes、memory（后台图只依赖 adapters/terms/loop） |
+| `graph` | 图组装、状态契约、路由条件、批次驱动 | nodes、memory（后台图只依赖 nodes） |
 | `nodes` | 单个步骤的逻辑，读 state 写 state | services、models |
-| `services` | 跨节点复用的能力（LLM、prompt、工具分发、评分） | tools、prompts、llm、observability |
-| `tools` | 26 个工具的定义与实现、外部 IO 适配器 | adapters（+ 包内 base） |
+| `services` | 跨节点复用的能力（LLM、prompt、工具分发、评分、单词分析、回填） | tools、prompts、llm、observability |
+| `tools` | 25 个工具的定义与实现、外部 IO 适配器 | adapters（+ 包内 base） |
 | `adapters` | 真实外部系统（D1 / KV / GitHub / radar / GSC / Reddit / Dev.to / Resend） | 标准库、requests、config |
 | `memory` `llm` `prompts` `observability` `utils` | 基础设施 | config |
 
@@ -42,9 +42,10 @@
 
 1. `tools/base.py` 是包内叶子：只依赖标准库与 pydantic，不 import 任何 `src.app.*`。
 2. 没有函数内 `import` 解环：装配顺序由模块层级保证（`registry → *_tools → base`）。
-   入口层与批次外壳同样如此——后台图装配下沉到只依赖 `hotword_loop` 的
-   `graph/hotword_graph.py` 叶子模块，`builder.py` re-export，`hotword_batch.py` 顶层静态取图，
-   环从结构上消除而非靠延迟导入绕过。
+   入口与编排层同样如此——两张图在 `graph/` 下对称命名（`user_graph` / `hotword_graph`），
+   节点在 `nodes/hotword_nodes.py`，批次驱动 `graph/hotword_batch.py` 顶层静态取图；
+   统一门面是 `graph/__init__.py`，`main.py` 与 `api/routes.py` 只从 graph 包取能力，
+   不穿透 services / tools / adapters。环从结构上消除而非靠延迟导入绕过。
 3. 全仓禁止函数内 `import src.app.*`：包内依赖一律在模块顶层声明。
    `adapters/` 里第三方可选依赖（`google-api-python-client` / `langsmith` / `openai`）的
    按需加载不在此列——那是零开销设计，不是拿延迟导入解加载期环。
@@ -61,9 +62,10 @@
 | 配置 | `config.py:settings` | 唯一读 `.env` 的地方；其余模块只 import 常量 |
 | 站群清单 | `config.py:SITES` ← `config/sites.json` | 站点信息是数据不是代码，重名直接抛错 |
 | 实现门面 | `tools/registry.py:RuntimeService` | 6 个域 Ops 的多继承组合，本身没有实现 |
-| 工具实例 | `tools/registry.py:tool_registry` | 把门面注入 26 个工具，一次构造 |
-| 图（用户线） | `graph/builder.py:get_graph()` | `lru_cache(1)`，checkpointer 连接跟着复用 |
-| 图（后台线） | `graph/hotword_graph.py:get_hotword_graph()` | 热词逐词循环图，`lru_cache(1)`，无 checkpointer；`builder.py` re-export |
+| 工具实例 | `tools/registry.py:tool_registry` | 把门面注入 25 个工具，一次构造 |
+| 图（用户线） | `graph/user_graph.py:get_user_graph()` | `lru_cache(1)`，checkpointer 连接跟着复用 |
+| 图（后台线） | `graph/hotword_graph.py:get_hotword_graph()` | 热词逐词循环图，`lru_cache(1)`，无 checkpointer |
+| 批次驱动 | `graph/hotword_batch.py:run_batch()` | 构造 state → invoke 后台图 → summarize |
 
 工具拿实现的唯一途径是构造注入：
 
@@ -76,7 +78,7 @@ class RuntimeTool(BaseTool):
 ```
 
 好处是「换实现只换一处」：生产是模块级 `tool_registry`，测试是
-`tool_registry.bind(FakeRuntime())`，26 个工具同时切换，没有全局单例要找。
+`tool_registry.bind(FakeRuntime())`，25 个工具同时切换，没有全局单例要找。
 
 ## 4. 运行时：一次 `/run`
 
@@ -189,7 +191,7 @@ Workers AI 是账户级额度，出图站已经占了大部分。
 | 一个新站 | 只改 `config/sites.json` | 前提：仓库是资产目录布局、能套 `templates/site-page.html`、有 Contents 写权限 |
 | 一个新意图 | `config.INTENTS` + `INTENT_TOOLS` + 需要时加 prompt 版本 | 意图是枚举，非法值会被回退成 `general` |
 | 换一段 prompt | 到 `/rules/prompts` 新增版本 + 切默认，请求里可传 `prompt_versions` 覆盖 | 真源在 D1，不发版；版本缺失回退该 task 默认版本 |
-| 新节点 | `graph/constants.Names` + `nodes/` + `builder.py` | 节点名必须带动词前缀，不能与 state 字段同名 |
+| 新节点 | `graph/constants.Names` + `nodes/` + 对应 `graph/*_graph.py` 一条边 | 节点名必须带动词前缀，不能与 state 字段同名 |
 
 ## 8. 关键决策
 
@@ -200,4 +202,5 @@ Workers AI 是账户级额度，出图站已经占了大部分。
 | checkpointer 用 SQLite（memory 仅本地） | 单进程、单写入者，SQLite 够用；D1 留给业务台账 |
 | 写动作靠 `tools` 显式声明 | 闸门放在请求体而不是代码分支，进程不用保存「等谁批」的状态 |
 | SQL 集中在 `adapters/cloudflare/sql.py` | 表名与列名只来自白名单契约，值一律占位符，热路径不拼字符串 |
-| 工具实现用构造注入 | 装配在一个文件里看得见，测试一次性替换 26 个工具 |
+| 工具实现用构造注入 | 装配在一个文件里看得见，测试一次性替换 25 个工具 |
+| 两图并列不嵌套 | 用户线 / 后台线各自一张 StateGraph，入口分流而非把编排塞进工具层 |

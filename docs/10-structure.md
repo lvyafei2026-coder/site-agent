@@ -47,11 +47,11 @@ src/app/
 | 模板项 | 本项目 | 原因 |
 |---|---|---|
 | `nodes/` 节点名 `intent` / `processing` / … | `classify_intent` / `run_processing` / `validate_result` / `build_output` / `handle_error` | LangGraph 0.3.x 节点名不能与 state 字段同名，否则 `ValueError: 'intent' is already being used as a state key`；统一动词前缀 |
-| `graph/registry.py`（`Names` / `Nodes` / `Tags` 三件套） | 删除；只留 `constants.py` 的 `Names` + `Tags`，节点函数在 `builder.py` 里直接 import | 一个节点一个文件已经够清楚，`Nodes` 层是多余间接 |
+| `graph/registry.py`（`Names` / `Nodes` / `Tags` 三件套） | 删除；只留 `constants.py` 的 `Names` + `Tags`，节点函数在 `graph/*_graph.py` 里直接 import | 一个节点一个文件已经够清楚，`Nodes` 层是多余间接 |
 | `services/versioning_service.py` | 删除 | 单轮流水线不保留跨轮版本状态；prompt 版本走请求 `prompt_versions` + `prompts/registry.py` |
 | `evaluation/`（独立包） | 合并成 `services/evaluation_service.py` | 只有一个评估器 + 一档阈值，独立包只让依赖图多一跳 |
 | `storage/`（进程内单例） | 删除 | 模板的 `workflow_store` / `cache` 重启即丢；本项目的持久化真源是 D1（`agent_*` 7 张表）+ KV（`agent:` 前缀），不能有两份“真相” |
-| `tools/` 四个 demo（calculator / retriever / db_query / http） | 换成 6 个业务域 `*_tools.py` + `adapters/`，26 个工具 | demo 没有业务含义；能力清单见 `05-tools.md` |
+| `tools/` 四个 demo（calculator / retriever / db_query / http） | 换成 6 个业务域 `*_tools.py` + `adapters/`，25 个工具 | demo 没有业务含义；能力清单见 `05-tools.md` |
 | `observability/` 的 `@traceable` | 真 `langsmith.traceable` + `wrap_openai`，另加 `trace.py` | 模板装饰器只打日志不上报；图轨迹要随 `/run` 返回 |
 | `llm/provider.py` 四家 provider | 只留 OpenAI 兼容 + 无 key 确定性回退 | 站群只用一家兼容接口，node 里不做 SDK 分支 |
 | `prompts/versions/` | （历史）11-13 收拢全部 LLM 文本到版本目录；★11-17 已整体迁入 D1 并**删除本地 versions/** | 校验是确定性代码，不需要 prompt；现由 site-console `/rules/prompts` 页面维护真源，改措辞不发版 |
@@ -89,7 +89,7 @@ src/app/
 3. **新东西只有一个落点**：
    - 新外部系统 → `tools/adapters/<域>/`，并在对应 `*_tools.py` 的 Ops 里接一层
    - 新业务能力 → 对应 `*_tools.py` 加一个 `RuntimeTool` 子类 + `TOOL_CLASSES` 加一行
-   - 新图步骤 → `nodes/` 一个文件 + `constants.Names` + `builder.py` 一条边（名字带动词前缀）
+   - 新图步骤 → `nodes/` 一个文件 + `constants.Names` + 对应 `graph/*_graph.py` 一条边（名字带动词前缀）
    - 新配置 → `config.py` 加字段；值来自 env 或 `config/sites.json`，模块里不写字面量
 
 各代码单元的职责边界：
@@ -120,19 +120,24 @@ site-agent/
 │   ├── main.py                  常驻双服务入口：serve()（uvicorn 主线程 + 后台守护线程）
 │   │                            + run() 用户线单跑 + run_background() 后台线单跑
 │   ├── config.py                Settings(settings) + INTENTS + FLEET_DOMAIN + SiteConfig/SITES
-│   ├── api/routes.py            FastAPI：POST /run、GET /health
+│   ├── api/routes.py            FastAPI：POST /run、GET /health、POST /backfill
 │   ├── graph/
-│   │   ├── builder.py           装配门面：get_graph() 用户线 + re-export 后台图
-│   │   ├── hotword_graph.py     后台线叶子装配：get_hotword_graph()（只依赖 loop，供 batch 静态取图）
+│   │   ├── __init__.py          统一门面：两图（get_user_graph / get_hotword_graph）+ 两线入口（run_batch / run_backfill）
+│   │   ├── user_graph.py        用户线装配：get_user_graph()（主图，checkpointer）
+│   │   ├── hotword_graph.py     后台线装配：get_hotword_graph()（逐词条件边回环，无 checkpointer）
+│   │   ├── hotword_batch.py     批次驱动：构造 state → invoke 后台图 → summarize
 │   │   ├── state.py             WorkflowState（输入 / 中间 / 输出三组）+ initial_state()
 │   │   ├── constants.py         Names（节点名）+ Tags（路由标签）
 │   │   └── edges.py             route_after_validation + EDGE_MAP
 │   ├── nodes/                   classify_intent · run_processing · validate_result · build_output · handle_error
+│   │                            + hotword_nodes.py（fetch_one / analyze_one / should_continue / summarize）
 │   ├── services/
 │   │   ├── llm_service.py       意图分类 + 字段抽取（含无 key 回退）
 │   │   ├── prompt_service.py    prompt 加载（版本可指定、缺失回退默认版本，真源在 D1）
 │   │   ├── tool_service.py      意图 → 工具集（INTENT_TOOLS / TOOL_ARGS）
-│   │   └── evaluation_service.py 覆盖率与综合分（阈值是同文件常量）
+│   │   ├── evaluation_service.py 覆盖率与综合分（阈值是同文件常量）
+│   │   ├── hotword_service.py   单词分析 _analyze_one + trace 包装
+│   │   └── backfill_service.py  运维回填 backfill_states
 │   ├── tools/
 │   │   ├── base.py              契约：BaseTool / RuntimeTool / ToolOutput / stable_key
 │   │   ├── registry.py          装配：RuntimeService + TOOL_CLASSES + ToolRegistry
@@ -144,7 +149,8 @@ site-agent/
 │   │   ├── publishing_tools.py  PublishingOps + 7 个工具
 │   │   └── adapters/
 │   │       ├── cloudflare/      client · database · kv（KV 唯一模块）· sql；`keyvalue`=WorkersKV 单例
-│   │       ├── terms/           curation（候选快照+整理写侧） · hotwords（公共 API 门面）+ hotword_batch（批次外壳） + hotword_contract（共享叶子：候选筛选+trace 常量） + hotword_loop（循环节点，图结构在 graph/builder.py） + hotword_fetch/worker + hotword_criteria/llm/kv_io/backfill · gsc · reddit · scrape_serp · scrape_trend · source_errors
+│   │       ├── terms/           curation（候选快照+整理写侧） · hotwords（adapters 只读门面，不 re-export 上层入口） + hotword_contract（共享叶子：候选筛选+trace 常量） + hotword_fetch · hotword_criteria/llm/kv_io · gsc · reddit · scrape_serp · scrape_trend · source_errors
+│   │                            上层归位：graph/{hotword_batch,hotword_graph}.py · nodes/hotword_nodes.py · services/{hotword_service,backfill_service}.py
 │   │       ├── hosting/         github_repo · renderer · verification
 │   │       └── publishing/      devto · email
 │   ├── models/                  ExtractionSchema · WorkflowResult
@@ -190,12 +196,15 @@ flowchart LR
 
 1. `tools/base.py` 是纯叶子：只依赖标准库与 pydantic，不 import 任何 `src.app.*`。
 2. 没有函数内 `import` 解环：顺序由模块层级保证（`registry → *_tools → base`）。
-   入口层/批次外壳同理——后台图装配下沉到 `graph/hotword_graph.py` 叶子模块，
-   `builder.py` re-export、`hotword_batch.py` 顶层静态取图。
+   入口与编排同理——两张图在 `graph/` 下对称命名（`user_graph` / `hotword_graph`），
+   节点在 `nodes/hotword_nodes.py`，批次驱动 `graph/hotword_batch.py` 顶层静态取图；
+   统一门面 `graph/__init__.py`，`main.py` / `api/routes.py` 只从 graph 取能力。
 3. 全仓禁止函数内 `import src.app.*`：包内依赖一律顶层声明；`adapters/` 里第三方
    可选依赖（`google-api-python-client` / `langsmith` / `openai`）的按需加载不在此列。
+4. 分层不能穿透：`main` / `api` 不 import services / tools / adapters；
+   adapters 不 import graph / nodes / services（入口与 adapters 各有 AST 守卫）。
 
-四条都由 `test/test_architecture.py` 用 AST 扫描守着。
+以上都由 `test/test_architecture.py` 用 AST 扫描守着。
 
 ## 5. 装配与工具契约
 

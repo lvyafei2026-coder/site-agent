@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""逐词循环图 hotword_loop 的图机制单测：条件边回环、limit 封顶、串行推进。
+"""逐词循环图（nodes/hotword_nodes.py）的图机制单测：条件边回环、limit 封顶、串行推进。
 
 不重复 test_hotwords.py 的写回/降级语义（那些已被 run_batch 端到端覆盖），这里只钉
 「循环由图驱动」这件事本身：节点拓扑、should_continue 的四种路由、limit 真能提前收口。
@@ -12,16 +12,17 @@ from __future__ import annotations
 
 from langgraph.graph import END
 
-from src.app.graph import builder
-
+from src.app.graph import get_hotword_graph
+from src.app.nodes import hotword_nodes as hloop
+from src.app.graph import hotword_batch
+from src.app.services.hotword_service import _BatchAbort
 from src.app.tools.adapters.terms import hotwords as hw
-from src.app.tools.adapters.terms import hotword_batch, hotword_llm
-from src.app.tools.adapters.terms import hotword_loop as hloop
+from src.app.tools.adapters.terms import hotword_llm
 
 
 def test_loop_graph_topology():
     """图恰有两个业务节点，且 analyze_one 有回环边指回 fetch_one。"""
-    g = builder.get_hotword_graph().get_graph()
+    g = get_hotword_graph().get_graph()
     nodes = set(g.nodes.keys())
     assert {"fetch_one", "analyze_one"} <= nodes
     # 条件边的分支里应含 END 与回环目标
@@ -45,7 +46,7 @@ def test_fetch_one_loads_once_then_pop_one(fake_kv, monkeypatch):
     monkeypatch.setattr(hotword_llm, "_llm", lambda m: ("7) 结论：观望\n8) 信号标签：无", "fake"))
 
     s = hloop.HotwordLoopState(limit=10, kv=fake_kv, batch_run=None, batch_id="loop-test",
-                               abort=hw._BatchAbort(), loaded=False, queue=[], cursor=0,
+                               abort=_BatchAbort(), loaded=False, queue=[], cursor=0,
                                results=[], loop_count=0, examples=[])
     s1 = {**s, **hloop.fetch_one(s)}
     assert s1["loaded"] is True and len(s1["queue"]) == 4
@@ -62,7 +63,7 @@ def test_loop_stops_at_limit(fake_kv, monkeypatch):
     monkeypatch.setattr(hw.scrape_trend, "fetch_interest", lambda *a, **k: {"points": [], "summary": {}, "attempts": []})
     monkeypatch.setattr(hotword_llm, "_llm", lambda m: ("7) 结论：观望\n8) 信号标签：无", "fake"))
 
-    out = hw.run_batch(limit=3)
+    out = hotword_batch.run_batch(limit=3)
     assert out["fetched"] == 3 and len(out["items"]) == 3
     # 未分析的词不会写 AI 缓存（只回写了 3 个）
     analyzed_keys = {hw.term_key(f"term {i}") for i in range(3)}
@@ -78,6 +79,6 @@ def test_loop_kv_unreachable_short_circuits(monkeypatch):
             raise RuntimeError("kv down")
 
     monkeypatch.setattr(hotword_batch, "get_kv", lambda: BoomKV())
-    out = hw.run_batch(limit=5)
+    out = hotword_batch.run_batch(limit=5)
     assert out["ok"] is False and "候选池读取失败" in out["error"]
     assert out["items"] == [] and out["fetched"] == 0

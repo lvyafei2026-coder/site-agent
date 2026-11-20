@@ -37,11 +37,34 @@ def test_tools_never_depend_on_services():
 
 
 def test_adapters_are_leaves():
-    """adapters 是最外层实现，不能反过来依赖 tools 的契约或注册表。"""
+    """adapters 是最外层实现，不能反过来依赖 tools 契约、注册表、services 或编排层。"""
     offenders = {m for m in imports_of("tools/adapters")
                  if m.startswith(("src.app.tools.base", "src.app.tools.registry",
-                                  "src.app.services"))}
+                                  "src.app.services", "src.app.graph", "src.app.nodes"))}
     assert not offenders, f"adapters 反向依赖：{sorted(offenders)}"
+
+
+def test_entry_depends_only_on_graph():
+    """入口层（main / api）只依赖 graph + 横切基础设施，不穿透 services / tools / adapters。
+
+    取图、驱动批次、运维回填都从 graph 包走（graph/__init__.py 统一门面）。
+    config / enums / observability / llm / utils / models 是横切，各层皆可读。
+    api 属于入口层自身：main.py 装配 uvicorn app 时必须 import api.routes，
+    这不算穿透下层（api/routes.py 本身也受同一守卫约束）。
+    """
+    allowed = ("src.app.graph", "src.app.api", "src.app.config", "src.app.enums",
+               "src.app.observability", "src.app.llm", "src.app.utils", "src.app.models")
+    for rel in ("main.py", "api/routes.py"):
+        tree = ast.parse((APP / rel).read_text(encoding="utf-8"))
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module)
+            elif isinstance(node, ast.Import):
+                imported.update(a.name for a in node.names)
+        offenders = {m for m in imported
+                     if m.startswith("src.app.") and not m.startswith(allowed)}
+        assert not offenders, f"{rel} 穿透分层：{sorted(offenders)}"
 
 
 def test_base_is_a_pure_leaf():
@@ -75,13 +98,13 @@ def test_tools_have_no_deferred_imports():
 
 
 def test_entry_and_batch_have_no_deferred_imports():
-    """入口层与批次外壳不得再用函数内 import 解环——环已从结构上消除。
+    """入口层与批次驱动不得再用函数内 import 解环——环已从结构上消除。
 
     main.py 顶层 import 全部依赖；hotword_batch.py 顶层静态取后台图。
     两者若重现函数内 import，说明有人把加载期环又引回来了。
     """
-    for rel in ("main.py", "tools/adapters/terms/hotword_batch.py",
-                "graph/hotword_graph.py", "graph/builder.py"):
+    for rel in ("main.py", "graph/hotword_batch.py",
+                "graph/hotword_graph.py", "graph/user_graph.py"):
         tree = ast.parse((APP / rel).read_text(encoding="utf-8"))
         offenders = set()
         for node in ast.walk(tree):

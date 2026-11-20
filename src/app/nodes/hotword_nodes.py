@@ -4,22 +4,21 @@
 
 """热词逐词循环图的**节点逻辑**：一次读一词 → 分析 → 回环，直到词用完或达上限。
 
+2026-11-20 分层归位：节点逻辑从 adapters/terms/hotword_loop.py 上移到 nodes 层。
 本模块只放「节点做什么」（状态 / fetch_one / analyze_one / should_continue / summarize），
-**不装配图、不认识 builder**：图的结构（StateGraph + 节点 + 条件边）由
-src/app/graph/builder.py:build_hotword_graph() 装配，与本模块是单向依赖（builder → 本模块），
-不与调用方 hotword_batch 相互引用。整条链单向向下：batch → builder → loop → worker。
+**不装配图、不认识 batch**：图的结构由 graph/hotword_graph.py 装配，单向依赖（graph → 本模块）。
 
-循环由**图的条件边驱动**，不是 Python 层的 while/for（结构见 builder.py）：
+循环由**图的条件边驱动**，不是 Python 层的 while/for（结构见 graph/hotword_graph.py）：
     START → fetch_one → analyze_one → should_continue ─┬─ fetch_one（还有词且未达上限）
                                                       └─ END（词用完 / 达上限 / KV 失败）
 
 节点名刻意用动词（FETCH_NODE / ANALYZE_NODE 公开常量），State 字段用名词（queue / cursor /
 results ...）——langgraph 0.3.x 不允许 add_node 的节点名与 State 字段名同名。
 
-trace：批次 span 由 run_batch 的 run_traced 外壳创建，batch_run 经 state 显式传给
+trace：批次 span 由 graph/hotword_batch.py 的外壳创建，batch_run 经 state 显式传给
 每个节点；串行执行下 contextvar 虽不丢，仍显式传以保住「批次→词→LLM」层级契约。
 
-单词逻辑（补数/LLM/降级/回写）完全复用 hotword_worker._analyze_one，本模块不碰。
+单词逻辑（补数/LLM/降级/回写）由 services/hotword_service.py 的 _analyze_one 承担，本模块不碰。
 """
 
 from __future__ import annotations
@@ -32,16 +31,16 @@ from langgraph.graph import END
 from src.app.enums import Verdict
 from src.app.observability.langsmith import run_traced as _span, trace_tool
 
+from src.app.services.hotword_service import (
+    _analyze_one, _BatchAbort, _word_outputs, _word_error, TOOL_TRACE_PREFIX,
+)
 from src.app.tools.adapters.cloudflare.kv import (
     CloudflareKV, term_key, AI_CACHE_PREFIX, SAVED_KEY, REJECTED_KEY, TAGS_KEY,
 )
-from .hotword_kv_io import _kv_list
-from .hotword_criteria import pick_examples
-from .hotword_contract import (
+from src.app.tools.adapters.terms.hotword_kv_io import _kv_list
+from src.app.tools.adapters.terms.hotword_criteria import pick_examples
+from src.app.tools.adapters.terms.hotword_contract import (
     _select_pending, WORD_TRACE_PREFIX, BATCH_OK_MIN_RATE,
-)
-from .hotword_worker import (
-    _analyze_one, _BatchAbort, _word_outputs, _word_error, TOOL_TRACE_PREFIX,
 )
 
 log = logging.getLogger(__name__)

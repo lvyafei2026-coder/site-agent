@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""两条线的架构呈现：builder 并列两张图、main 常驻双服务。
+"""两条线的架构呈现：graph 统一导出两张图、入口只依赖 graph、serve 常驻双服务。
 
-只钉架构，不为 CLI 分发 / 可选参数这类胶水写测试；单测适配代码本身，而非让主链路
-为测试开注入口。用户线执行见 test_graph.py，后台循环机制见 test_hotword_loop.py。
+只钉架构，不为胶水写测试；单测适配代码本身，而非让主链路为测试开注入口。
+用户线执行见 test_graph.py，后台循环机制见 test_hotword_loop.py。
 """
 
 from __future__ import annotations
@@ -13,27 +13,32 @@ from __future__ import annotations
 import threading
 
 from src.app import main as app_main
-from src.app.graph import builder, hotword_graph
-from src.app.tools.adapters.terms import hotword_loop as hloop
+from src.app import graph
+from src.app.graph import hotword_batch, hotword_graph, user_graph
 
 
-def test_builder_exposes_two_distinct_graphs():
-    """装配层并列两张图：各自独立编译、互不嵌套，后台图就是叶子模块那张。"""
-    user = {str(n) for n in builder.get_graph().get_graph().nodes}
-    bg = {str(n) for n in builder.get_hotword_graph().get_graph().nodes}
+def test_graph_package_exposes_two_distinct_graphs():
+    """编排层并列两张对称命名的图：各自独立编译、互不嵌套。"""
+    user = {str(n) for n in graph.get_user_graph().get_graph().nodes}
+    bg = {str(n) for n in graph.get_hotword_graph().get_graph().nodes}
     assert "classify_intent" in user and "fetch_one" not in user
     assert {"fetch_one", "analyze_one"} <= bg and "classify_intent" not in bg
-    assert builder.get_graph() is not builder.get_hotword_graph()
-    assert builder.get_hotword_graph is hotword_graph.get_hotword_graph
+    assert graph.get_user_graph() is not graph.get_hotword_graph()
+    # 对称命名 + 统一门面：两图函数同处 graph 包，无 builder 中间层
+    assert graph.get_user_graph is user_graph.get_user_graph
+    assert graph.get_hotword_graph is hotword_graph.get_hotword_graph
 
 
-def test_background_line_uses_leaf_graph_without_deferred_import():
-    """后台线顶层静态取叶子模块的图：无惰性边界、无 shim。"""
-    from src.app.tools.adapters.terms import hotword_batch as hb
+def test_entry_depends_only_on_graph():
+    """入口只从 graph 取两条线的驱动，不穿透 services / tools / adapters。"""
+    assert app_main.get_user_graph is graph.get_user_graph
+    assert app_main.run_batch is graph.run_batch
 
-    assert not hasattr(hloop, "get_hotword_loop")   # shim 已删
-    assert not hasattr(hb, "_hotword_graph")        # 惰性取图边界已删
-    assert hb.get_hotword_graph is hotword_graph.get_hotword_graph
+
+def test_background_batch_uses_graph_graph_without_shim():
+    """批次驱动顶层静态取 graph 的循环图：无惰性边界、无 shim、无函数内 import。"""
+    assert not hasattr(hotword_batch, "_hotword_graph")   # 惰性取图边界已删
+    assert hotword_batch.get_hotword_graph is hotword_graph.get_hotword_graph
 
 
 def test_serve_starts_both_lines(monkeypatch):

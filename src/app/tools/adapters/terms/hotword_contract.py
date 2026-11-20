@@ -5,12 +5,12 @@
 """热词子系统的**共享契约叶子**：候选筛选规则 + trace 常量 + 成功阈值。
 
 依赖方向上的最底层：只依赖 cloudflare.kv 与 hotword_kv_io（都是更底层的叶子），
-**不 import batch / loop / builder 中任何一个**——这正是它能打破 batch↔loop 环的原因。
+**不 import graph / nodes / services 中任何一个**——这正是它能打破上下层环的原因。
 
 谁用它：
-    hotword_batch.py  批次外壳：筛候选、批次 trace 命名、汇总成功阈值。
-    hotword_loop.py   循环节点：筛候选（首次懒加载）、词 span 命名、汇总。
-    hotwords.py       门面：re-export 给测试与外部按 hotwords.<name> 引用。
+    graph/hotword_batch.py   批次外壳：筛候选、批次 trace 命名、汇总成功阈值。
+    nodes/hotword_nodes.py   循环节点：筛候选（首次懒加载）、词 span 命名、汇总。
+    hotwords.py              门面：re-export 给外部按 hotwords.<name> 引用。
 """
 
 from __future__ import annotations

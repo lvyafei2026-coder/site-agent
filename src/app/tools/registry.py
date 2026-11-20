@@ -55,15 +55,15 @@ from src.app.tools.publishing_tools import (
     RenderFilesTool,
     WaitBuildTool,
 )
-from src.app.tools.hotwords_tools import AnalyzeHotwordsTool, GetHotwordsTool, HotwordsOps
+from src.app.tools.hotwords_tools import GetHotwordsTool, HotwordsOps
 
 
 def _tool_tracer(name: str, kind: str, method: str, kwargs: dict, call):
-    """26 个工具共用的 LangSmith span：入参、统一返回体、失败原因全留在一条 run 上。
+    """25 个工具共用的 LangSmith span：入参、统一返回体、失败原因全留在一条 run 上。
 
     ★`parent=None` 是刻意的：工具在 graph 节点里同步调用，LangSmith 会自动把 span
       挂到当前节点（LangChainTracer 注入的 run）下。热词逐词循环图的每词 span 走
-      hotword_loop.py / hotword_worker.py 的显式 parent 链路（保住「批次→词→LLM」层级）。
+      hotword_nodes.py / hotword_service.py 的显式 parent 链路（保住「批次→词→LLM」层级）。
     ★`ok=False` 也要让 span 标红：RuntimeTool 把异常吞进 ToolOutput 返回体，
       不抛异常的话 LangSmith 自己看不出失败。
     """
@@ -81,7 +81,7 @@ def _tool_tracer(name: str, kind: str, method: str, kwargs: dict, call):
 
 class RuntimeService(HotwordsOps, DistributionOps, LedgerOps,
                      MeasurementOps, PromotionOps, PublishingOps):
-    """26 个工具的唯一门面：实现见各域 Ops 类，这里只有组合。"""
+    """25 个工具的唯一门面：实现见各域 Ops 类，这里只有组合。"""
 
 
 TOOL_CLASSES = (
@@ -110,7 +110,6 @@ TOOL_CLASSES = (
     GetLatestPlanTool,
     WritePromoSlotTool,
     GetHotwordsTool,
-    AnalyzeHotwordsTool,
 )
 
 
@@ -121,7 +120,7 @@ class ToolRegistry:
         self.bind(RuntimeService())
 
     def bind(self, ops: Any) -> None:
-        """换门面并重建 26 个工具（初始化时绑生产 RuntimeService）。"""
+        """换门面并重建 25 个工具（初始化时绑生产 RuntimeService）。"""
         self.ops = ops
         # tracer 注入而不是在 base.py 里 import 追踪模块：分层守卫要求 base 是叶子。
         self._tools = {tool.name: tool for tool in

@@ -46,6 +46,27 @@ def test_http_validation_error():
     assert client.post("/run", json={}).status_code == 422
 
 
+def test_analyze_hotwords_is_dispatched_at_entry(fake, monkeypatch):
+    """用户线 analyze_hotwords 在入口分流到 graph 批次驱动，返回结构同其余意图。"""
+    import src.app.api.routes as routes
+
+    seen = {}
+
+    def fake_batch(*, prompt_version=None):
+        seen["prompt_version"] = prompt_version
+        return {"ok": True, "analyzed": 3, "failed": 0, "items": []}
+
+    monkeypatch.setattr(routes, "run_batch", fake_batch)
+    r = invoke_workflow({"input_text": "分析热词", "intent": "analyze_hotwords",
+                         "prompt_versions": {"hotwords": "v2"}})
+    assert seen == {"prompt_version": "v2"}
+    assert r["intent"] == "analyze_hotwords"
+    assert r["tool_results"]["analyze_hotwords"]["ok"] is True
+    assert r["tool_results"]["analyze_hotwords"]["result"]["analyzed"] == 3
+    assert r["validation"]["is_valid"] is True
+    assert "output" in r and "langsmith" in r
+
+
 def test_http_backfill_defaults_to_dry_run(monkeypatch):
     """/backfill 默认只出报告；显式 dry_run=false 才真正写，且令牌可校验。"""
     import src.app.api.routes as routes
@@ -56,7 +77,7 @@ def test_http_backfill_defaults_to_dry_run(monkeypatch):
         seen.update(kwargs)
         return {"ok": True, "scanned": 3, "repaired": 0}
 
-    monkeypatch.setattr(routes, "backfill_states", fake_backfill)
+    monkeypatch.setattr(routes, "run_backfill", fake_backfill)
     monkeypatch.setattr(routes, "BACKFILL_TOKEN", "")
     client = TestClient(api)
 

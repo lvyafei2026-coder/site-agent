@@ -3,7 +3,12 @@
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
 """HTTP 入站：POST /run 跑完一轮，GET /health 报状态与进程内计数，
-POST /backfill 补写「正文已落库、状态表丢了」的热词（运维入口）。"""
+POST /backfill 补写「正文已落库、状态表丢了」的热词（运维入口）。
+
+分层：入口只依赖 graph 包——取图、驱动批次、运维回填都从 graph 走，不穿透到
+services / tools / adapters。用户线的 analyze_hotwords 意图在入口分流到 graph 的
+批次驱动（它是编排不是工具），返回体包装成与其余意图一致的 state 结构，前端零感知。
+"""
 
 from __future__ import annotations
 
@@ -14,13 +19,13 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 from src.app.config import BACKFILL_TOKEN, settings
-from src.app.graph.builder import get_graph
+from src.app.enums import Intent
+from src.app.graph import get_user_graph, run_backfill, run_batch
 from src.app.graph.state import initial_state
 from src.app.llm.quota import check_quota
 from src.app.observability.langsmith import public_config as langsmith_config
 from src.app.observability.metrics import metrics
 from src.app.observability.trace import run_traced
-from src.app.tools.adapters.terms.hotwords import backfill_states
 
 
 class WorkflowRequest(BaseModel):
@@ -31,8 +36,41 @@ class WorkflowRequest(BaseModel):
     thread_id: str | None = None
 
 
+def _hotwords_state(payload: dict) -> dict:
+    """用户线热词分析：入口分流到 graph 批次驱动，包装成与其余意图一致的 /run 返回体。
+
+    为什么不在主图里用工具触发：批量分析是编排（invoke 循环图），属 graph 层；
+    放在 tools 层会形成 tools → graph 反向依赖。入口分流后工具层只剩纯 IO，依赖单向。
+    返回字段与主图一致（intent / confidence / validation / output / tool_results /
+    langsmith）；批次自己的 traceRun 在 out 里供 LangSmith 回链，前端无需区分走了哪条线。
+    """
+    versions = payload.get("prompt_versions") or {}
+    out = run_batch(prompt_version=versions.get("hotwords"))
+    ok = bool(out.get("ok"))
+    reason = out.get("error") or out.get("note") or "本批热词分析完成"
+    output = (f"intent=analyze_hotwords; tools=1; analyzed={out.get('analyzed', 0)}; "
+              f"failed={out.get('failed', 0)}; ok={ok}")
+    # 批次自己的 traceRun{batchId,runId,url} 已在 out 里，前端可直接回链 LangSmith；
+    # 这里不伪造主图的节点轨迹——这条意图走的是后台批次线，没有主图的 5 个节点。
+    return {
+        "intent": Intent.ANALYZE_HOTWORDS.value,
+        "confidence": 1.0,
+        "validation": {"is_valid": ok, "reason": reason,
+                       "tool_failures": out.get("failed", 0)},
+        "output": output,
+        "tool_results": {
+            "analyze_hotwords": {"tool": "analyze_hotwords", "ok": ok,
+                                 "result": out, "error": out.get("error", "")},
+        },
+        "langsmith": langsmith_config(),
+    }
+
+
 def invoke_workflow(payload: dict) -> dict:
     """跑完整一轮；thread_id 决定 checkpointer 的会话归属。"""
+    if payload.get("intent") == Intent.ANALYZE_HOTWORDS.value:
+        return _hotwords_state(payload)
+
     state = initial_state(
         payload["input_text"],
         intent=payload.get("intent"),
@@ -43,7 +81,7 @@ def invoke_workflow(payload: dict) -> dict:
     # run_name / tags / metadata 只在 LangSmith 开启时才有意义，关闭时被忽略：
     # 有了 run_name，追踪列表里每条是 site-agent:select_pages 而不是 "LangGraph"。
     result, trace = run_traced(
-        get_graph(),
+        get_user_graph(),
         state,
         config={
             "configurable": {"thread_id": thread_id},
@@ -100,4 +138,4 @@ def backfill(req: BackfillRequest,
     """
     if BACKFILL_TOKEN and x_backfill_token != BACKFILL_TOKEN:
         raise HTTPException(status_code=401, detail="invalid backfill token")
-    return backfill_states(dry_run=req.dry_run, limit=req.limit)
+    return run_backfill(dry_run=req.dry_run, limit=req.limit)

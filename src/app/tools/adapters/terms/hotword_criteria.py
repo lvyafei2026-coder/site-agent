@@ -8,8 +8,9 @@
 不依赖外部状态。口径与 console/public/assets/app.js 一致。
 
 拆分自 hotwords.py（2026-11-17）：该文件当时 1200+ 行，判据、LLM 调用、KV 写入、
-批次编排混在一起；本模块承载其中「判读」这一层。编排已于 2026-11-19 拆成
-hotword_fetch / hotword_worker / hotword_batch 三层，hotwords.py 退为门面。
+批次编排混在一起；本模块承载其中「判读」这一层。编排已于 2026-11-20 分层归位成
+graph（批次驱动 + 图装配）、nodes（循环节点）、services（单词分析与回填）三层，
+hotwords.py 退为 adapters 门面。
 """
 
 from __future__ import annotations

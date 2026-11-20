@@ -134,33 +134,33 @@ API 的 `LLM_MODEL` 要写 **`openai/gpt-4o-mini`**（vendor/model）——以�
 |---|---|---|
 | 图级 | 整轮输入输出、总耗时、thread_id、input_text | `routes.py` 的 `run_name` / `metadata` |
 | 节点级 | classify_intent / run_processing / validate_result / build_output | LangGraph 自动打点 |
-| 工具级 | `tool:<工具名>`（26 个 RuntimeTool）：真实入参、统一返回体，`ok=False` 标红 | `tools/registry.py` 注入的 `trace_tool` |
-| 批次级 | `site-agent:hotword-batch`：analyzed / failed / successRate / 降级提示 | `hotwords.run_batch` 的 `run_traced` |
-| 批次内 IO | `tool:kv.read-candidates`：筛出哪些词、为什么这批跑空了 | `hotword_loop.py` 的 `fetch_one`（懒加载） |
-| 逐词级 | `site-agent:hotword:<词>`：verdict / status / serp / trend / error（失败标红） | `hotword_loop.py` 的 `analyze_one` |
-| 逐词内 IO | `tool:serp` / `tool:trend` / `tool:kv.write`：抓取出入参、缓存命中、尝试明细、每个 KV 键写入成败 | `hotwords.py` 的 `_tool_step` |
+| 工具级 | `tool:<工具名>`（25 个 RuntimeTool）：真实入参、统一返回体，`ok=False` 标红 | `tools/registry.py` 注入的 `trace_tool` |
+| 批次级 | `site-agent:hotword-batch`：analyzed / failed / successRate / 降级提示 | `graph/hotword_batch.py:run_batch` 的 `run_traced` |
+| 批次内 IO | `tool:kv.read-candidates`：筛出哪些词、为什么这批跑空了 | `nodes/hotword_nodes.py` 的 `fetch_one`（懒加载） |
+| 逐词级 | `site-agent:hotword:<词>`：verdict / status / serp / trend / error（失败标红） | `nodes/hotword_nodes.py` 的 `analyze_one` |
+| 逐词内 IO | `tool:serp` / `tool:trend` / `tool:kv.write`：抓取出入参、缓存命中、尝试明细、每个 KV 键写入成败 | `services/hotword_service.py` 的 `_tool_step` |
 | LLM 级 | 实际发送的 messages、返回 JSON、token 数与延迟 | `llm/provider.py` 的 `wrap_openai` |
 
 **整轮是一棵树，不是一堆散根**（2026-11-13 修）：
 
 ```
-site-agent:analyze_hotwords                    ← 唯一根
-└─ run_processing
-   ├─ tool:get_hotwords / tool:get_page_inventory …   ← 26 个工具各自的出入参
-   └─ site-agent:hotword-batch
-      ├─ tool:kv.read-candidates
-      └─ site-agent:hotword:<词>              ← 每词一条
-         ├─ tool:serp      → SERP 前 10、竞争度、是否命中缓存、4 发尝试明细
-         ├─ tool:trend     → 趋势点数/摘要、是否命中缓存
-         ├─ ChatOpenAI     → 完整 messages 与返回
-         └─ tool:kv.write  → 写了哪些键、每个键 ok 与否、正文预览、失败清单
+site-agent:hotword-batch                       ← 唯一根（用户线由入口分流，不走主图节点）
+├─ tool:kv.read-candidates
+└─ site-agent:hotword:<词>                     ← 每词一条
+   ├─ tool:serp      → SERP 前 10、竞争度、是否命中缓存、4 发尝试明细
+   ├─ tool:trend     → 趋势点数/摘要、是否命中缓存
+   ├─ ChatOpenAI     → 完整 messages 与返回
+   └─ tool:kv.write  → 写了哪些键、每个键 ok 与否、正文预览、失败清单
 ```
+
+`analyze_hotwords` 是编排不是工具：用户线在 `api/routes.py` 入口分流到同一个
+`graph.run_batch()`，返回体包装成与主图一致的 state 结构，前端无需区分走了哪条线。
 
 历史上根因是 `ThreadPoolExecutor` 的 worker 线程**不继承主线程的 contextvars**，而
 LangSmith 把父 run 存在 contextvar 里；并发逐词时 `wrap_openai` 找不到父，每个 LLM 都
 成了独立根 trace。修法在工具层：批次 span 自动挂到 LangGraph 节点下，逐词 span **显式传
 `parent=`**（`observability/langsmith.py:run_traced`），并把本词 run 继续传给所有 `tool:*`
-子 span。2026-11-19 起逐词调度改为独立的条件边回环图（`hotword_loop.py`，串行），显式
+子 span。2026-11-19 起逐词调度改为独立的条件边回环图（现 `nodes/hotword_nodes.py`，串行），显式
 parent 链路保留以维持上面这棵层级树；不是「每词一条独立 trace」。
 
 **工具可见性**（2026-11-13）：以前只有 `wrap_openai` 自动打点，SERP / Trends / KV 读写在
@@ -178,7 +178,7 @@ Smith 上完全看不见，页面只显示「SERP 源不可用，本批已跳过
 
 - 整批共用一个 `thread_id`（= `batchId`），Threads 视图同样聚成一条；每词另有
   独立 `word_id`，要单独看某个词按它检索即可。
-- `analyze_hotwords` 返回里新增 `traceRun{batchId, runId, traceId, url}`（附加字段，
+- `run_batch` 返回里带 `traceRun{batchId, runId, traceId, url}`（附加字段，
   老前端忽略不受影响）。`url` 只在配了 `LANGSMITH_PROJECT_URL` 时生成，不额外发网络；
   没配就用 `runId` 在 LangSmith 搜索框定位。
 - 关掉追踪时这层包装零开销：直接调函数，返回里没有 `traceRun`。
@@ -277,7 +277,7 @@ Render 的 FastAPI 为准。
 
 ### 6.1 热词逐词写入与状态回填（2026-11-19）
 
-- 20 条热词由独立循环图（`hotword_loop.py`）**一次一词串行分析**（原 4 worker 并发已于
+- 20 条热词由独立循环图（`nodes/hotword_nodes.py`）**一次一词串行分析**（原 4 worker 并发已于
   2026-11-19 改为 StateGraph 条件边回环）。`saved` / `rejected` / `aihints` / `competition` /
   `interests` 这 5 张**整表**的「读 → 改 → 写 → 校验返回值」统一走
   `adapters/cloudflare/kv.py:atomic_update()` 的一把进程级 `threading.RLock`，不会互相覆盖。

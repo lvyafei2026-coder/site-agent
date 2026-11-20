@@ -136,26 +136,3 @@ def test_prompt_pair_is_cached():
     hw._prompt_pair.cache_clear()
 
 
-def test_prompt_version_reaches_analyze_hotwords_tool(monkeypatch):
-    """/run 的 prompt_versions.hotwords 要一路透传到工具入参，否则版本化形同虚设。"""
-    import src.app.services.tool_service as ts
-
-    captured: dict = {}
-
-    class FakeRegistry:
-        def names(self):
-            return ["analyze_hotwords"]
-
-        def run(self, name, **kwargs):
-            captured.update(kwargs)
-            return {"tool": name, "ok": True, "result": {}}
-
-    monkeypatch.setattr(ts, "tool_registry", FakeRegistry())
-    ts.ToolService().execute_for_intent(
-        "analyze_hotwords", "分析热词", {}, prompt_versions={"hotwords": "v2"})
-    assert captured.get("limit") == 20
-    assert captured.get("prompt_version") == "v2"
-
-    captured.clear()
-    ts.ToolService().execute_for_intent("analyze_hotwords", "分析热词", {})
-    assert "prompt_version" not in captured     # 没指定版本就不该塞参数

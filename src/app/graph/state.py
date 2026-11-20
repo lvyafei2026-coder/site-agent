@@ -9,7 +9,7 @@
 - 中间：节点产出、供下游节点消费，最后随结果一并返回；
 - 输出：终态字段，/run 返回体直接取用。
 
-单轮流水线走向（见 graph/builder.py）：
+单轮流水线走向（见 graph/user_graph.py）：
   classify_intent → run_processing → validate_result → build_output / retry / handle_error
 """
 

@@ -31,9 +31,9 @@
 
 ## 2. 图与路由
 
-`graph/builder.py` 并列装配**两张图**（两条线互不嵌套）：
+`graph/` 下两张 `*_graph.py` 并列装配**两张图**（两条线互不嵌套）：
 
-线 1｜用户线 `build_graph()` → `get_graph()`（意图流水线）：
+线 1｜用户线 `build_user_graph()` → `get_user_graph()`（意图流水线）：
 ```python
 START → classify_intent → run_processing → validate_result
                                    ↑              │
@@ -47,17 +47,19 @@ START → classify_intent → run_processing → validate_result
 START → fetch_one → analyze_one → should_continue ─┬─ fetch_one（还有词且未达 limit）
                                                    └─ END（词用完 / 达 limit / KV 失败）
 ```
-装配真身在 `graph/hotword_graph.py`（只依赖 `hotword_loop` 的叶子模块），`builder.py`
-re-export 保持两图统一门面——这样 `hotword_batch.py` 能顶层静态取图，无函数内 import。
-节点逻辑在 `adapters/terms/hotword_loop.py`；入口是 `main.py:run_background()`（单跑）与
-`main.py:serve()` 里的守护线程（常驻自动，周期 `BACKGROUND_INTERVAL_SEC`）。
+装配真身在 `graph/hotword_graph.py`，只依赖 `nodes/hotword_nodes.py` 的节点逻辑；
+两图经 `graph/__init__.py` 统一导出，`graph/hotword_batch.py` 顶层静态取图，无函数内 import。
+节点逻辑在 `nodes/hotword_nodes.py`，单词分析在 `services/hotword_service.py`；
+入口是 `main.py:run_background()`（单跑）与 `main.py:serve()` 里的守护线程
+（常驻自动，周期 `BACKGROUND_INTERVAL_SEC`）。用户线 `analyze_hotwords` 意图在
+`api/routes.py` 直接分流到同一个 `graph.run_batch()`，返回体包装成主图一致的 state 结构。
 
 | 组件 | 内容 |
 |---|---|
 | `constants.Names` | `classify_intent` / `run_processing` / `validate_result` / `build_output` / `handle_error` |
 | `constants.Tags` | `retry` / `complete` / `error` |
 | `edges.route_after_validation` | `is_valid` → complete；`retry_count < MAX_VALIDATION_RETRIES` → retry；否则 error |
-| `builder.get_graph()` | `@lru_cache(1)`：checkpointer 持连接（SQLite 尤甚），不能每请求重建 |
+| `user_graph.get_user_graph()` | `@lru_cache(1)`：checkpointer 持连接（SQLite 尤甚），不能每请求重建 |
 
 节点名必须带动词前缀：LangGraph 0.3.x 不允许节点名与 state 字段同名，
 否则 `add_node` 抛 `'intent' is already being used as a state key`。
@@ -182,7 +184,7 @@ class GetHotwordsTool(RuntimeTool):
 | `publishing_tools.py` | `PublishingOps`（页面台账、渲染、push、验活） | 7 |
 
 装配在 `registry.py`：`RuntimeService(6 个 Ops)` 是唯一门面，`ToolRegistry.bind(ops)`
-把门面注入 26 个工具。跨域复用写成 `self.<method>`（如 `PublishingOps.queue_indexing`
+把门面注入 25 个工具。跨域复用写成 `self.<method>`（如 `PublishingOps.queue_indexing`
 里调 `self.ledger_upsert`），门面组合后自然可见，不额外 import 其它域的 Ops。
 
 ## 6. 适配器
@@ -194,7 +196,7 @@ class GetHotwordsTool(RuntimeTool):
 | | `kv` | ★KV 唯一模块：`CloudflareKV`（共享表，fail-open，atomic_update+锁）+ `WorkersKV`（`agent:` 前缀，fail-fast）+ 键名契约；`__init__` 里 `keyvalue` 是 WorkersKV 单例 |
 | | `sql` | `Sql` / `PAGE_QUERIES` / `LEDGER_TABLES` / `SqlBuilder` |
 | `terms/` | `curation` | `snapshot(status, limit)` → `{items, meta, interests}`（只读共享 KV）+ `upsert_saved / upsert_rejected / set_hint_override`（与 console store.js 对齐的写侧口径） |
-| | `hotwords` | 公共 API 门面（生产契约 run_batch / backfill_states + 稳定测试出口，不承载逻辑、无运行时跳转）；hotword_batch（批次外壳：构造 state→invoke builder 的图→summarize）+ hotword_loop（循环节点逻辑，图结构装配在 graph/builder.py）+ hotword_contract（共享叶子：候选筛选+trace 常量） + hotword_fetch（取数）/ hotword_worker（单词），判据=hotword_criteria、LLM=hotword_llm、KV 写账本=hotword_kv_io、回填=hotword_backfill。依赖单向无环：batch → builder → loop → worker → fetch/criteria/llm/kv_io/contract |
+| | `hotwords` | adapters 只读门面：只聚合本层叶子符号（不 re-export graph / services 入口，避免反向依赖）；hotword_contract（共享叶子：候选筛选+trace 常量）+ hotword_fetch（取数）+ hotword_criteria（判据）+ hotword_llm + hotword_kv_io（写账本）。上层编排见 `graph/hotword_batch.py` / `graph/hotword_graph.py`，节点见 `nodes/hotword_nodes.py`，单词与回填见 `services/hotword_service.py` / `services/backfill_service.py`。依赖单向无环：graph → nodes → services → adapters → cloudflare.kv |
 | | `gsc` | `search_analytics(days, dimensions)`；无凭据返回 `[]` |
 | | `reddit` | `search(query, limit, timeframe)` 只读 |
 | | `scrape_serp` / `scrape_trend` | DDG SERP / Google Trends 抓取 |

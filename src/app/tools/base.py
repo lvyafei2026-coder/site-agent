@@ -4,7 +4,7 @@
 
 """工具契约。
 
-26 个工具各自是 BaseTool 的子类，子类只声明 tool_name / method / Input，
+25 个工具各自是 BaseTool 的子类，子类只声明 tool_name / method / Input，
 作用说明写在类 docstring 里（description 直接取 docstring），实现在同一个
 *_tools.py 的 <Domain>Ops 类里，外部 IO 只发生在 tools/adapters/ 内。
 
@@ -101,7 +101,7 @@ class RuntimeTool(BaseTool):
 
     ★tracer 是**注入**进来的横切钩子（registry.py 装配时传入），不是 import：
       base 必须保持「只依赖标准库 + pydantic」的叶子身份（见 test_architecture.py），
-      但 26 个工具的每次调用又都要在 LangSmith 上留下入参/出参/错误。钩子签名：
+      但 25 个工具的每次调用又都要在 LangSmith 上留下入参/出参/错误。钩子签名：
         tracer(name, kind, method, kwargs, call) -> ToolOutput.model_dump()
       默认 None = 不打点，测试里直接 new 一个工具实例不受影响。
     """

@@ -5,7 +5,7 @@
 """热词分析的外部取数层：SERP / Trends 读缓存 → 缺失则现抓 → 写回共享 KV。
 
 拆分自 hotwords.py（2026-11-19 三层拆分）。只负责「补数据」这一步，不碰判据、
-LLM 与结论回写（那些在 hotword_worker.py）。K/V 操作经 hotword_kv_io 的 _WriteLog，
+LLM 与结论回写（那些在 services/hotword_service.py）。K/V 操作经 hotword_kv_io 的 _WriteLog，
 抓取经 scrape_serp / scrape_trend 的模块引用。
 
 ★源级不可用（连不上 / 被挑战页占满）原样抛 SourceUnavailable，由 worker 层的
