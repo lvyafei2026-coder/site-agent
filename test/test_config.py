@@ -91,8 +91,8 @@ def test_workflow_state_is_typeddict():
 
 
 def test_initial_state_defaults():
-    from src.app.graph.state import initial_state
-    state = initial_state("hi", intent="general", tools=["get_flag"])
+    from src.app.graph.state import initial_workflow_state
+    state = initial_workflow_state("hi", intent="general", tools=["get_flag"])
     assert state["retry_count"] == 0
     assert state["messages"] == []
     assert state["tool_results"] == {}

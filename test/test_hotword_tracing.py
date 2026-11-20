@@ -29,6 +29,7 @@ from src.app.config import settings
 from src.app.tools.adapters.terms import hotwords as hw
 from src.app.tools.adapters.terms import hotword_llm
 from src.app.graph import hotword_graph
+from src.app.graph import state as graph_state
 from src.app.tools.registry import tool_registry
 
 
@@ -153,6 +154,7 @@ def test_batch_nests_under_real_langgraph_node(fake_kv, monkeypatch, traced_runs
     """真实 LangGraph 节点里调用（不是手工造的根）：run span 要挂在节点 run 下。"""
     from typing import TypedDict
 
+    from langchain_core.runnables.config import var_child_runnable_config
     from langchain_core.tracers.langchain import LangChainTracer
     from langgraph.graph import END, START, StateGraph
 
@@ -167,7 +169,14 @@ def test_batch_nests_under_real_langgraph_node(fake_kv, monkeypatch, traced_runs
     def node(state: S) -> dict:
         current = run_helpers.get_current_run_tree()
         node_run_ids.append(str(current.id) if current else "")
-        return {"out": hotword_graph.run_hotwords(limit=3)}
+        # langgraph 0.3.x 对「被当作节点调用的图」强制 values 模式（Pregel._defaults），
+        # 而两条线都是独立根图、共用驱动器按 updates 取增量。这里只清掉继承来的 pregel
+        # 任务配置，LangSmith 的 run tree 上下文保留——本用例验的就是 span 父子关系。
+        token = var_child_runnable_config.set(None)
+        try:
+            return {"out": hotword_graph.run_hotwords(limit=3)}
+        finally:
+            var_child_runnable_config.reset(token)
 
     graph = (StateGraph(S).add_node("analyze", node)
              .add_edge(START, "analyze").add_edge("analyze", END).compile())
@@ -191,7 +200,7 @@ def test_early_return_still_has_batch_span_and_link(monkeypatch, traced_runs):
         def get_json(self, *a, **k):
             raise RuntimeError("unreachable")
 
-    monkeypatch.setattr(hotword_graph, "get_kv", lambda: BoomKV())
+    monkeypatch.setattr(graph_state, "get_kv", lambda: BoomKV())
     with ls_trace("site-agent:analyze_hotwords") as root:
         out = hotword_graph.run_hotwords(limit=5)
 

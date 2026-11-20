@@ -36,6 +36,17 @@ def test_tools_never_depend_on_services():
     assert not offenders, f"tools 反向依赖 services：{sorted(offenders)}"
 
 
+def test_services_never_depend_on_nodes_or_graph():
+    """services 是节点的实现类，只能被 nodes 调，不能反过来认识 nodes / graph。
+
+    节点 ↔ 实现类的对应表在 services/__init__.py；一旦 service 里出现图或节点，
+    说明业务逻辑又漏回编排层了。
+    """
+    offenders = {m for m in imports_of("services")
+                 if m.startswith(("src.app.nodes", "src.app.graph"))}
+    assert not offenders, f"services 反向依赖编排层：{sorted(offenders)}"
+
+
 def test_adapters_are_leaves():
     """adapters 是最外层实现，不能反过来依赖 tools 契约、注册表、services 或编排层。"""
     offenders = {m for m in imports_of("tools/adapters")
@@ -103,7 +114,7 @@ def test_entry_and_graph_have_no_deferred_imports():
     main.py 顶层 import 全部依赖；热词图的装配与运行入口同处 hotword_graph.py。
     这些文件若重现函数内 import，说明有人把加载期环又引回来了。
     """
-    for rel in ("main.py", "graph/hotword_graph.py", "graph/user_graph.py"):
+    for rel in ("main.py", "graph/hotword_graph.py", "graph/normal_graph.py"):
         tree = ast.parse((APP / rel).read_text(encoding="utf-8"))
         offenders = set()
         for node in ast.walk(tree):

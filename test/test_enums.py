@@ -18,11 +18,11 @@ from src.app.enums import (
     GraphNode, HintName, Intent, LedgerStrategy, LlmThinking, MemoryBackend,
     PageQueryMode, PageStatus, PlanStatus, PromptTask, RejectSource,
     ReportKind, RouteTag, SearchTimeframe, SerpEngine, SerpVerdict,
-    ToolKind, TrackEvent, Verdict, WorkflowStatus,
+    ToolKind, TrackEvent, Verdict, WorkflowStatus, TraceName,
 )
 
 ALL_ENUMS = [
-    Intent, WorkflowStatus, GraphNode, RouteTag, ToolKind, LlmThinking,
+    Intent, WorkflowStatus, GraphNode, TraceName, RouteTag, ToolKind, LlmThinking,
     MemoryBackend, CandidateStatus, CurationStatus, RejectSource, HintName,
     Verdict, AnalysisPhase, SearchTimeframe, EventStatus,
     EventKind, ReportKind, PlanStatus, PageStatus, BacklinkStatus,

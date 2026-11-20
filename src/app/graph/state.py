@@ -2,32 +2,39 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""WorkflowState：一轮运营在节点间流动的全部字段。
+"""两条线的 State 与入口状态工厂（并列、同构）。
+
+    WorkflowState      + initial_workflow_state()   常规线主图（POST /run）
+    HotwordLoopState   + initial_hotword_state()    热词循环图（POST /hotwords）
 
 字段分三组：
-- 输入：由 /run 请求体注入（api/routes.py），节点只读不改；
+- 输入：由运行入口注入（graph/normal_graph.py、graph/hotword_graph.py），节点只读不改；
 - 中间：节点产出、供下游节点消费，最后随结果一并返回；
-- 输出：终态字段，/run 返回体直接取用。
+- 输出：终态字段，运行入口的返回体直接取用。
 
-单轮流水线走向（见 graph/user_graph.py）：
-  classify_intent → run_processing → validate_result → build_output / retry / handle_error
+两条线的走向（见 graph/normal_graph.py、graph/hotword_graph.py）：
+  常规线  classify_intent → run_processing → validate_result → build_output / retry / handle_error
+  热词线  fetch_one → analyze_one → route_after_analyze ─┬─ fetch_one（回环）
+                                                        └─ build_summary（收尾）
 """
 
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import Any, Optional, TypedDict
 
 from src.app.config import settings
+from src.app.services.hotword_service import _DegradeState
+from src.app.tools.adapters.cloudflare.kv import CloudflareKV, get_kv
 
 
 class WorkflowState(TypedDict, total=False):
-    # ── 输入（/run 请求注入，节点只读）───────────────────────────
+    # ── 输入（运行入口注入，节点只读）───────────────────────────
     input_text: str
     """必填。原始请求文本；intent 节点拿它做意图分类，processing 节点拿它做字段抽取。"""
 
     intent: str
     """可选输入 / 中间变量（双重身份）。
-    传入时（api/routes.py 写入）= 调用方强制指定意图，intent 节点跳过 LLM 直接采用、confidence 置 1.0；
+    传入时（initial_workflow_state 写入）= 调用方强制指定意图，intent 节点跳过 LLM 直接采用、confidence 置 1.0；
     未传入时 = intent 节点产出的中间结果，供 processing 选工具集（INTENT_TOOLS）。"""
 
     prompt_versions: dict[str, str]
@@ -82,14 +89,14 @@ class WorkflowState(TypedDict, total=False):
     直接路由到 handle_error。软失败（工具 ok:False、字段偏少）不写此字段。"""
 
 
-def initial_state(
+def initial_workflow_state(
     input_text: str,
     *,
     intent: str | None = None,
     tools: list[str] | None = None,
     prompt_versions: dict[str, str] | None = None,
 ) -> WorkflowState:
-    """构造一轮的入口状态。CLI 与 /run 共用，避免两处各写一份默认值。"""
+    """构造常规线一轮的入口状态（与 initial_hotword_state 对称）。"""
     state: WorkflowState = {
         "input_text": input_text,
         "retry_count": 0,
@@ -101,3 +108,52 @@ def initial_state(
     if intent:
         state["intent"] = intent
     return state
+
+
+class HotwordLoopState(TypedDict, total=False):
+    """热词循环图在节点间流转的状态。字段全为名词，避免与节点名撞名。
+
+    与 WorkflowState 的差别只在内容：这里带本轮的运行时句柄（kv / degrade），
+    所以对外返回体取终态的 `summary` 字段，而不是整份 state。
+    """
+
+    # ——入口参数（initial_hotword_state 注入，节点只读）——
+    limit: int                       # 本次最多分析的词数（= 最大循环次数）
+    kv: CloudflareKV                 # 候选池 / 账本读写门面
+    prompt_version: Optional[str]    # 本轮提示词版本（None → 节点侧回退默认）
+    degrade: _DegradeState           # 源级降级状态（SERP/Trends/LLM）
+
+    # ——节点间流转——
+    seen: set[str]                   # 本轮已取过的 key（防 KV 最终一致导致重复取词）
+    examples_loaded: bool            # 人工判例是否已读（只读一次）
+    examples: list[dict[str, str]]
+    has_more: bool                   # fetch_one 本轮是否取到词（False → 条件边收尾）
+    current: dict[str, Any]          # 本轮取出的待分析词
+    results: list[dict[str, Any]]
+    loop_count: int
+    load_error: str                  # 候选池读取失败信息（非空 → 直接收尾）
+
+    # ——输出（build_summary 节点产出，运行入口直接取用）——
+    summary: dict[str, Any]
+
+
+def initial_hotword_state(limit: int = 20,
+                          prompt_version: Optional[str] = None) -> HotwordLoopState:
+    """构造热词线一轮的入口状态（与 initial_workflow_state 对称）。
+
+    limit 是最大循环次数，收口在 1-50。prompt_version 原样带上（可为 None）：
+    默认版本由 prompts.registry 结合 D1 的默认版本决定，不在这里提前拍死。
+    """
+    return {
+        "limit": max(1, min(int(limit or 20), 50)),
+        "kv": get_kv(),
+        "prompt_version": prompt_version,
+        "degrade": _DegradeState(),
+        "seen": set(),
+        "examples_loaded": False,
+        "examples": [],
+        "has_more": False,
+        "current": None,
+        "results": [],
+        "loop_count": 0,
+    }

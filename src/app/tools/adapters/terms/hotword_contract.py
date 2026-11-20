@@ -8,22 +8,23 @@
 **不 import graph / nodes / services 中任何一个**——这正是它能打破上下层环的原因。
 
 谁用它：
-    graph/hotword_graph.py   热词图装配 + 运行入口：trace 命名、成功阈值。
-    nodes/hotword_nodes.py   循环节点：每轮问 tool 取一词、词 span 命名、汇总。
-    hotwords.py              adapters 门面：re-export 本层符号。
+    nodes/hotword_fetch_node.py    取词节点：每轮问 tool 取一词、KV 工具 span 命名。
+    nodes/hotword_summary_node.py  汇总节点：成功阈值。
+    hotwords.py              adapters 门面：re-export 本层符号（含 RUN_TRACE_NAME 别名）。
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from src.app.enums import TraceName
 from src.app.tools.adapters.cloudflare.kv import (
     CloudflareKV, term_key, AI_CACHE_PREFIX, SAVED_KEY, REJECTED_KEY, TAGS_KEY,
 )
 from .hotword_kv_io import _kv_list, _kv_dict
 
 OK_MIN_RATE = 0.5                    # 整轮成功判定：成功率低于此值即视为失败
-RUN_TRACE_NAME = "site-agent:hotword-run"   # 一次 invoke 的根 span（旧名 hotword-batch）
+RUN_TRACE_NAME = TraceName.HOTWORD_RUN      # 一轮的根 span（真源 enums.TraceName）
 WORD_TRACE_PREFIX = "site-agent:hotword:"   # 逐词 span 前缀
 TOOL_KV_PREFIX = "tool:kv."          # 取词 / 判例读等 KV 工具 span 前缀
 

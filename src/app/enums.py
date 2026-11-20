@@ -51,22 +51,36 @@ class WorkflowStatus(StrEnum):
 
 
 class GraphNode(StrEnum):
-    """LangGraph 节点名。用动词前缀，避免与 WorkflowState 字段名同名（0.3.x 会报错）。"""
+    """两条线的 LangGraph 节点名。用动词前缀，避免与 State 字段名同名（0.3.x 会报错）。"""
 
+    # 常规线主图（graph/normal_graph.py）：分类 → 取数 → 校验 → 报告 / 错误
     INTENT = "classify_intent"      # 意图分类
     PROCESSING = "run_processing"   # 取数 / 调工具
     VALIDATION = "validate_result"  # 校验
     OUTPUT = "build_output"         # 生成报告
     ERROR = "handle_error"          # 终态错误处理
+    # 热词循环图（graph/hotword_graph.py）：取一词 → 分析 → 回环 / 汇总
+    FETCH_ONE = "fetch_one"         # 问 tool 要下一个候选词
+    ANALYZE_ONE = "analyze_one"     # 分析当前词并回写状态
+    SUMMARY = "build_summary"       # 终态汇总（与常规线 build_output 对称）
 
 
 class RouteTag(StrEnum):
-    """节点路由标签：edges.py 依此决定下一条边。"""
+    """节点路由标签：edges.py 依此决定下一条边（两条线共用同一套写法）。"""
 
-    RETRY = "retry"        # 校验没过但还能重试 → 回 processing
-    COMPLETE = "complete"  # 校验通过 → output
-    ERROR = "error"        # 终态失败 → error 节点
-    VALIDATE = "validate"  # processing 无硬失败 → 进 validation
+    RETRY = "retry"          # 校验没过但还能重试 → 回 processing
+    COMPLETE = "complete"    # 校验通过 → output
+    ERROR = "error"          # 终态失败 → error 节点
+    VALIDATE = "validate"    # processing 无硬失败 → 进 validation
+    LOOP = "loop"            # 热词还有词且未达上限 → 回 fetch_one
+    SUMMARIZE = "summarize"  # 热词取尽 / 达上限 / KV 失败 → build_summary
+
+
+class TraceName(StrEnum):
+    """两条线运行入口的 LangSmith 根 span 名（在 @observed 声明处引用）。"""
+
+    WORKFLOW_RUN = "site-agent:workflow-run"  # 常规线一轮（POST /run）
+    HOTWORD_RUN = "site-agent:hotword-run"    # 热词线一轮（POST /hotwords）
 
 
 class ToolKind(StrEnum):

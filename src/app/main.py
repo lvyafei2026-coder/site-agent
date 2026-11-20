@@ -4,7 +4,7 @@
 
 """进程入口：`python -m src.app.main` 起 uvicorn，所有业务都走 HTTP。
 
-    POST /run        用户线主图
+    POST /run        常规线主图
     POST /hotwords   热词逐词循环图（前端按需触发，无常驻线程）
 
 本模块只有 serve() 一件事，不带「单跑一轮」的第二个入口——那条路早先只为

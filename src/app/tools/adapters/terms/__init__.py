@@ -6,7 +6,8 @@
 
 本包只放 adapters 层叶子；2026-11-20 分层归位后，编排/节点/业务服务已上移：
     graph/hotword_graph.py     循环图装配 + 运行入口 run_hotwords（取一词→分析→再问还有吗）。
-    nodes/hotword_nodes.py     循环节点：state / fetch_one / analyze_one / route / summarize。
+    graph/state.py             HotwordLoopState + initial_hotword_state（与常规线并列）。
+    nodes/hotword_*_node.py    一节点一文件：取词 / 分析 / 汇总（回环路由在 graph/edges.py）。
     services/hotword_service.py   单词分析编排 _analyze_one（失败隔离到单词）。
 
 数据通道与业务读写（都落在共享 KV 上；KV 操作实现统一在 ../cloudflare/kv.py）：

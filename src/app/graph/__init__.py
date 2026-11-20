@@ -4,20 +4,23 @@
 
 """编排层的统一门面：两条线在这里并列可见，入口（main / api）只依赖本包。
 
-线 1｜用户输入  get_user_graph()  ← user_graph.py（POST /run）
-线 2｜热词分析  run_hotwords()    ← hotword_graph.py（循环图 + 运行入口，POST /hotwords）
+线 1｜常规运营  normal_graph.py   build_normal_graph / get_normal_graph / run_workflow  （POST /run）
+线 2｜热词分析  hotword_graph.py  build_hotword_graph / get_hotword_graph / run_hotwords（POST /hotwords）
 
-两条线互不嵌套、各有独立 API，由前端按需触发；进程内没有后台线程或定时循环。
-入口层不再穿透到 tools / adapters：取图、驱动热词图都从本包走。
+两条线互不嵌套、各有独立 API，但**机制同构**：装配 → 单例 → initial_*_state →
+run_traced（共用驱动器 + 各自快照）→ 终态 + trace + langsmith + traceRun。
+差别只在节点类型、state 内容、是否带 checkpointer。进程内没有后台线程或定时循环。
+入口层不再穿透到 tools / adapters：取图、驱动两条线都从本包走。
 """
 
 from src.app.graph.hotword_graph import (  # noqa: F401
     build_hotword_graph, get_hotword_graph, run_hotwords,
 )
-from src.app.graph.user_graph import build_user_graph, get_user_graph  # noqa: F401
+from src.app.graph.normal_graph import (  # noqa: F401
+    build_normal_graph, get_normal_graph, run_workflow,
+)
 
 __all__ = [
-    "get_user_graph", "build_user_graph",
-    "get_hotword_graph", "build_hotword_graph",
-    "run_hotwords",
+    "get_normal_graph", "build_normal_graph", "run_workflow",
+    "get_hotword_graph", "build_hotword_graph", "run_hotwords",
 ]

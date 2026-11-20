@@ -4,7 +4,8 @@
 
 """LLM 客户端：返回 OpenAI 兼容客户端，任何兼容服务都能接。
 
-只负责建连接；JSON 解析、回退与打点都在 services/llm_service.py。
+只负责建连接与响应归一；补全 / JSON 解析 / 降级在同包 completion.py，
+业务语义（意图识别 / 字段抽取 / 流量分析）在 services 的对应实现类。
 """
 
 from __future__ import annotations

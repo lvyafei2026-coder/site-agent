@@ -6,15 +6,16 @@
 
 from fastapi.testclient import TestClient
 
-from src.app.api.routes import api, health, invoke_workflow
+from src.app.api.routes import api, health
+from src.app.graph import run_workflow
 
 
 def test_health():
     assert health()["status"] == "ok"
 
 
-def test_invoke_workflow(fake):
-    r = invoke_workflow({"input_text": "看看新热词", "intent": "select_pages"})
+def test_run_workflow(fake):
+    r = run_workflow(input_text="看看新热词", intent="select_pages")
     assert r["intent"] == "select_pages"
     assert "output" in r
 
@@ -26,7 +27,7 @@ def test_run_returns_langsmith_link_fields(fake, monkeypatch):
     monkeypatch.setattr(settings, "langsmith_api_key", "lsv2_pt_secret")
     monkeypatch.setattr(settings, "langsmith_project_url",
                         "https://smith.langchain.com/o/acme/projects/p/1")
-    r = invoke_workflow({"input_text": "看看热词", "intent": "select_pages"})
+    r = run_workflow(input_text="看看热词", intent="select_pages")
     assert set(r["langsmith"]) == {"enabled", "project", "url"}
     assert r["langsmith"]["project"] == settings.langsmith_project
     assert r["langsmith"]["url"].endswith("/projects/p/1")

@@ -4,7 +4,7 @@
 
 """单轮流水线：图装配、执行、路由分支、prompt 版本。"""
 
-from src.app.graph.constants import Names, Tags
+from src.app.enums import GraphNode, RouteTag
 from src.app.graph.edges import EDGE_MAP, route_after_validation
 from src.app.prompts.registry import PromptRegistry
 
@@ -28,19 +28,19 @@ def test_one_cycle_runs_to_output(graph, fake):
 
 def test_review_metrics_runs_llm_analysis(graph, fake, monkeypatch):
     """review_metrics 取数后调用 LLM 分析各站表现，结论并进 output 报告。"""
-    import src.app.services.llm_service as llm_mod
+    import src.app.services.metrics_service as metrics_mod
 
     captured = {}
-    def fake_analyze(system_prompt, data):
+    def fake_complete(system_prompt, text, **_kwargs):
         captured["system"] = system_prompt
-        captured["data"] = data
+        captured["data"] = text
         return "## 表现较好的站点\n1. **music.example** — page_view 高且 outbound 占比健康"
-    monkeypatch.setattr(llm_mod.llm_service, "analyze_metrics", fake_analyze)
+    monkeypatch.setattr(metrics_mod, "complete_text", fake_complete)
 
     r = graph.invoke({"input_text": "哪些站表现好", "intent": "review_metrics",
                       "retry_count": 0, "messages": [], "tool_results": {}},
                      config={"configurable": {"thread_id": "t-rm"}})
-    assert captured, "review_metrics 应触发 analyze_metrics"
+    assert captured, "review_metrics 应触发 metrics_service.analyze"
     # 提示词来自 D1 prompts 表（桩由 conftest 注入），且数据里含各站统计
     assert "review_metrics" in captured["system"] or "表现较好" in captured["system"]
     assert "music.example" in captured["data"]
@@ -49,9 +49,9 @@ def test_review_metrics_runs_llm_analysis(graph, fake, monkeypatch):
 
 
 def test_review_metrics_skips_analysis_without_key(graph, fake, monkeypatch):
-    """无 LLM key 时 analyze_metrics 返回空串，不写 metrics_analysis，但整轮照常成功。"""
-    import src.app.services.llm_service as llm_mod
-    monkeypatch.setattr(llm_mod.llm_service, "analyze_metrics", lambda *a, **k: "")
+    """无 LLM key 时 analyze 返回空串，不写 metrics_analysis，但整轮照常成功。"""
+    import src.app.services.metrics_service as metrics_mod
+    monkeypatch.setattr(metrics_mod.metrics_service, "analyze", lambda *a, **k: "")
     r = graph.invoke({"input_text": "复盘流量", "intent": "review_metrics",
                       "retry_count": 0, "messages": [], "tool_results": {}},
                      config={"configurable": {"thread_id": "t-rm-nokey"}})
@@ -68,30 +68,30 @@ def test_explicit_tools_override_intent(graph, fake):
 
 
 def test_route_branches():
-    assert route_after_validation({"validation": {"is_valid": True}}) == Tags.COMPLETE
-    assert route_after_validation({"validation": {}, "retry_count": 0}) == Tags.RETRY
-    assert route_after_validation({"validation": {}, "retry_count": 99}) == Tags.ERROR
-    assert EDGE_MAP[Tags.COMPLETE] == Names.OUTPUT
-    assert EDGE_MAP[Tags.RETRY] == Names.PROCESSING
+    assert route_after_validation({"validation": {"is_valid": True}}) == RouteTag.COMPLETE
+    assert route_after_validation({"validation": {}, "retry_count": 0}) == RouteTag.RETRY
+    assert route_after_validation({"validation": {}, "retry_count": 99}) == RouteTag.ERROR
+    assert EDGE_MAP[RouteTag.COMPLETE] == GraphNode.OUTPUT
+    assert EDGE_MAP[RouteTag.RETRY] == GraphNode.PROCESSING
 
 
 def test_route_after_processing_short_circuits_on_fatal():
     from src.app.graph.edges import route_after_processing
 
     # 硬失败 → 直接 error，跳过校验
-    assert route_after_processing({"processing_fatal": True}) == Tags.ERROR
+    assert route_after_processing({"processing_fatal": True}) == RouteTag.ERROR
     # 软失败（无该字段）/ 正常 → 进入校验
-    assert route_after_processing({}) == Tags.VALIDATE
-    assert route_after_processing({"processing_fatal": False}) == Tags.VALIDATE
+    assert route_after_processing({}) == RouteTag.VALIDATE
+    assert route_after_processing({"processing_fatal": False}) == RouteTag.VALIDATE
 
 
 def test_processing_llm_down_terminates_without_validate(graph, fake, monkeypatch):
     """LLM 已配置但调用挂了（明确非网络失败） → processing 置 fatal → 直接 handle_error，
     不进 validate、不重试。"""
-    import src.app.services.llm_service as llm_mod
+    import src.app.services.extraction_service as ext_mod
 
-    monkeypatch.setattr(llm_mod.llm_service, "extract_failed", True)
-    monkeypatch.setattr(llm_mod.llm_service, "extract_fields", lambda **k: {})
+    monkeypatch.setattr(ext_mod.extraction_service, "failed", True)
+    monkeypatch.setattr(ext_mod.extraction_service, "extract", lambda *a, **k: {})
 
     r = graph.invoke(
         {"input_text": "看看新热词", "intent": "select_pages",
@@ -106,11 +106,11 @@ def test_processing_llm_down_terminates_without_validate(graph, fake, monkeypatc
 
 def test_processing_llm_network_timeout_goes_to_validate(graph, fake, monkeypatch):
     """LLM 是网络超时（retryable）→ 不短路，交 validate 走重试逻辑，不进 ERROR。"""
-    import src.app.services.llm_service as llm_mod
+    import src.app.services.extraction_service as ext_mod
 
-    monkeypatch.setattr(llm_mod.llm_service, "extract_failed", True)
-    monkeypatch.setattr(llm_mod.llm_service, "extract_retryable", True)
-    monkeypatch.setattr(llm_mod.llm_service, "extract_fields", lambda **k: {})
+    monkeypatch.setattr(ext_mod.extraction_service, "failed", True)
+    monkeypatch.setattr(ext_mod.extraction_service, "retryable", True)
+    monkeypatch.setattr(ext_mod.extraction_service, "extract", lambda *a, **k: {})
 
     r = graph.invoke(
         {"input_text": "看看新热词", "intent": "select_pages",

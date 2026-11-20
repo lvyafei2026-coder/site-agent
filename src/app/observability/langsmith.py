@@ -15,7 +15,8 @@
   - `observed(...)`  装饰器：业务函数在**定义处**声明 span（名字/出入参/标红/回链），
     函数体零 trace 代码。热词的 run / 取词 / 判例 / 逐词 / serp / trend / kv.write 全走它。
   - `trace_tool(...)` 包裹一次调用：registry 给 25 个 RuntimeTool 统一打点用。
-  - `traceable(name)` 装饰器：llm_service 三个方法用（import 期决定是否包装）。
+  - `traceable(name)` 装饰器：intent / extraction / metrics 三个实现类的方法用
+    （import 期决定是否包装）。
 
 父子关系全靠 LangSmith contextvar 自动继承（链路已改串行），切面**不传 parent**：
     外层 → 热词 run → LangGraph → 节点 → 每词 → IO / LLM
@@ -319,6 +320,6 @@ def observed(name, *, kind: str = "chain", inputs=None, outputs=None,
     return decorator
 
 
-# 模块级执行：只要有任何代码 import 到本模块（llm_service / routes / graph 都会），
+# 模块级执行：只要有任何代码 import 到本模块（llm/completion / routes / graph 都会），
 # 环境变量在 LangGraph 编译图之前就已经就位。放在文件末尾，settings 已就绪。
 configure_langsmith()

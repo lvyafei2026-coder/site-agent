@@ -4,30 +4,25 @@
 
 """HTTP 入站：每个场景一个入口，入口之间不互相分流。
 
-    POST /run        用户线主图（意图分类 → 取数 → 校验 → 输出）
-    POST /hotwords   热词分析独立入口（逐词循环图，前端按需触发）
+    POST /run        常规线主图（意图分类 → 取数 → 校验 → 输出）
+    POST /hotwords   热词循环图（逐词取词 → 分析 → 汇总）
     GET  /health     状态与进程内计数
     GET  /llm-quota  DeepSeek 余额与用量
 
-热词分析原本混在 /run 里靠 `intent=analyze_hotwords` 分流，现拆成独立入口：
-它是一张独立的循环图，不是主图的一个节点，也不经过工具注册表；入口直接返回
-graph 的运行结果，不再伪造主图的 state 结构。分层上入口只依赖 graph 包。
+入口层只做 HTTP 绑定：请求模型 → graph 层的 run_*()。不构造 state、不驱动图、
+不拼 trace——两条线的构造与触发机制在 graph/ 里完全一致（normal_graph / hotword_graph），
+差别只在节点类型与 state 内容。热词分析不是主图的一个节点，也不经过工具注册表。
 """
 
 from __future__ import annotations
-
-import time
 
 from fastapi import FastAPI
 from pydantic import BaseModel
 
 from src.app.config import settings
-from src.app.graph import get_user_graph, run_hotwords
-from src.app.graph.state import initial_state
+from src.app.graph import run_hotwords, run_workflow
 from src.app.llm.quota import check_quota
-from src.app.observability.langsmith import public_config as langsmith_config
 from src.app.observability.metrics import metrics
-from src.app.observability.trace import run_traced
 
 
 class WorkflowRequest(BaseModel):
@@ -43,50 +38,23 @@ class HotwordsRequest(BaseModel):
     prompt_version: str | None = None
 
 
-def invoke_workflow(payload: dict) -> dict:
-    """跑完整一轮用户线主图；thread_id 决定 checkpointer 的会话归属。"""
-    state = initial_state(
-        payload["input_text"],
-        intent=payload.get("intent"),
-        tools=payload.get("tools"),
-        prompt_versions=payload.get("prompt_versions"),
-    )
-    thread_id = payload.get("thread_id") or f"run-{int(time.time() * 1000)}"
-    # run_name / tags / metadata 只在 LangSmith 开启时才有意义，关闭时被忽略：
-    # 有了 run_name，追踪列表里每条是 site-agent:select_pages 而不是 "LangGraph"。
-    result, trace = run_traced(
-        get_user_graph(),
-        state,
-        config={
-            "configurable": {"thread_id": thread_id},
-            "run_name": f"site-agent:{payload.get('intent') or 'auto'}",
-            "tags": ["site-agent"],
-            "metadata": {"thread_id": thread_id,
-                         "intent": payload.get("intent") or "",
-                         "input_text": payload["input_text"][:200]},
-        },
-    )
-    # trace / langsmith 都是附加字段，不属于 WorkflowState：老前端忽略也不受影响
-    return {**result, "trace": trace, "langsmith": langsmith_config()}
-
-
 api = FastAPI(title=settings.project_name)
 
 
 @api.post("/run")
 def run(request: WorkflowRequest) -> dict:
-    """用户线主图：和其余场景共用一张图，热词分析不在这里。"""
-    return invoke_workflow(request.model_dump())
+    """常规线主图：请求字段与 run_workflow 签名一一对应，直接展开。"""
+    return run_workflow(**request.model_dump())
 
 
 @api.post("/hotwords")
 def hotwords(request: HotwordsRequest) -> dict:
-    """热词分析：独立的逐词循环图，前端在本页按需触发。
+    """热词循环图：请求字段与 run_hotwords 签名一一对应，直接展开。
 
-    直接返回 graph 的运行结果（ok / analyzed / failed / items / traceRun …），
-    不套主图 state——它本就不是主图节点。limit 最大 50，由 graph 层收口。
+    返回图终态的汇总（ok / analyzed / failed / items …）+ trace + langsmith，
+    与 /run 同一套封装；limit 最大 50，由 state 工厂收口。
     """
-    return run_hotwords(limit=request.limit, prompt_version=request.prompt_version)
+    return run_hotwords(**request.model_dump())
 
 
 @api.get("/health")

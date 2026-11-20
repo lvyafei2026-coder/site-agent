@@ -15,6 +15,7 @@ from src.app.enums import Intent
 from src.app.tools.adapters.terms import hotwords as hw
 from src.app.tools.adapters.terms import hotword_llm
 from src.app.graph import hotword_graph
+from src.app.graph import state as graph_state
 from src.app.services.hotword_service import _analyze_one
 from src.app.services.tool_service import INTENT_TOOLS
 from src.app.tools.registry import tool_registry
@@ -570,7 +571,7 @@ def test_run_hotwords_kv_unreachable_returns_error(fake_kv, monkeypatch):
     class BoomKV:
         def get_json(self, *a, **k):
             raise RuntimeError("unreachable")
-    monkeypatch.setattr(hotword_graph, "get_kv", lambda: BoomKV())
+    monkeypatch.setattr(graph_state, "get_kv", lambda: BoomKV())
     out = hotword_graph.run_hotwords(limit=20)
     assert out["ok"] is False and "候选查询失败" in out["error"]
     assert out["fetched"] == 0  # 没读到候选，不写任何状态
