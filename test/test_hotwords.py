@@ -16,7 +16,6 @@ from src.app.tools.adapters.terms import hotwords as hw
 from src.app.tools.adapters.terms import hotword_llm
 from src.app.graph import hotword_graph
 from src.app.services.hotword_service import _analyze_one
-from src.app.services.backfill_service import backfill_states
 from src.app.services.tool_service import INTENT_TOOLS
 from src.app.tools.registry import tool_registry
 
@@ -590,9 +589,11 @@ def _patch_ok_sources(monkeypatch):
                             "summary": {"avg": 50}, "attempts": []})
 
 
-def test_status_table_write_failure_marks_error_and_is_backfillable(fake_kv, monkeypatch):
-    """saved 整表写失败 → 该词 error（不算 analyzed），但正文已落库不会重跑；
-    backfill_states 从正文把状态补回去。"""
+def test_status_table_write_failure_marks_error_but_keeps_body(fake_kv, monkeypatch):
+    """saved 整表写失败 → 该词 error（不算 analyzed），但正文已落库。
+
+    正文优先写入，所以故障是「有正文、没状态」；该词不会重跑，前端也看不到状态。
+    """
     term = "free invoice calculator"
     fake_kv.put_json("candidates", [{"term": term, "traffic": 900, "geoCount": 1}])
     _patch_ok_sources(monkeypatch)
@@ -606,18 +607,6 @@ def test_status_table_write_failure_marks_error_and_is_backfillable(fake_kv, mon
     assert out["analyzed"] == 0
     assert fake_kv.get_json("saved", []) == []
     assert fake_kv.get_text(hw.AI_CACHE_PREFIX + hw.term_key(term))  # 正文在，状态丢了
-
-    # 模拟瞬时故障恢复后跑回填
-    fake_kv.fail_keys.clear()
-    dry = backfill_states(dry_run=True)
-    assert dry["dryRun"] is True and dry["repaired"] == 0
-    assert any(i["key"] == hw.term_key(term) and i["action"] == "preview" for i in dry["items"])
-    assert fake_kv.get_json("saved", []) == []
-
-    rep = backfill_states()
-    assert rep["ok"] is True and rep["repaired"] == 1
-    saved = fake_kv.get_json("saved", [])
-    assert any(x["key"] == hw.term_key(term) and x["status"] == "todo" for x in saved)
 
 
 def test_body_write_failure_never_writes_state(fake_kv, monkeypatch):
@@ -678,33 +667,3 @@ def test_concurrent_table_updates_do_not_lose_rows(fake_kv, monkeypatch):
     assert len(fake_kv.get_json("aihints", {})) == n
     assert len(fake_kv.get_json("competition", {})) == n
     assert len(fake_kv.get_json("interests", {})) == n
-
-
-def test_backfill_states_dry_run_and_unresolved(fake_kv):
-    """预览不写库；结论解析不出的词列成 unresolved（要重跑得先删 ai:v3: 正文）。"""
-    fake_kv.put_text("ai:v3:foo", "7) 结论：不做，真人姓名\n8) 信号标签：工具查询")
-    fake_kv.put_text("ai:v3:bar", "7) 结论：观望，等长尾\n8) 信号标签：无")
-    fake_kv.put_text("ai:v3:baz", "没有结论小节的乱码")
-
-    dry = backfill_states(dry_run=True)
-    assert dry["dryRun"] is True and dry["scanned"] == 3
-    assert fake_kv.get_json("rejected", []) == []
-    assert any(i["key"] == "foo" and i["action"] == "preview" for i in dry["items"])
-    assert any(i["key"] == "baz" and i["action"] == "unresolved" for i in dry["items"])
-
-    rep = backfill_states()
-    assert rep["ok"] is True and rep["repaired"] == 1
-    assert any(x["key"] == "foo" and x["source"] == "ai"
-               for x in fake_kv.get_json("rejected", []))
-    assert fake_kv.get_json("aihints", {}).get("foo") == ["工具查询"]
-    assert "bar" not in fake_kv.get_json("aihints", {})   # 「无」不写空覆盖
-
-
-def test_backfill_states_skips_already_curated(fake_kv):
-    """已整理 / 人工打标的词不能被回填改写，重复跑也要幂等。"""
-    fake_kv.put_text("ai:v3:foo", "7) 结论：不做，真人姓名\n8) 信号标签：工具查询")
-    fake_kv.put_json("saved", [{"key": "foo", "term": "foo", "status": "wip"}])
-    rep = backfill_states()
-    assert rep["repaired"] == 0 and rep["hintsRepaired"] == 1
-    assert fake_kv.get_json("saved", [])[0]["status"] == "wip"
-    assert fake_kv.get_json("rejected", []) == []

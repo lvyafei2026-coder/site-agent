@@ -202,7 +202,7 @@ class GetHotwordsTool(RuntimeTool):
 | | `kv` | ★KV 唯一模块：`CloudflareKV`（共享表，fail-open，atomic_update+锁）+ `WorkersKV`（`agent:` 前缀，fail-fast）+ 键名契约；`__init__` 里 `keyvalue` 是 WorkersKV 单例 |
 | | `sql` | `Sql` / `PAGE_QUERIES` / `LEDGER_TABLES` / `SqlBuilder` |
 | `terms/` | `curation` | `snapshot(status, limit)` → `{items, meta, interests}`（只读共享 KV）+ `upsert_saved / upsert_rejected / set_hint_override`（与 console store.js 对齐的写侧口径） |
-| | `hotwords` | adapters 只读门面：只聚合本层叶子符号（不 re-export graph / services 入口，避免反向依赖）；hotword_contract（共享叶子：候选筛选+trace 常量）+ hotword_fetch（取数）+ hotword_criteria（判据）+ hotword_llm + hotword_kv_io（写账本）。上层编排见 `graph/hotword_graph.py` / `graph/hotword_graph.py`，节点见 `nodes/hotword_nodes.py`，单词与回填见 `services/hotword_service.py` / `services/backfill_service.py`。依赖单向无环：graph → nodes → services → adapters → cloudflare.kv |
+| | `hotwords` | adapters 只读门面：只聚合本层叶子符号（不 re-export graph / services 入口，避免反向依赖）；hotword_contract（共享叶子：候选筛选+trace 常量）+ hotword_fetch（取数）+ hotword_criteria（判据）+ hotword_llm + hotword_kv_io（写账本）。上层编排见 `graph/hotword_graph.py`，节点见 `nodes/hotword_nodes.py`，单词分析见 `services/hotword_service.py`。依赖单向无环：graph → nodes → services → adapters → cloudflare.kv |
 | | `gsc` | `search_analytics(days, dimensions)`；无凭据返回 `[]` |
 | | `reddit` | `search(query, limit, timeframe)` 只读 |
 | | `scrape_serp` / `scrape_trend` | DDG SERP / Google Trends 抓取 |

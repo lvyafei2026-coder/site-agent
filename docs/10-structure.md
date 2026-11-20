@@ -15,7 +15,7 @@
 | 生成命令 | `langgraph-init site-agent --template production` |
 | 模板档位 | `base` 最小图 / `advanced` 模块化 + 真实 LLM / `production` 全套 tooling + observability + evaluation |
 | 生成后自检 | `cd site-agent && cp .env.example .env && pip install -e . && python -m src.app.main` |
-| 本项目的两个入口 | CLI `python -m src.app.main`；HTTP `uvicorn src.app.api.routes:api`（`langgraph.json` 指向前者） |
+| 本项目的入口 | `python -m src.app.main`（起 uvicorn）；HTTP 路由 `/run` · `/hotwords` · `/health` · `/llm-quota` |
 
 **不要重复生成**：CLI 没有 upgrade 子命令，在已有目录重跑会覆盖同名文件。要跟新版本只能
 另起临时目录生成一次再人工 diff，不要直接覆盖。
@@ -24,7 +24,7 @@
 
 ```
 src/app/
-├── main.py            serve() 常驻入口 + run() 单跑一轮
+├── main.py            serve() 常驻入口（只起 uvicorn）
 ├── config.py          Settings dataclass（.env 全量读口）
 ├── api/               /run · /health
 ├── graph/             builder · state · edges · constants · registry(Names/Nodes/Tags)
@@ -62,16 +62,15 @@ src/app/
 
 - `config/sites.json`（32 个站点清单）· `templates/site-page.html`（内容页模板，
   11 个占位符）· `migrations/0001_agent_tables.sql`（D1 7 张表）
-- `render.yaml` · `langgraph.json` · `.env.example` 的站群字段
+- `render.yaml` · `.env.example` 的站群字段
 - `test/test_architecture.py`：把“依赖只能向下”写成可执行断言的形式
 
 ### 1.2 脚手架留下的工程文件
 
 | 文件 | 内容 | 本项目改动 |
 |---|---|---|
-| `pyproject.toml` | setuptools 构建；`packages.find include=["src*"]`；`[project.scripts] site-agent = "src.app.main:run"`；`requires-python >= 3.11`；`pytest` 的 `pythonpath=["src","."]` + `testpaths=["test"]` | 版本改 `0.2.0`；依赖加 `langsmith>=0.1.140,<1`；dev 组保留 `pytest` / `httpx` |
+| `pyproject.toml` | setuptools 构建；`packages.find include=["src*"]`；`[project.scripts] site-agent = "src.app.main:serve"`；`requires-python >= 3.11`；`pytest` 的 `pythonpath=["src","."]` + `testpaths=["test"]` | 版本改 `0.2.0`；依赖加 `langsmith>=0.1.140,<1`；dev 组保留 `pytest` / `httpx` |
 | `.env.example` | 模板变量（`LOG_LEVEL`、`MEMORY_BACKEND`、`LLM_*`、`LANGSMITH_*`、`MAX_VALIDATION_RETRIES`…） | 扩到 46 行，补站群字段（`FLEET_DOMAIN`、`SITES_FILE`、`CF_*`、`GH_*`、`RADAR_*`、`GSC_*`、`DEVTO_*`、`RESEND_*`） |
-| `langgraph.json` | `{"dependencies": ["."], "graphs": {"site-agent": "src.app.main:run"}}` | 未改；只给 LangGraph CLI 用，线上仍走 Render + FastAPI |
 | `render.yaml` | Blueprint：`pip install -e .` + uvicorn + `/health`，`sync: false` 的变量在控制台填 | 新增（模板不带部署描述） |
 | `migrations/0001_agent_tables.sql` | D1 `agent_*` 7 张表 | 新增 |
 | `test/` | `conftest.py` + 8 个测试模块：api / graph / tools / sql / config / observability / trace / architecture | 按业务补齐；`test_architecture.py` 是新加的守卫 |
@@ -117,11 +116,11 @@ src/app/
 ```
 site-agent/
 ├── src/app/
-│   ├── main.py                  进程入口：serve()（uvicorn）+ run() 用户线单跑
+│   ├── main.py                  进程入口：serve()（uvicorn），无第二个单跑入口
 │   ├── config.py                Settings(settings) + INTENTS + FLEET_DOMAIN + SiteConfig/SITES
-│   ├── api/routes.py            FastAPI：POST /run、POST /hotwords、GET /health、POST /backfill
+│   ├── api/routes.py            FastAPI：POST /run、POST /hotwords、GET /health、GET /llm-quota
 │   ├── graph/
-│   │   ├── __init__.py          统一门面：两图（get_user_graph / get_hotword_graph）+ 两线入口（run_hotwords / run_backfill）
+│   │   ├── __init__.py          统一门面：两图（get_user_graph / get_hotword_graph）+ 热词运行入口 run_hotwords
 │   │   ├── user_graph.py        用户线装配：get_user_graph()（主图，checkpointer）
 │   │   ├── hotword_graph.py     热词循环图：get_hotword_graph()（逐词条件边回环，无 checkpointer）
 │   │   │                        + run_hotwords() 运行入口（构造 state → invoke → summarize）
@@ -136,7 +135,6 @@ site-agent/
 │   │   ├── tool_service.py      意图 → 工具集（INTENT_TOOLS / TOOL_ARGS）
 │   │   ├── evaluation_service.py 覆盖率与综合分（阈值是同文件常量）
 │   │   ├── hotword_service.py   单词分析 _analyze_one + trace 包装
-│   │   └── backfill_service.py  运维回填 backfill_states
 │   ├── tools/
 │   │   ├── base.py              契约：BaseTool / RuntimeTool / ToolOutput / stable_key
 │   │   ├── registry.py          装配：RuntimeService + TOOL_CLASSES + ToolRegistry
@@ -149,7 +147,7 @@ site-agent/
 │   │   └── adapters/
 │   │       ├── cloudflare/      client · database · kv（KV 唯一模块）· sql；`keyvalue`=WorkersKV 单例
 │   │       ├── terms/           curation（候选快照+整理写侧） · hotwords（adapters 只读门面，不 re-export 上层入口） + hotword_contract（共享叶子：候选筛选+trace 常量） + hotword_fetch（取数，@observed 切面） · hotword_criteria/llm/kv_io · gsc · reddit · scrape_serp · scrape_trend · source_errors
-│   │                            上层归位：graph/hotword_graph.py（图+运行入口）· nodes/hotword_nodes.py · services/{hotword_service,backfill_service}.py
+│   │                            上层归位：graph/hotword_graph.py（图+运行入口）· nodes/hotword_nodes.py · services/hotword_service.py
 │   │       ├── hosting/         github_repo · renderer · verification
 │   │       └── publishing/      devto · email
 │   ├── models/                  ExtractionSchema · WorkflowResult

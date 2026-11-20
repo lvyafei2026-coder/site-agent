@@ -15,7 +15,7 @@
 ├──────────────────────────────────────────────────────────────┤
 │ 节点      nodes/（intent · processing · validation · output · error · hotword_nodes）│
 ├──────────────────────────────────────────────────────────────┤
-│ 服务      services/（llm · prompt · tool · evaluation · hotword_service · backfill_service）│
+│ 服务      services/（llm · prompt · tool · evaluation · hotword_service）      │
 ├──────────────────────────────────────────────────────────────┤
 │ 工具      tools/（base 契约 · 6 个域 · registry 装配 · adapters）│
 ├──────────────────────────────────────────────────────────────┤
@@ -29,7 +29,7 @@
 | `api` / `main` | 收请求、构造入口 state、常驻拉起双线、返回结果 | graph |
 | `graph` | 图组装、状态契约、路由条件、运行入口 | nodes、memory（后台图只依赖 nodes） |
 | `nodes` | 单个步骤的逻辑，读 state 写 state | services、models |
-| `services` | 跨节点复用的能力（LLM、prompt、工具分发、评分、单词分析、回填） | tools、prompts、llm、observability |
+| `services` | 跨节点复用的能力（LLM、prompt、工具分发、评分、单词分析） | tools、prompts、llm、observability |
 | `tools` | 25 个工具的定义与实现、外部 IO 适配器 | adapters（+ 包内 base） |
 | `adapters` | 真实外部系统（D1 / KV / GitHub / radar / GSC / Reddit / Dev.to / Resend） | 标准库、requests、config |
 | `memory` `llm` `prompts` `observability` `utils` | 基础设施 | config |

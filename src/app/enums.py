@@ -158,15 +158,6 @@ class AnalysisPhase(StrEnum):
     ANALYSIS = "analysis"  # LLM 分析（默认）
 
 
-class BackfillAction(StrEnum):
-    """状态回填（backfill_states）每条报告项的处置动作。"""
-
-    UNRESOLVED = "unresolved"  # 正文为空 / 解析不出结论，需先删 ai:v3: 才能重跑
-    PREVIEW = "preview"        # dry-run 预览，不写库
-    REPAIRED = "repaired"      # 真正补写了状态或标签
-    SKIPPED = "skipped"        # 无需补写（已整理或回填期间刚被整理）
-
-
 class SearchTimeframe(StrEnum):
     """Reddit 搜索时间窗（外部 API 参数，单一合法值）。"""
 

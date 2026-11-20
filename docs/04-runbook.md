@@ -60,7 +60,6 @@ curl -s -X POST localhost:10000/run \
 | `AGENT_STATE_DIR` | 否 | 本地仓库副本根目录，默认 `data/`；生产 `/data` |
 | `CF_ACCOUNT_ID` / `CF_API_TOKEN` / `D1_DATABASE_ID` | 是 | D1 读写 |
 | `KV_NAMESPACE_ID` | 是 | Workers KV（★热词分析必须）：与 radar / console 共用同一个 RADAR_KV 命名空间，键与 console/radar 对齐（`ai:v3:` / `serp:v1:` / `trend:v1:` / `saved` / `rejected` 等），agent 经 Cloudflare KV REST API 直读直写，不调它们的 App 接口 |
-| `BACKFILL_TOKEN` | 否 | `POST /backfill` 的请求头 `X-Backfill-Token`；不配则与 `/run` 一样无鉴权（上线必须配） |
 | `GITHUB_TOKEN` / `GH_ORG` | 是 | 仓库 clone / push / check run |
 | `GSC_SA_JSON` / `GSC_PROPERTY` | 否 | 有则读 GSC，无则返回空列表 |
 | `DEVTO_API_KEY` | 否 | 无则发布工具返回 `blocked` |
@@ -243,15 +242,14 @@ checkpointer 的表由 `langgraph-checkpoint-sqlite` 自动创建，不要手工
 | 构建 | `pip install -e .` |
 | 启动 | `python -m src.app.main`（常驻 uvicorn，两个业务入口按需触发，无后台线程） |
 | 健康检查 | `/health` |
-| 关键 env | `MEMORY_BACKEND=memory`、`FLEET_DOMAIN`、`GH_ORG`、`BACKFILL_TOKEN`（线上必配） |
+| 关键 env | `MEMORY_BACKEND=memory`、`FLEET_DOMAIN`、`GH_ORG` |
 
 要 checkpoint 持久化时升级：`plan: starter` + Disk（1GB 挂 `/data`），
 env 改 `MEMORY_BACKEND=sqlite`、`DATABASE_URL=sqlite:////data/agent.sqlite`、
 `AGENT_STATE_DIR=/data`（约 $7/月）。
 
 `sync: false` 的变量（Cloudflare / GitHub / LLM / radar 凭据）在 Render 控制台填。
-`langgraph.json` 指向 `src.app.main:run`，供 LangGraph CLI 使用；线上托管以
-Render 的 FastAPI 为准。
+托管以 Render 的 FastAPI 为准，进程里只有 HTTP 入口。
 
 ## 5. 验证清单
 
@@ -278,36 +276,26 @@ Render 的 FastAPI 为准。
 | `duckduckgo 不可用：连不上 DuckDuckGo（N 发全部连接失败）` | **网络层**：当前部署出口 IP 到 DDG 不通，与请求头 / 202 挑战页无关。本机直连与另一云端出口实测均 200 + 10 条真结果，Render singapore 出口 4 发全 ConnectTimeout | 默认已自动经公共 Reader 中转换出口（`SERP_FALLBACK_READER=1`，取回原始 DDG HTML，口径一致）；仍失败再配 `SERP_HTTPS_PROXY` 自备代理，或把 `region` 换区重建。★11-13 起源级故障**不再中止整批**：本批跳过 SERP、LLM 照常出结论并回写状态，`items[].notice` 会标「SERP 未取到」（缺辨形线索），返回里 `serpDisabled=true`。4 发已轮换 4 个不同域名 / IP，仍全挂就别再调请求头了 |
 | `duckduckgo 不可用：连续 N 发未返回可用结果` | **HTTP 层**：202 anomaly 挑战页。显式设置 `Accept` / `Accept-Language` / `Referer` 任意一个都会触发 | `BASE_HEADERS` 必须只有 `User-Agent`；`test_fetch_serp_uses_only_user_agent` 是防回归测试，别把「更像浏览器」的头加回来 |
 
-### 6.1 热词逐词写入与状态回填（2026-11-19）
+### 6.1 热词逐词写入（2026-11-19）
 
 - 热词由独立循环图（`nodes/hotword_nodes.py`）**每轮问 tool 要一个词、取到就分析、再问还有没有**，串行推进（原 4 worker 并发已于
   2026-11-19 改为 StateGraph 条件边回环）。`saved` / `rejected` / `aihints` / `competition` /
   `interests` 这 5 张**整表**的「读 → 改 → 写 → 校验返回值」统一走
   `adapters/cloudflare/kv.py:atomic_update()` 的一把进程级 `threading.RLock`，不会互相覆盖。
   ★只保证单进程：Cloudflare KV 无 CAS 且最终一致，多实例 / console 人工同时写仍可能
-  丢更新，靠下面的 error + 回填兜底。
+  丢更新，靠下面的 error 标记 + 人工排查兜底。
 - 每次 `put_text` / `put_json` 都检查返回值，失败写进 `items[].error` + `writeErrors`，
   该词**不算 analyzed**。正文写失败时直接收手，绝不写状态（不制造「有状态、没正文」）。
-- 正文已落库但状态整表没写上的词，`select_pending` 会因「已有正文」永久剔除它。
-  用 `POST /backfill` 从正文第 7/8 节反推结论补写（不调 LLM、不重抓数据）：
-
-  ```bash
-  # 1) 先看报告（默认 dry_run=true，不写库）
-  curl -X POST https://<host>/backfill -H 'Content-Type: application/json' -d '{}'
-  # 2) 确认后真正补写
-  curl -X POST https://<host>/backfill \
-       -H 'Content-Type: application/json' -H "X-Backfill-Token: $BACKFILL_TOKEN" \
-       -d '{"dry_run": false, "limit": 200}'
-  ```
-
-  结论「观望」按设计不写状态；正文为空 / 结论解析不出的词列在 `items`（`action=unresolved`），
-  要重跑得先删掉对应的 `ai:v3:` 键。也可直接在 Python 里调
-  `hotwords.backfill_states(kv=..., dry_run=False)`。
+- 正文已落库但状态整表没写上的词，`select_pending` 会因「已有正文」永久剔除它——
+  既不重跑、前端也看不到状态。这是 KV 写失败的低概率残留，**没有自动修复**：
+  处理方式是从正文第 7/8 节反推结论后手工补写，或先删掉该词的 `ai:v3:` 键让它重跑。
+  （原 `POST /backfill` 端点因为没有任何调用方，已于 2026-11-20 删除；需要时从 git 历史
+  `git show 9b88289:src/app/services/backfill_service.py` 取回实现改成一次性脚本。）
 
 ## 7. 安全
 
-1. **`/run` 与 `/backfill` 无鉴权**：正式环境必须放在网关鉴权或内网之后，不要裸奔公网；
-   `/backfill` 额外支持 `BACKFILL_TOKEN` + `X-Backfill-Token` 校验（默认 `dry_run=true` 只出报告）。
+1. **`/run` · `/hotwords` · `/llm-quota` 无鉴权**：正式环境必须放在网关鉴权或内网之后，
+   不要裸奔公网（console 侧已过 Basic Auth 再转发，直连 agent 没有这层）。
 2. **写工具不可逆**：`git_push` / `publish_devto_article` 只能由请求 `tools` 显式触发，
    调用方自己承担后果；不要把 `tools` 的来源接到不可信输入上。
 3. **凭据最小化**：`GITHUB_TOKEN` 只给内容读写，`CF_API_TOKEN` 只给 D1 / KV 所需权限。

@@ -8,23 +8,16 @@
 线 2｜热词分析  run_hotwords()    ← hotword_graph.py（循环图 + 运行入口，POST /hotwords）
 
 两条线互不嵌套、各有独立 API，由前端按需触发；进程内没有后台线程或定时循环。
-运维入口 run_backfill() 委托 services 层的状态回填（本包只做转发，不承载业务逻辑）。
-入口层不再穿透到 tools / adapters：取图、驱动热词图、回填都从本包走。
+入口层不再穿透到 tools / adapters：取图、驱动热词图都从本包走。
 """
 
 from src.app.graph.hotword_graph import (  # noqa: F401
     build_hotword_graph, get_hotword_graph, run_hotwords,
 )
 from src.app.graph.user_graph import build_user_graph, get_user_graph  # noqa: F401
-from src.app.services.backfill_service import backfill_states
 
 __all__ = [
     "get_user_graph", "build_user_graph",
     "get_hotword_graph", "build_hotword_graph",
-    "run_hotwords", "run_backfill",
+    "run_hotwords",
 ]
-
-
-def run_backfill(*, limit: int = 200, dry_run: bool = False) -> dict:
-    """运维回填的编排入口：转发给 services 层的 backfill_states。"""
-    return backfill_states(limit=limit, dry_run=dry_run)

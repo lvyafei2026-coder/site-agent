@@ -150,9 +150,6 @@ CF_API_TOKEN = env("CF_API_TOKEN", "")
 # site-agent 经 CF REST API 读 prompts / prompt_defaults；可用 PROMPTS_DB_ID 覆盖。
 PROMPTS_DB_ID = env("PROMPTS_DB_ID", "dca72fb2-9090-429c-9698-d2086e6b49c8")
 CONTACT_EMAIL = env("CONTACT_EMAIL", f"hello@{FLEET_DOMAIN}")
-# /backfill 状态回填入口的令牌：配了才校验 X-Backfill-Token；留空与 /run 一样裸奔，
-# 上线前必须填（或用网关鉴权把 /run 与 /backfill 一起挡在后面）。
-BACKFILL_TOKEN = env("BACKFILL_TOKEN", "")
 
 # 建站仓库的本地工作副本（git clone 落盘位置）
 REPO_DIR = Path(env("AGENT_STATE_DIR", str(PROJECT_ROOT / "data"))) / "repos"

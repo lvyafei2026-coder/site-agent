@@ -6,7 +6,6 @@
 
 2026-11-20 分层归位后，本门面**只向下聚合 adapters/terms 叶子层符号**：
     - 热词图 run_hotwords → graph/hotword_graph.py
-    - 回填 backfill_states → services/backfill_service.py
     - 单词编排 _analyze_one / _DegradeState → services/hotword_service.py
 这些上层入口不再从本门面 re-export（那会让 adapters 反向依赖 graph/services）。
 调用方与测试按新路径引用即可。

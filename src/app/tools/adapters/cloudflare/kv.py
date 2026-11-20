@@ -53,7 +53,7 @@ SHARED_TABLE_KEYS: tuple[str, ...] = (
 #   用 RLock 而非 Lock：mutator 里若再调一次 atomic_update（回填等场景）不会自锁死。
 # ★边界：这把锁只保证**本进程内** 4 个 batch worker 不互相覆盖。Cloudflare KV 无 CAS、
 #   最终一致，跨进程（Render 多实例）/ console 人工同时写仍可能 lost update；
-#   后者靠「写失败记 error + backfill_states 状态回填」兜底，别把锁当成分布式事务。
+#   后者靠「写失败记进 items[].error + 人工排查」兜底，别把锁当成分布式事务。
 _TABLE_LOCK = threading.RLock()
 
 _WS = re.compile(r"\s+")

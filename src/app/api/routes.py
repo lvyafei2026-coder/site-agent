@@ -7,7 +7,6 @@
     POST /run        用户线主图（意图分类 → 取数 → 校验 → 输出）
     POST /hotwords   热词分析独立入口（逐词循环图，前端按需触发）
     GET  /health     状态与进程内计数
-    POST /backfill   补写「正文已落库、状态表丢了」的热词（运维）
     GET  /llm-quota  DeepSeek 余额与用量
 
 热词分析原本混在 /run 里靠 `intent=analyze_hotwords` 分流，现拆成独立入口：
@@ -18,13 +17,12 @@ graph 的运行结果，不再伪造主图的 state 结构。分层上入口只�
 from __future__ import annotations
 
 import time
-from typing import Optional
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI
 from pydantic import BaseModel
 
-from src.app.config import BACKFILL_TOKEN, settings
-from src.app.graph import get_user_graph, run_backfill, run_hotwords
+from src.app.config import settings
+from src.app.graph import get_user_graph, run_hotwords
 from src.app.graph.state import initial_state
 from src.app.llm.quota import check_quota
 from src.app.observability.langsmith import public_config as langsmith_config
@@ -104,25 +102,3 @@ def llm_quota() -> dict:
     未配时 usage.ok=False 并给出提示，余额照常返回。只在页面手动点击时触发。
     """
     return check_quota()
-
-
-class BackfillRequest(BaseModel):
-    dry_run: bool = True      # 默认只出报告；显式传 false 才真正写 KV
-    limit: int = 200
-
-
-@api.post("/backfill")
-def backfill(req: BackfillRequest,
-             x_backfill_token: Optional[str] = Header(default=None)) -> dict:
-    """状态回填：扫描 ai:v3: 正文，补写丢失的 saved / rejected / aihints。
-
-    典型用法：
-      curl -X POST .../backfill -H 'Content-Type: application/json' -d '{}'
-        → dry run，看哪些词会被补、哪些 unresolved
-      curl -X POST .../backfill -H 'X-Backfill-Token: <token>' \
-           -d '{"dry_run": false, "limit": 200}'
-        → 真正补写。BACKFILL_TOKEN 配了才校验请求头；线上必须配。
-    """
-    if BACKFILL_TOKEN and x_backfill_token != BACKFILL_TOKEN:
-        raise HTTPException(status_code=401, detail="invalid backfill token")
-    return run_backfill(dry_run=req.dry_run, limit=req.limit)

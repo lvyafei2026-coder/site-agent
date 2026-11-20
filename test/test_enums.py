@@ -13,7 +13,7 @@ import pytest
 
 from src.app import enums
 from src.app.enums import (
-    AnalysisPhase, BackfillAction, BacklinkChannel, BacklinkStatus,
+    AnalysisPhase, BacklinkChannel, BacklinkStatus,
     CandidateStatus, CurationStatus, DevtoStatus, EventKind, EventStatus,
     GraphNode, HintName, Intent, LedgerStrategy, LlmThinking, MemoryBackend,
     PageQueryMode, PageStatus, PlanStatus, PromptTask, RejectSource,
@@ -24,7 +24,7 @@ from src.app.enums import (
 ALL_ENUMS = [
     Intent, WorkflowStatus, GraphNode, RouteTag, ToolKind, LlmThinking,
     MemoryBackend, CandidateStatus, CurationStatus, RejectSource, HintName,
-    Verdict, AnalysisPhase, BackfillAction, SearchTimeframe, EventStatus,
+    Verdict, AnalysisPhase, SearchTimeframe, EventStatus,
     EventKind, ReportKind, PlanStatus, PageStatus, BacklinkStatus,
     BacklinkChannel, PageQueryMode, LedgerStrategy, TrackEvent, SerpVerdict,
     DevtoStatus, SerpEngine, PromptTask,

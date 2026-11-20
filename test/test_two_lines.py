@@ -28,9 +28,10 @@ def test_graph_package_exposes_two_distinct_graphs():
     assert graph.get_hotword_graph is hotword_graph.get_hotword_graph
 
 
-def test_entry_depends_only_on_graph():
-    """入口只从 graph 取用户线图，不穿透 services / tools / adapters。"""
-    assert app_main.get_user_graph is graph.get_user_graph
+def test_entry_has_single_run_path():
+    """用户线只走 `POST /run`：main 不再自带「单跑一轮」的第二个入口。"""
+    assert not hasattr(app_main, "run")      # langgraph.json 的 CLI 入口已删
+    assert callable(app_main.serve)
 
 
 def test_no_background_thread():

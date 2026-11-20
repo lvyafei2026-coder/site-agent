@@ -8,7 +8,6 @@
     graph/hotword_graph.py     循环图装配 + 运行入口 run_hotwords（取一词→分析→再问还有吗）。
     nodes/hotword_nodes.py     循环节点：state / fetch_one / analyze_one / route / summarize。
     services/hotword_service.py   单词分析编排 _analyze_one（失败隔离到单词）。
-    services/backfill_service.py  状态回填 backfill_states。
 
 数据通道与业务读写（都落在共享 KV 上；KV 操作实现统一在 ../cloudflare/kv.py）：
     curation.py          词库整理域：候选池只读快照（candidates / meta / interests）

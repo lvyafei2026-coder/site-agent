@@ -41,7 +41,8 @@ pytest -q                              # 全量单测（含 test_hotwords.py）
 `python -m src.app.main` 直接进 `serve()`：只起 uvicorn，两个业务线各是一个 HTTP
 入口——`POST /run`（用户线主图）与 `POST /hotwords`（热词逐词循环图）。**没有后台
 线程、没有定时任务**：热词分析由前端按需触发，跑完即返回（一轮 1-2 分钟）。
-单跑调试直接调函数（`from src.app.main import run`；热词走 `graph.run_hotwords()`）。
+本地想看一轮结果直接 `curl -X POST localhost:10000/run`（热词同理 `POST /hotwords`）——
+进程里只有 HTTP 入口，没有第二个「单跑一轮」的函数。
 
 ```bash
 curl -s -X POST localhost:10000/run -H 'Content-Type: application/json' \
@@ -67,7 +68,7 @@ curl -s -X POST localhost:10000/hotwords -H 'Content-Type: application/json' \
 → 外部 LLM 出 8 小节站点方案 → 直写 KV（`ai:v3:` 正文 / `aihints` 信号 / `rejected`
 不做 / `saved` 待开发）。实现按层归位：`graph/hotword_graph.py`（图装配 + 运行入口）→
 `nodes/hotword_nodes.py`（每轮问 tool 取一词 → 分析 → 再问还有吗）→
-`services/hotword_service.py`（单词分析）/ `services/backfill_service.py`（回填）
+`services/hotword_service.py`（单词分析）
 → `tools/adapters/terms/`（取数、判据、LLM、写账本叶子）。统一入口是 `src.app.graph` 包。
 
 热词循环就是一张固定流程的图：`START → fetch_one（问 tool 要一个词）→ analyze_one →
@@ -80,11 +81,11 @@ should_continue ─┬→ fetch_one（还有词）└→ END（没有 / 达上�
 src/app/
 ├── enums.py                 ★枚举唯一真源：29 个 StrEnum 族（意图/状态/类型/kind…），逐值注释含义
 ├── main.py / config.py      进程入口（uvicorn）/ Settings 单例 + 站群清单 + 意图兼容别名
-├── api/routes.py            FastAPI /run /hotwords /health /backfill
+├── api/routes.py            FastAPI /run /hotwords /health /llm-quota
 ├── graph/                   user_graph（用户线）· hotword_graph（热词循环图 + 运行入口）
 │                            · state · constants(Names/Tags) · edges
 ├── nodes/                   intent · processing · validation · output · error · hotword_nodes（逐词）
-├── services/                llm · prompt · tool · evaluation · hotword_service · backfill_service
+├── services/                llm · prompt · tool · evaluation · hotword_service
 ├── tools/
 │   ├── base.py              契约（BaseTool / RuntimeTool / ToolOutput）
 │   ├── registry.py          门面装配（RuntimeService）+ 25 个工具注册

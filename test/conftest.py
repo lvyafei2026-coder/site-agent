@@ -237,10 +237,9 @@ def fake_kv(monkeypatch):
     from src.app.tools.adapters.cloudflare import kv as kvmod
     from src.app.tools.adapters.terms import curation
     from src.app.graph import hotword_graph
-    from src.app.services import backfill_service
 
     fake = FakeKV()
-    for mod in (kvmod, curation, hotword_graph, backfill_service):
+    for mod in (kvmod, curation, hotword_graph):
         monkeypatch.setattr(mod, "get_kv", lambda: fake)
     return fake
 
