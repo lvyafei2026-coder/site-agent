@@ -278,7 +278,10 @@ def observed(name, *, kind: str = "chain", inputs=None, outputs=None,
 
             from langsmith import trace as ls_trace
 
-            span_name = name_bind(*args, **kwargs) if name_bind else name
+            if name_bind:
+                span_name = name_bind(*args, **kwargs) or getattr(name, "__name__", "span")
+            else:
+                span_name = name
             in_data = inputs_bind(*args, **kwargs) if inputs_bind else {}
             notes: dict[str, Any] = {}
             token = _span_notes.set(notes)
