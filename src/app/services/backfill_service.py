@@ -10,7 +10,7 @@
 同一套 upsert_* / set_hint_override 口径补写状态。
 
 触发场景：正文写成功、但 5 张整表里某次 put_json 失败（或历史上并发 lost update），
-于是 `_select_pending` 因「已有正文」永久剔除该词，saved/rejected 里却查不到它——
+于是 `select_pending` 因「已有正文」永久剔除该词，saved/rejected 里却查不到它——
 既不会重跑、前端也看不见。
 """
 
@@ -51,7 +51,7 @@ def backfill_states(*, limit: int = 200, dry_run: bool = False) -> dict[str, Any
 
     dry_run=True 只出报告不写，建议先跑一次核对。结论「观望」按设计不写状态（只补标签）；
     正文为空 / 结论解析不出且状态缺失的词会列进 items（action=unresolved）——要重跑它们
-    得先删掉对应的 `ai:v3:` 正文，因为 _select_pending 只认正文存在与否。
+    得先删掉对应的 `ai:v3:` 正文，因为 select_pending 只认正文存在与否。
     """
     kv = get_kv()
     limit = max(1, min(int(limit or 200), 1000))

@@ -16,7 +16,7 @@
   - 工具级：`tool:<名字>`（本文件 `trace_tool`，run_type=tool）记 26 个 RuntimeTool
     的入参/返回/错误；热词批次内部另有 `tool:serp` / `tool:trend` / `tool:kv.write`
     等 IO span，把 SERP、Trends、KV 读写这些原本看不见的调用也挂到对应词下
-  - 批次/逐词级：`run_traced`（本文件）给 run_batch 与每个热词各建一条 span
+  - 整轮/逐词级：`run_traced`（本文件）给 run_hotwords 与每个热词各建一条 span
   - LLM 级：`llm/provider.py` 用 `wrap_openai` 包过的客户端，请求体与返回值都在
 
 ★为什么要 `run_traced` 的显式 parent：ThreadPoolExecutor 的 worker 线程**不继承

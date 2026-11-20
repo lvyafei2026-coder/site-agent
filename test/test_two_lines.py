@@ -14,7 +14,8 @@ import threading
 
 from src.app import main as app_main
 from src.app import graph
-from src.app.graph import hotword_batch, hotword_graph, user_graph
+from src.app import graph
+from src.app.graph import hotword_graph, user_graph
 
 
 def test_graph_package_exposes_two_distinct_graphs():
@@ -32,13 +33,14 @@ def test_graph_package_exposes_two_distinct_graphs():
 def test_entry_depends_only_on_graph():
     """入口只从 graph 取两条线的驱动，不穿透 services / tools / adapters。"""
     assert app_main.get_user_graph is graph.get_user_graph
-    assert app_main.run_batch is graph.run_batch
+    assert app_main.run_hotwords is graph.run_hotwords
 
 
-def test_background_batch_uses_graph_graph_without_shim():
-    """批次驱动顶层静态取 graph 的循环图：无惰性边界、无 shim、无函数内 import。"""
-    assert not hasattr(hotword_batch, "_hotword_graph")   # 惰性取图边界已删
-    assert hotword_batch.get_hotword_graph is hotword_graph.get_hotword_graph
+def test_hotword_graph_owns_run_without_shim():
+    """运行入口与图装配同处 hotword_graph：无 batch 中间层、无惰性取图、无函数内 import。"""
+    assert not hasattr(hotword_graph, "_hotword_graph")   # 惰性取图边界已删
+    assert callable(hotword_graph.run_hotwords)
+    assert hotword_graph.get_hotword_graph is graph.get_hotword_graph
 
 
 def test_serve_starts_both_lines(monkeypatch):

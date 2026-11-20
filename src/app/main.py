@@ -9,8 +9,9 @@
     主线程 uvicorn 承载 api/routes.py；run() 亦作 LangGraph 图入口（langgraph.json）。
 
 线 2｜后台自动运行（后台线）  run_background() / _background_loop()
-    run_batch()（graph/hotword_batch.py 批次驱动）：invoke graph/hotword_graph.py 的循环图
-    fetch_one → analyze_one → should_continue 回环。守护线程按 BACKGROUND_INTERVAL_SEC 周期驱动。
+    run_hotwords()（graph/hotword_graph.py）：invoke 同一张循环图
+    fetch_one（每轮问 tool 要一个词）→ analyze_one → should_continue 回环。守护线程按
+    BACKGROUND_INTERVAL_SEC 周期驱动。
 
 serve() 同时拉起两条线；单跑调试直接调用 run() / run_background()。两图并列、互不嵌套。
 入口只从 graph 包取图与驱动批次——不穿透到 services / tools / adapters。
@@ -26,7 +27,7 @@ import uvicorn
 
 from src.app.api.routes import api
 from src.app.config import settings
-from src.app.graph import get_user_graph, run_batch
+from src.app.graph import get_user_graph, run_hotwords
 from src.app.graph.state import initial_state
 from src.app.observability.metrics import metrics
 from src.app.observability.trace import run_traced
@@ -60,11 +61,11 @@ def run() -> dict:
 
 # ══ 线 2：后台自动运行 ═══════════════════════════════════════════════
 def run_background() -> dict:
-    """后台线：跑一批热词分析，逐词处理候选池里未跟进的热词。
+    """后台线：跑一轮热词分析，逐词处理候选池里未跟进的热词。
 
-    直接调 graph 的批次驱动 run_batch（invoke 后台循环图）；返回结构与 analyze_hotwords 一致。
+    直接调 graph 的运行入口 run_hotwords（invoke 循环图）；返回结构与 analyze_hotwords 一致。
     """
-    out = run_batch()
+    out = run_hotwords()
     logger.info("background_complete",
                 extra={"analyzed": out.get("analyzed"), "failed": out.get("failed"),
                        "ok": out.get("ok"), "metrics": metrics.snapshot()})

@@ -122,10 +122,10 @@ site-agent/
 │   ├── config.py                Settings(settings) + INTENTS + FLEET_DOMAIN + SiteConfig/SITES
 │   ├── api/routes.py            FastAPI：POST /run、GET /health、POST /backfill
 │   ├── graph/
-│   │   ├── __init__.py          统一门面：两图（get_user_graph / get_hotword_graph）+ 两线入口（run_batch / run_backfill）
+│   │   ├── __init__.py          统一门面：两图（get_user_graph / get_hotword_graph）+ 两线入口（run_hotwords / run_backfill）
 │   │   ├── user_graph.py        用户线装配：get_user_graph()（主图，checkpointer）
-│   │   ├── hotword_graph.py     后台线装配：get_hotword_graph()（逐词条件边回环，无 checkpointer）
-│   │   ├── hotword_batch.py     批次驱动：构造 state → invoke 后台图 → summarize
+│   │   ├── hotword_graph.py     热词循环图：get_hotword_graph()（逐词条件边回环，无 checkpointer）
+│   │   │                        + run_hotwords() 运行入口（构造 state → invoke → summarize）
 │   │   ├── state.py             WorkflowState（输入 / 中间 / 输出三组）+ initial_state()
 │   │   ├── constants.py         Names（节点名）+ Tags（路由标签）
 │   │   └── edges.py             route_after_validation + EDGE_MAP
@@ -150,7 +150,7 @@ site-agent/
 │   │   └── adapters/
 │   │       ├── cloudflare/      client · database · kv（KV 唯一模块）· sql；`keyvalue`=WorkersKV 单例
 │   │       ├── terms/           curation（候选快照+整理写侧） · hotwords（adapters 只读门面，不 re-export 上层入口） + hotword_contract（共享叶子：候选筛选+trace 常量） + hotword_fetch · hotword_criteria/llm/kv_io · gsc · reddit · scrape_serp · scrape_trend · source_errors
-│   │                            上层归位：graph/{hotword_batch,hotword_graph}.py · nodes/hotword_nodes.py · services/{hotword_service,backfill_service}.py
+│   │                            上层归位：graph/hotword_graph.py（图+运行入口）· nodes/hotword_nodes.py · services/{hotword_service,backfill_service}.py
 │   │       ├── hosting/         github_repo · renderer · verification
 │   │       └── publishing/      devto · email
 │   ├── models/                  ExtractionSchema · WorkflowResult
@@ -197,7 +197,7 @@ flowchart LR
 1. `tools/base.py` 是纯叶子：只依赖标准库与 pydantic，不 import 任何 `src.app.*`。
 2. 没有函数内 `import` 解环：顺序由模块层级保证（`registry → *_tools → base`）。
    入口与编排同理——两张图在 `graph/` 下对称命名（`user_graph` / `hotword_graph`），
-   节点在 `nodes/hotword_nodes.py`，批次驱动 `graph/hotword_batch.py` 顶层静态取图；
+   节点在 `nodes/hotword_nodes.py`，运行入口 `graph/hotword_graph.py` 顶层静态取图；
    统一门面 `graph/__init__.py`，`main.py` / `api/routes.py` 只从 graph 取能力。
 3. 全仓禁止函数内 `import src.app.*`：包内依赖一律顶层声明；`adapters/` 里第三方
    可选依赖（`google-api-python-client` / `langsmith` / `openai`）的按需加载不在此列。

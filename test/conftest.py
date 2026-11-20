@@ -34,7 +34,7 @@ class FakeRuntime:
     #（2026-11-12 去接口化：改由 agent 直读共享 KV，见 ../cloudflare/kv.py）。但 FakeRuntime 作为
     # RuntimeService 的测试替身，仍需提供 hotwords 数据桩——get_hotwords 工具经 tool_registry
     # 走到 self.ops.hotwords。真正的 KV 读写由 test/test_kv_terms.py + test_hotwords.py
-    # 经 fake_kv 夹具覆盖。analyze_hotwords 现由 run_batch 直接测，这里不另立桩。
+    # 经 fake_kv 夹具覆盖。analyze_hotwords 现由 run_hotwords 直接测，这里不另立桩。
 
     def hotwords(self, status="doing", limit=40):
         self.counts["hotwords"] += 1
@@ -236,11 +236,11 @@ def fake_kv(monkeypatch):
     """内存 KV 替身：生产函数一律自己取 get_kv()，测试只替换取数点。"""
     from src.app.tools.adapters.cloudflare import kv as kvmod
     from src.app.tools.adapters.terms import curation
-    from src.app.graph import hotword_batch
+    from src.app.graph import hotword_graph
     from src.app.services import backfill_service
 
     fake = FakeKV()
-    for mod in (kvmod, curation, hotword_batch, backfill_service):
+    for mod in (kvmod, curation, hotword_graph, backfill_service):
         monkeypatch.setattr(mod, "get_kv", lambda: fake)
     return fake
 

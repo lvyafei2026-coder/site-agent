@@ -3,9 +3,9 @@
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
 """热词分析：提示词拼装、结论/红线/标签判据、作品硬证据、意图→工具映射，以及
-run_batch 经共享 KV 的端到端写回（不碰 console / radar / OpenAI / DDG / Google）。
+run_hotwords 经共享 KV 的端到端写回（不碰 console / radar / OpenAI / DDG / Google）。
 
-2026-11-12 去接口化后，run_batch 直接读写共享 KV（见 ../cloudflare/kv.py）。这里用
+2026-11-12 去接口化后，run_hotwords 直接读写共享 KV（见 ../cloudflare/kv.py）。这里用
 内存 FakeKV + monkeypatch 外部抓取/LLM，离线验证「候选 → 分析 → 回写状态」全链路。
 """
 
@@ -14,7 +14,7 @@ import pytest
 from src.app.enums import Intent
 from src.app.tools.adapters.terms import hotwords as hw
 from src.app.tools.adapters.terms import hotword_llm
-from src.app.graph import hotword_batch
+from src.app.graph import hotword_graph
 from src.app.services.hotword_service import _analyze_one
 from src.app.services.backfill_service import backfill_states
 from src.app.services.tool_service import INTENT_TOOLS
@@ -151,7 +151,7 @@ def test_analyze_hotwords_is_a_line_not_a_tool():
     """热词分析是编排（后台/用户线都走 graph 批次驱动），不是工具链里的一员。
 
     2026-11-20 分层归位：analyze_hotwords 从 tools 移除，用户线在 api 入口分流、
-    后台线由 main 驱动，二者都调 graph 的 run_batch。工具层只剩纯 IO 工具。
+    后台线由 main 驱动，二者都调 graph 的 run_hotwords。工具层只剩纯 IO 工具。
     """
     assert "analyze_hotwords" not in tool_registry.names()
     assert "analyze_hotwords" not in INTENT_TOOLS
@@ -159,7 +159,7 @@ def test_analyze_hotwords_is_a_line_not_a_tool():
 
 
 # ---------------------------------------------------------------------------
-# run_batch 经共享 KV 的端到端写回（离线：外部抓取 + LLM 全部 monkeypatch）
+# run_hotwords 经共享 KV 的端到端写回（离线：外部抓取 + LLM 全部 monkeypatch）
 # ---------------------------------------------------------------------------
 def _seed_candidates(fake_kv):
     fake_kv.put_json("candidates", [
@@ -194,11 +194,11 @@ def _patch_external(monkeypatch):
     monkeypatch.setattr(hotword_llm, "_llm", fake_llm)
 
 
-def test_run_batch_writes_kv(fake_kv, monkeypatch):
+def test_run_hotwords_writes_kv(fake_kv, monkeypatch):
     _seed_candidates(fake_kv)
     _patch_external(monkeypatch)
 
-    out = hotword_batch.run_batch(limit=20)
+    out = hotword_graph.run_hotwords(limit=20)
     assert out["ok"] is True
     assert out["fetched"] == 2 and out["analyzed"] == 2
     assert out["counts"].get("做") == 1 and out["counts"].get("不做") == 1
@@ -218,7 +218,7 @@ def test_run_batch_writes_kv(fake_kv, monkeypatch):
     assert fake_kv.get_json("interests")
 
 
-def test_run_batch_serp_source_down_only_skips_serp(fake_kv, monkeypatch):
+def test_run_hotwords_serp_source_down_only_skips_serp(fake_kv, monkeypatch):
     """★2026-11-13：SERP 源挂不再中止整批，只让这批词跳过 SERP 照常出结论。
 
     仍要避免 12 个词各撞一遍 4 发超时（第一批并发发现后就置 serp_off）。
@@ -239,7 +239,7 @@ def test_run_batch_serp_source_down_only_skips_serp(fake_kv, monkeypatch):
     monkeypatch.setattr(hw.scrape_serp, "fetch_serp", boom)
     monkeypatch.setattr(hotword_llm, "_llm", lambda m: ("7) 结论：观望", "fake"))
 
-    out = hotword_batch.run_batch(limit=20)
+    out = hotword_graph.run_hotwords(limit=20)
 
     assert not out.get("aborted")            # 没有「整批中止」这回事了
     assert out["serpDisabled"] is True
@@ -250,7 +250,7 @@ def test_run_batch_serp_source_down_only_skips_serp(fake_kv, monkeypatch):
     assert len(fake_kv.list_keys(hw.AI_CACHE_PREFIX)) == 12
 
 
-def test_run_batch_skips_serp_but_still_writes_states(fake_kv, monkeypatch):
+def test_run_hotwords_skips_serp_but_still_writes_states(fake_kv, monkeypatch):
     """SERP 降级只影响取数，不影响 LLM 结论与 saved/rejected 状态回写。"""
     monkeypatch.setattr(hw, "SERP_GAP_SEC", 0)
     fake_kv.put_json("candidates", [{"term": f"term {i}"} for i in range(5)])
@@ -267,7 +267,7 @@ def test_run_batch_skips_serp_but_still_writes_states(fake_kv, monkeypatch):
     monkeypatch.setattr(hw.scrape_serp, "fetch_serp", boom)
     monkeypatch.setattr(hotword_llm, "_llm", lambda m: ("7) 结论：做，工具站\n8) 信号标签：工具查询", "fake"))
 
-    out = hotword_batch.run_batch(limit=20)
+    out = hotword_graph.run_hotwords(limit=20)
 
     assert not out.get("aborted")
     assert out["analyzed"] == 5
@@ -276,7 +276,7 @@ def test_run_batch_skips_serp_but_still_writes_states(fake_kv, monkeypatch):
     assert all(r["status"] == "todo" for r in out["items"])
 
 
-def test_run_batch_keeps_going_when_trends_down(fake_kv, monkeypatch):
+def test_run_hotwords_keeps_going_when_trends_down(fake_kv, monkeypatch):
     """趋势只是辅助证据：源不可用时本批禁用，但分析继续（不能因它整批白跑）。"""
     monkeypatch.setattr(hw, "SERP_GAP_SEC", 0)
     fake_kv.put_json("candidates", [{"term": f"term {i}"} for i in range(5)])
@@ -293,7 +293,7 @@ def test_run_batch_keeps_going_when_trends_down(fake_kv, monkeypatch):
     monkeypatch.setattr(hw.scrape_trend, "fetch_interest", trends_down)
     monkeypatch.setattr(hotword_llm, "_llm", lambda m: ("7) 结论：观望", "fake"))
 
-    out = hotword_batch.run_batch(limit=20)
+    out = hotword_graph.run_hotwords(limit=20)
 
     assert not out.get("aborted")
     assert out["fetched"] == 5
@@ -303,7 +303,7 @@ def test_run_batch_keeps_going_when_trends_down(fake_kv, monkeypatch):
     assert len(fake_kv.list_keys(hw.AI_CACHE_PREFIX)) == 5
 
 
-def test_run_batch_llm_failures_are_word_local(fake_kv, monkeypatch):
+def test_run_hotwords_llm_failures_are_word_local(fake_kv, monkeypatch):
     """★LLM 连败/单词失败只记该词 error，其它词照常跑完并回写状态。"""
     monkeypatch.setattr(hw, "SERP_GAP_SEC", 0)
     fake_kv.put_json("candidates", [{"term": f"term {i}"} for i in range(12)])
@@ -322,7 +322,7 @@ def test_run_batch_llm_failures_are_word_local(fake_kv, monkeypatch):
 
     monkeypatch.setattr(hotword_llm, "_llm", llm)
 
-    out = hotword_batch.run_batch(limit=20)
+    out = hotword_graph.run_hotwords(limit=20)
 
     assert not out.get("aborted")
     assert out["llmFailures"] == 1
@@ -332,8 +332,8 @@ def test_run_batch_llm_failures_are_word_local(fake_kv, monkeypatch):
     assert len(fake_kv.get_json("saved", [])) == 11
 
 
-def test_run_batch_no_candidates(fake_kv):
-    out = hotword_batch.run_batch(limit=20)
+def test_run_hotwords_no_candidates(fake_kv):
+    out = hotword_graph.run_hotwords(limit=20)
     assert out["ok"] is True and out["fetched"] == 0
     assert "没有未跟进" in (out.get("note") or "")
 
@@ -464,7 +464,7 @@ def test_analyze_one_error_matches_real_cause(fake_kv, monkeypatch):
         raise hw.LLMEmptyContent("LLM 返回空正文：输出预算耗尽；finish_reason=length", diag)
 
     monkeypatch.setattr(hotword_llm, "_llm", fake_llm)
-    out = hotword_batch.run_batch(limit=1)
+    out = hotword_graph.run_hotwords(limit=1)
     item = out["items"][0]
     assert "预算耗尽" in item["error"]
     assert "LLM_API_KEY 未配置" not in item["error"]
@@ -500,7 +500,7 @@ def test_thinking_kwargs_scope(monkeypatch):
     assert hw._thinking_kwargs() == {"extra_body": {"thinking": {"type": "disabled"}}}
 
 
-def test_run_batch_ok_requires_success_rate(fake_kv, monkeypatch):
+def test_run_hotwords_ok_requires_success_rate(fake_kv, monkeypatch):
     """整批 ok 按成功率判定：11 失败 / 1 成功不能再被报成 success。"""
     monkeypatch.setattr(hw, "SERP_GAP_SEC", 0)
     fake_kv.put_json("candidates", [{"term": f"term {i}"} for i in range(4)])
@@ -520,7 +520,7 @@ def test_run_batch_ok_requires_success_rate(fake_kv, monkeypatch):
 
     monkeypatch.setattr(hotword_llm, "_llm", one_success)
 
-    out = hotword_batch.run_batch(limit=20)
+    out = hotword_graph.run_hotwords(limit=20)
     assert out["analyzed"] == 1 and out["failed"] == 3
     assert out["successRate"] == 0.25
     assert out["ok"] is False   # 旧口径 ok>0 会错报 True
@@ -534,14 +534,17 @@ def test_select_pending_excludes_curated(fake_kv):
     fake_kv.put_json("rejected", [{"key": hw.term_key("b"), "term": "b", "status": "rejected"}])
     fake_kv.put_json("tags", {hw.term_key("c"): ["工具查询"]})
     fake_kv.put_text(hw.AI_CACHE_PREFIX + hw.term_key("d"), "already analyzed")
-    pending = hw._select_pending(fake_kv, 20)
-    assert pending == []  # 已收藏 / 不做 / 打标签 / 已分析 全部剔除
+    pending = hw.select_pending(fake_kv, set())
+    assert pending is None  # 已收藏 / 不做 / 打标签 / 已分析 全部剔除
 
 
-def test_select_pending_limit_and_order(fake_kv):
-    fake_kv.put_json("candidates", [{"term": f"t{i}"} for i in range(10)])
-    pending = hw._select_pending(fake_kv, 3)
-    assert [p["term"] for p in pending] == ["t0", "t1", "t2"]
+def test_select_pending_returns_one_and_respects_seen(fake_kv):
+    """每轮只问一个词；seen 里的 key 被跳过（防 KV 最终一致导致重复取词）。"""
+    fake_kv.put_json("candidates", [{"term": f"t{i}"} for i in range(3)])
+    first = hw.select_pending(fake_kv, set())
+    assert first["term"] == "t0"
+    assert hw.select_pending(fake_kv, {first["key"]})["term"] == "t1"
+    assert hw.select_pending(fake_kv, {hw.term_key(f"t{i}") for i in range(3)}) is None
 
 
 def test_select_pending_survives_shape_drift(fake_kv):
@@ -550,11 +553,11 @@ def test_select_pending_survives_shape_drift(fake_kv):
     fake_kv.put_json("tags", ["不是对象而是数组"])          # 期望 dict，实际 list
     fake_kv.put_json("saved", {"a": {"status": "saved"}})   # 期望 list，实际 dict
     fake_kv.put_json("rejected", "垃圾")
-    pending = hw._select_pending(fake_kv, 20)  # 不抛
-    assert [p["term"] for p in pending] == ["a", "b"]  # 形状坏的当空，不误剔除
+    pending = hw.select_pending(fake_kv, set())  # 不抛
+    assert pending["term"] == "a"  # 形状坏的当空，不误剔除
 
     fake_kv.put_json("candidates", {"a": 1})  # 期望 list，实际 dict
-    assert hw._select_pending(fake_kv, 20) == []
+    assert hw.select_pending(fake_kv, set()) is None
 
 
 def test_analyze_one_skips_blank(fake_kv):
@@ -564,13 +567,13 @@ def test_analyze_one_skips_blank(fake_kv):
     assert fake_kv.writes == 0
 
 
-def test_run_batch_kv_unreachable_returns_error(fake_kv, monkeypatch):
+def test_run_hotwords_kv_unreachable_returns_error(fake_kv, monkeypatch):
     class BoomKV:
         def get_json(self, *a, **k):
             raise RuntimeError("unreachable")
-    monkeypatch.setattr(hotword_batch, "get_kv", lambda: BoomKV())
-    out = hotword_batch.run_batch(limit=20)
-    assert out["ok"] is False and "候选池读取失败" in out["error"]
+    monkeypatch.setattr(hotword_graph, "get_kv", lambda: BoomKV())
+    out = hotword_graph.run_hotwords(limit=20)
+    assert out["ok"] is False and "候选查询失败" in out["error"]
     assert out["fetched"] == 0  # 没读到候选，不写任何状态
 
 
@@ -597,7 +600,7 @@ def test_status_table_write_failure_marks_error_and_is_backfillable(fake_kv, mon
                         lambda m: ("7) 结论：做，工具站\n8) 信号标签：工具查询", "fake"))
     fake_kv.fail_keys.add(hw.SAVED_KEY)
 
-    out = hotword_batch.run_batch(limit=1)
+    out = hotword_graph.run_hotwords(limit=1)
     item = out["items"][0]
     assert "KV 写入失败" in item["error"] and hw.SAVED_KEY in item["writeErrors"]
     assert out["analyzed"] == 0
@@ -627,14 +630,14 @@ def test_body_write_failure_never_writes_state(fake_kv, monkeypatch):
                         lambda m: ("7) 结论：做，工具站\n8) 信号标签：工具查询", "fake"))
     fake_kv.fail_keys.add(key)
 
-    out = hotword_batch.run_batch(limit=1)
+    out = hotword_graph.run_hotwords(limit=1)
     assert "KV 写入失败" in out["items"][0]["error"]
     assert out["analyzed"] == 0
     assert fake_kv.get_json("saved", []) == []
     assert fake_kv.get_json("rejected", []) == []
     assert fake_kv.get_json("aihints", {}) == {}
     assert fake_kv.get_text(key) is None
-    assert len(hw._select_pending(fake_kv, 20)) == 1   # 下次还会重跑
+    assert hw.select_pending(fake_kv, set()) is not None   # 下次还会重跑
 
 
 def test_concurrent_table_updates_do_not_lose_rows(fake_kv, monkeypatch):
@@ -667,7 +670,7 @@ def test_concurrent_table_updates_do_not_lose_rows(fake_kv, monkeypatch):
         return (f"7) 结论：{'做' if do_it else '不做'}，工具站\n8) 信号标签：工具查询", "fake")
 
     monkeypatch.setattr(hotword_llm, "_llm", llm)
-    out = hotword_batch.run_batch(limit=20)
+    out = hotword_graph.run_hotwords(limit=20)
 
     assert out["analyzed"] == n
     assert len(fake_kv.list_keys(hw.AI_CACHE_PREFIX)) == n

@@ -52,11 +52,11 @@ def test_analyze_hotwords_is_dispatched_at_entry(fake, monkeypatch):
 
     seen = {}
 
-    def fake_batch(*, prompt_version=None):
+    def fake_run(*, prompt_version=None):
         seen["prompt_version"] = prompt_version
         return {"ok": True, "analyzed": 3, "failed": 0, "items": []}
 
-    monkeypatch.setattr(routes, "run_batch", fake_batch)
+    monkeypatch.setattr(routes, "run_hotwords", fake_run)
     r = invoke_workflow({"input_text": "分析热词", "intent": "analyze_hotwords",
                          "prompt_versions": {"hotwords": "v2"}})
     assert seen == {"prompt_version": "v2"}

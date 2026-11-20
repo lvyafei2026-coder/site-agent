@@ -6,10 +6,10 @@
 
 拆分自 hotwords.py（2026-11-17）。只放「怎么安全地写 / 怎么容错地读」这一层；
 取数（_throttled_serp / _trend）在 hotword_fetch.py，单词分析 / 回填在
-services/hotword_service.py / services/backfill_service.py，批次驱动在 graph/hotword_batch.py。
+services/hotword_service.py / services/backfill_service.py，逐词图在 graph/hotword_graph.py。
 
 ★_WriteLog 存在的理由：以前 `kv.put_json(...)` 的返回值被丢掉，Cloudflare 返回
-  401/5xx 时进程内仍以为写成功了，于是「正文有了、状态表没有」，而 _select_pending
+  401/5xx 时进程内仍以为写成功了，于是「正文有了、状态表没有」，而 select_pending
   又会因为正文存在把这个词永久剔除。现在每次写都检查，失败清单会进 items[].error。
 """
 

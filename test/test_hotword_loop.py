@@ -4,18 +4,18 @@
 
 """逐词循环图（nodes/hotword_nodes.py）的图机制单测：条件边回环、limit 封顶、串行推进。
 
-不重复 test_hotwords.py 的写回/降级语义（那些已被 run_batch 端到端覆盖），这里只钉
-「循环由图驱动」这件事本身：节点拓扑、should_continue 的四种路由、limit 真能提前收口。
+不重复 test_hotwords.py 的写回/降级语义（那些已被 run_hotwords 端到端覆盖），这里只钉
+「循环由图驱动、每轮问 tool 取一个词」这件事本身：节点拓扑、should_continue 的四种路由、
+fetch_one 真的每轮取一个、limit 真能提前收口。
 """
 
 from __future__ import annotations
 
 from langgraph.graph import END
 
-from src.app.graph import get_hotword_graph
+from src.app.graph import get_hotword_graph, hotword_graph
 from src.app.nodes import hotword_nodes as hloop
-from src.app.graph import hotword_batch
-from src.app.services.hotword_service import _BatchAbort
+from src.app.services.hotword_service import _DegradeState
 from src.app.tools.adapters.terms import hotwords as hw
 from src.app.tools.adapters.terms import hotword_llm
 
@@ -30,30 +30,37 @@ def test_loop_graph_topology():
 
 
 def test_should_continue_routes():
-    base = {"limit": 5, "queue": [1, 2, 3], "cursor": 0,
-            "loop_count": 0, "load_error": ""}
-    assert hloop.should_continue(base) == "fetch_one"          # 有词、未达上限 → 回环
+    base = {"limit": 5, "has_more": True, "loop_count": 0, "load_error": ""}
+    assert hloop.should_continue(base) == "fetch_one"          # 还有词、未达上限 → 回环
     assert hloop.should_continue({**base, "loop_count": 5}) == END   # 达上限
-    assert hloop.should_continue({**base, "cursor": 3}) == END       # 词用完
+    assert hloop.should_continue({**base, "has_more": False}) == END  # tool 取尽
     assert hloop.should_continue({**base, "load_error": "boom"}) == END  # KV 失败
 
 
-def test_fetch_one_loads_once_then_pop_one(fake_kv, monkeypatch):
-    """首次 fetch 读候选入队，之后每次只 pop 一个词，游标逐个推进。"""
+def test_fetch_one_asks_tool_each_round(fake_kv, monkeypatch):
+    """每轮 fetch 都真问一次 tool 取一个词；seen 排除本轮已取的，避免重复。"""
     fake_kv.put_json("candidates", [{"term": f"t{i}"} for i in range(4)])
     monkeypatch.setattr(hw.scrape_serp, "fetch_serp", lambda *a, **k: {"engine": "duckduckgo", "items": [], "attempts": []})
     monkeypatch.setattr(hw.scrape_trend, "fetch_interest", lambda *a, **k: {"points": [], "summary": {}, "attempts": []})
     monkeypatch.setattr(hotword_llm, "_llm", lambda m: ("7) 结论：观望\n8) 信号标签：无", "fake"))
 
-    s = hloop.HotwordLoopState(limit=10, kv=fake_kv, batch_run=None, batch_id="loop-test",
-                               abort=_BatchAbort(), loaded=False, queue=[], cursor=0,
-                               results=[], loop_count=0, examples=[])
+    s = dict(limit=10, kv=fake_kv, root_run=None, run_id="loop-test",
+             degrade=_DegradeState(), seen=set(), examples_loaded=True,
+             examples=[], has_more=False, current=None, results=[],
+             loop_count=0, load_error="")
     s1 = {**s, **hloop.fetch_one(s)}
-    assert s1["loaded"] is True and len(s1["queue"]) == 4
-    assert s1["cursor"] == 1 and s1["current"]["term"] == "t0"
-    # 第二次 fetch：不再加载，只推进游标
+    assert s1["has_more"] is True and s1["current"]["term"] == "t0"
+    assert s1["seen"] == {hw.term_key("t0")}
+    # 第二轮：再问一次 tool，取到下一个词（不是从内存游标推进）
     s2 = {**s1, **hloop.fetch_one(s1)}
-    assert s2["cursor"] == 2 and s2["current"]["term"] == "t1"
+    assert s2["has_more"] is True and s2["current"]["term"] == "t1"
+    assert s2["seen"] == {hw.term_key("t0"), hw.term_key("t1")}
+    # 取尽后 tool 返回 None → has_more=False，条件边收尾
+    s3 = {**s2, **hloop.fetch_one(s2)}
+    s4 = {**s3, **hloop.fetch_one(s3)}
+    assert s4["has_more"] is True and s4["current"]["term"] == "t3"
+    s5 = {**s4, **hloop.fetch_one(s4)}
+    assert s5["has_more"] is False and s5["current"] is None
 
 
 def test_loop_stops_at_limit(fake_kv, monkeypatch):
@@ -63,7 +70,7 @@ def test_loop_stops_at_limit(fake_kv, monkeypatch):
     monkeypatch.setattr(hw.scrape_trend, "fetch_interest", lambda *a, **k: {"points": [], "summary": {}, "attempts": []})
     monkeypatch.setattr(hotword_llm, "_llm", lambda m: ("7) 结论：观望\n8) 信号标签：无", "fake"))
 
-    out = hotword_batch.run_batch(limit=3)
+    out = hotword_graph.run_hotwords(limit=3)
     assert out["fetched"] == 3 and len(out["items"]) == 3
     # 未分析的词不会写 AI 缓存（只回写了 3 个）
     analyzed_keys = {hw.term_key(f"term {i}") for i in range(3)}
@@ -73,12 +80,12 @@ def test_loop_stops_at_limit(fake_kv, monkeypatch):
 
 
 def test_loop_kv_unreachable_short_circuits(monkeypatch):
-    """候选池读取抛异常时，图经条件边直接 END，summarize 收口为 ok=False。"""
+    """候选查询抛异常时，图经条件边直接 END，summarize 收口为 ok=False。"""
     class BoomKV:
         def list_keys(self, *a, **k):
             raise RuntimeError("kv down")
 
-    monkeypatch.setattr(hotword_batch, "get_kv", lambda: BoomKV())
-    out = hotword_batch.run_batch(limit=5)
-    assert out["ok"] is False and "候选池读取失败" in out["error"]
+    monkeypatch.setattr(hotword_graph, "get_kv", lambda: BoomKV())
+    out = hotword_graph.run_hotwords(limit=5)
+    assert out["ok"] is False and "候选查询失败" in out["error"]
     assert out["items"] == [] and out["fetched"] == 0

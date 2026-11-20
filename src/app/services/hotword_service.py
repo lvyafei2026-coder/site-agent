@@ -7,7 +7,7 @@
 拆自原 adapters/terms/hotword_worker.py（2026-11-20 分层归位）：本层把取数
 （hotword_fetch）、判据（hotword_criteria）、LLM（hotword_llm）、写账本（hotword_kv_io）、
 整理写侧（curation）拼成一个词的分析——这些个 IO 实现都在 tools/adapters/terms 叶子层，
-本层是 services，按规范单向依赖它们；批次并发与 trace 根在上层 graph/hotword_batch.py。
+本层是 services，按规范单向依赖它们；逐词循环图与 trace 根在上层 graph/hotword_graph.py。
 
 ★不抛异常给上层：SERP/Trends/LLM/KV 任一环出问题都写进 items[].error，
   其它词继续跑（完成一个结束一个、互不影响）。
@@ -65,17 +65,17 @@ def _tool_step(name: str, call, *, inputs: dict[str, Any], outputs,
     )
 
 
-class _BatchAbort:
-    """批次级**降级状态**（名字沿用历史；2026-11-13 起不再有「中止整批」能力）。
+class _DegradeState:
+    """整轮**降级状态**（旧名 _BatchAbort，2026-11-20 去掉 batch 概念）。
 
-    单词级失败隔离后，这里只保留三件事，全都是「省时间 / 供汇总」，不再拦任何词：
+    单词级失败隔离后，这里只保留三件事，全都是「省时间 / 供汇总」，不拦任何词：
 
-      ・SERP 源不可用   → serp_off：本批后续词跳过 SERP，省掉每词 4 发超时；
+      ・SERP 源不可用   → serp_off：本轮后续词跳过 SERP，省掉每词 4 发超时；
                            当前词与后续词都照常走 LLM、照常回写状态（notice 标缺线索）。
       ・Trends 源不可用 → trends_off：同上，趋势只是辅助证据。
       ・LLM 失败        → 只累加次数供汇总，**不 trip、不中断**；该词的 error 由调用方记。
 
-    为什么仍保留批次级开关：源级故障是「出口 IP 不通」这类全局问题，让 20 个词各撞
+    为什么仍保留轮级开关：源级故障是「出口 IP 不通」这类全局问题，让 20 个词各撞
     一遍 6 秒超时毫无意义；跳过的是「取数」这一步，不是整词分析。
     """
 
@@ -93,7 +93,7 @@ class _BatchAbort:
             return first
 
     def disable_serp(self) -> bool:
-        """本批后续词不再尝试 SERP；返回是否首次置位。"""
+        """本轮后续词不再尝试 SERP；返回是否首次置位。"""
         with self._lock:
             first = not self.serp_off
             self.serp_off = True
@@ -115,7 +115,7 @@ def _finalize(out: dict[str, Any], writes: _WriteLog) -> dict[str, Any]:
 
 
 def _analyze_one(item: dict[str, Any], kv: CloudflareKV,
-                 state: Optional[_BatchAbort] = None,
+                 state: Optional[_DegradeState] = None,
                  parent_run=None,
                  prompt_version: Optional[str] = None,
                  examples: Optional[list[dict[str, str]]] = None) -> dict[str, Any]:
@@ -159,7 +159,7 @@ def _analyze_one(item: dict[str, Any], kv: CloudflareKV,
         }
 
     if state is not None and state.serp_off:
-        serp_data, serp_err = None, "本批已跳过 SERP（源不可用）"
+        serp_data, serp_err = None, "本轮已跳过 SERP（源不可用）"
         # 「跳过」也要留痕：否则 Smith 上这一词像是压根没打算取 SERP
         _tool_step(
             "serp", lambda: (None, serp_err),
@@ -181,7 +181,7 @@ def _analyze_one(item: dict[str, Any], kv: CloudflareKV,
             log.warning("SERP 源不可用，本词跳过 SERP 继续分析：%s", exc.brief())
             serp_data, serp_err = None, exc.brief()
             if state is not None and state.disable_serp():
-                log.warning("本批后续词跳过 SERP（结论缺少辨形线索）")
+                log.warning("本轮后续词跳过 SERP（结论缺少辨形线索）")
     out["serp"] = serp_data is not None
 
     # ---- Trends：读缓存 / 现抓 / 写回，整段是一条 tool:trend span ----
@@ -203,7 +203,7 @@ def _analyze_one(item: dict[str, Any], kv: CloudflareKV,
         }
 
     if state is not None and state.trends_off:
-        trend_err = "本批已禁用趋势（源不可用）"
+        trend_err = "本轮已禁用趋势（源不可用）"
         _tool_step(
             "trend", lambda: (False, trend_err),
             inputs={"term": term, "key": key, "skipped": True,
@@ -222,7 +222,7 @@ def _analyze_one(item: dict[str, Any], kv: CloudflareKV,
         except SourceUnavailable as exc:
             trend_err = exc.brief()
             if state is not None and state.disable_trends():
-                log.warning("本批禁用趋势：%s", exc.brief())
+                log.warning("本轮禁用趋势：%s", exc.brief())
     out["trend"] = trend_ok
 
     # 补数据缺一块不等于这条分析失败（AI 已经给出结论了），只记 notice 供前端提示。
@@ -250,7 +250,7 @@ def _analyze_one(item: dict[str, Any], kv: CloudflareKV,
         out["error"] = "LLM 调用失败：" + str(exc)[:160]
         if state is not None:
             n = state.note_llm_failure()
-            log.warning("LLM 失败（本批第 %d 次，继续跑其它词）：%s", n, str(exc)[:120])
+            log.warning("LLM 失败（本轮第 %d 次，继续跑其它词）：%s", n, str(exc)[:120])
         return _finalize(out, writes)
     if not text:
         # 兜底：_llm 正常会抛 LLMEmptyContent；若某个注入实现仍返回空串，
@@ -265,7 +265,7 @@ def _analyze_one(item: dict[str, Any], kv: CloudflareKV,
 
     # ---- 回写 KV：正文 / 标签 / 状态，整段是一条 tool:kv.write span ----
     # ★正文先写：正文写失败就直接收手，绝不写状态——否则会留下「有状态、没正文」的悬空词，
-    #   _select_pending 既不会重跑它，前端也看不到方案。
+    #   select_pending 既不会重跑它，前端也看不到方案。
     writes.phase = AnalysisPhase.ANALYSIS.value
     write_mark = len(writes.records)
     stopped = {"afterTextFailure": False}

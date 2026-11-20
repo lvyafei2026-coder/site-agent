@@ -8,9 +8,9 @@
 **不 import graph / nodes / services 中任何一个**——这正是它能打破上下层环的原因。
 
 谁用它：
-    graph/hotword_batch.py   批次外壳：筛候选、批次 trace 命名、汇总成功阈值。
-    nodes/hotword_nodes.py   循环节点：筛候选（首次懒加载）、词 span 命名、汇总。
-    hotwords.py              门面：re-export 给外部按 hotwords.<name> 引用。
+    graph/hotword_graph.py   热词图装配 + 运行入口：trace 命名、成功阈值。
+    nodes/hotword_nodes.py   循环节点：每轮问 tool 取一词、词 span 命名、汇总。
+    hotwords.py              adapters 门面：re-export 本层符号。
 """
 
 from __future__ import annotations
@@ -22,16 +22,20 @@ from src.app.tools.adapters.cloudflare.kv import (
 )
 from .hotword_kv_io import _kv_list, _kv_dict
 
-BATCH_OK_MIN_RATE = 0.5     # 整批成功判定：成功率低于此值即视为失败
-BATCH_TRACE_NAME = "site-agent:hotword-batch"
+OK_MIN_RATE = 0.5          # 整轮成功判定：成功率低于此值即视为失败
+RUN_TRACE_NAME = "site-agent:hotword-run"   # 一次 invoke 的根 span（旧名 hotword-batch）
 WORD_TRACE_PREFIX = "site-agent:hotword:"
 
 
-def _select_pending(kv: CloudflareKV, limit: int) -> list[dict[str, Any]]:
-    """读 KV 候选池，剔除已跟进/打标签/已分析的词，返回前 limit 条未跟进候选。
+def select_pending(kv: CloudflareKV, seen: set[str]) -> dict[str, Any] | None:
+    """问 tool 要「下一个」未跟进的热词；没有就返回 None。
+
+    每轮只取一条，由调用方（循环图的 fetch_one 节点）反复调用直到 None 或达上限。
+    ★seen 是本轮已取过的 key：KV 最终一致，刚写的状态可能读不到，靠它在**本轮内**
+      防止同一个词被重复取出。跨轮的幂等仍由 curated / analyzed 两张 KV 表兜底。
 
     ★形状兜底：KV 里这几张表是 console/radar 写的，字段形状一旦漂移（比如 tags 变成数组、
-    candidates 变成对象），按原样 .items() / 迭代 会整批失败。这里统一按「期望类型不符就
+    candidates 变成对象），按原样 .items() / 迭代 会整轮失败。这里统一按「期望类型不符就
     当空」处理并 warn，让漂移可见但不阻断分析。
     """
     candidates = _kv_list(kv, "candidates")
@@ -49,14 +53,13 @@ def _select_pending(kv: CloudflareKV, limit: int) -> list[dict[str, Any]]:
 
     analyzed = {k[len(AI_CACHE_PREFIX):] for k in kv.list_keys(AI_CACHE_PREFIX)}
 
-    items: list[dict[str, Any]] = []
     for c in candidates:
         if not isinstance(c, dict) or not c.get("term"):
             continue
         key = term_key(c.get("key") or c.get("term"))
-        if key in curated or key in analyzed:
+        if key in curated or key in analyzed or key in seen:
             continue
-        items.append({
+        return {
             "key": key,
             "term": str(c.get("term") or "")[:120],
             "related": [str(x) for x in (c.get("related") or [])][:6],
@@ -67,7 +70,5 @@ def _select_pending(kv: CloudflareKV, limit: int) -> list[dict[str, Any]]:
             "count": int(c.get("count") or 1),
             "score": int(c.get("score") or 0),
             "src": str(c.get("src") or "trends"),
-        })
-        if len(items) >= limit:
-            break
-    return items
+        }
+    return None

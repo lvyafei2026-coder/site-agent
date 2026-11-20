@@ -51,7 +51,7 @@ curl -s -X POST localhost:10000/run \
 | `DATABASE_URL` | sqlite 时 | 生产用 `sqlite:////data/agent.sqlite` |
 | `MAX_VALIDATION_RETRIES` | 否 | 默认 2（最多 3 次取数） |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | 否 | 追踪开关，默认关闭；见 §2.2 |
-| `LANGSMITH_PROJECT_URL` | 否 | 项目页地址，用于 console 的结果回链与热词批次 `traceRun.url`；不填会自动解析；见 §2.2 |
+| `LANGSMITH_PROJECT_URL` | 否 | 项目页地址，用于 console 的结果回链与热词图 `traceRun.url`；不填会自动解析；见 §2.2 |
 | `LLM_API_KEY` | 否 | 留空走确定性回退 |
 | `LLM_BASE_URL` | 否 | 兼容任何 OpenAI 风格服务 |
 | `LLM_MODEL` | 否 | 默认 `gpt-4o-mini`；生产用 `openai/gpt-4o-mini`（见下方「换模型」） |
@@ -135,8 +135,9 @@ API 的 `LLM_MODEL` 要写 **`openai/gpt-4o-mini`**（vendor/model）——以�
 | 图级 | 整轮输入输出、总耗时、thread_id、input_text | `routes.py` 的 `run_name` / `metadata` |
 | 节点级 | classify_intent / run_processing / validate_result / build_output | LangGraph 自动打点 |
 | 工具级 | `tool:<工具名>`（25 个 RuntimeTool）：真实入参、统一返回体，`ok=False` 标红 | `tools/registry.py` 注入的 `trace_tool` |
-| 批次级 | `site-agent:hotword-batch`：analyzed / failed / successRate / 降级提示 | `graph/hotword_batch.py:run_batch` 的 `run_traced` |
-| 批次内 IO | `tool:kv.read-candidates`：筛出哪些词、为什么这批跑空了 | `nodes/hotword_nodes.py` 的 `fetch_one`（懒加载） |
+| 整轮级 | `site-agent:hotword-run`：analyzed / failed / successRate / 降级提示 | `graph/hotword_graph.py:run_hotwords` 的 `run_traced` |
+| 取词 IO | `tool:next-candidate`：每轮问 tool 要一个词、看到底取到了谁 | `nodes/hotword_nodes.py` 的 `fetch_one` |
+| 判例 IO | `tool:kv.read-examples`：人工判例只读一次 | `nodes/hotword_nodes.py` 的 `_load_examples` |
 | 逐词级 | `site-agent:hotword:<词>`：verdict / status / serp / trend / error（失败标红） | `nodes/hotword_nodes.py` 的 `analyze_one` |
 | 逐词内 IO | `tool:serp` / `tool:trend` / `tool:kv.write`：抓取出入参、缓存命中、尝试明细、每个 KV 键写入成败 | `services/hotword_service.py` 的 `_tool_step` |
 | LLM 级 | 实际发送的 messages、返回 JSON、token 数与延迟 | `llm/provider.py` 的 `wrap_openai` |
@@ -144,46 +145,50 @@ API 的 `LLM_MODEL` 要写 **`openai/gpt-4o-mini`**（vendor/model）——以�
 **整轮是一棵树，不是一堆散根**（2026-11-13 修）：
 
 ```
-site-agent:hotword-batch                       ← 唯一根（用户线由入口分流，不走主图节点）
-├─ tool:kv.read-candidates
-└─ site-agent:hotword:<词>                     ← 每词一条
-   ├─ tool:serp      → SERP 前 10、竞争度、是否命中缓存、4 发尝试明细
-   ├─ tool:trend     → 趋势点数/摘要、是否命中缓存
-   ├─ ChatOpenAI     → 完整 messages 与返回
-   └─ tool:kv.write  → 写了哪些键、每个键 ok 与否、正文预览、失败清单
+site-agent:hotword-run                       ← 唯一根（用户线由入口分流，不走主图节点）
+├─ tool:kv.read-examples                     ← 判例，整轮只读一次
+├─ tool:next-candidate                       ← 每轮问 tool 取一个词（逐词一条）
+├─ site-agent:hotword:<词 1>                 ← 每词一条
+│  ├─ tool:serp      → SERP 前 10、竞争度、是否命中缓存、4 发尝试明细
+│  ├─ tool:trend     → 趋势点数/摘要、是否命中缓存
+│  ├─ ChatOpenAI     → 完整 messages 与返回
+│  └─ tool:kv.write  → 写了哪些键、每个键 ok 与否、正文预览、失败清单
+├─ tool:next-candidate                       ← 处理完再问「还有吗」
+└─ site-agent:hotword:<词 2> …               ← 有就继续，取尽/达上限就 END
 ```
 
 `analyze_hotwords` 是编排不是工具：用户线在 `api/routes.py` 入口分流到同一个
-`graph.run_batch()`，返回体包装成与主图一致的 state 结构，前端无需区分走了哪条线。
+`graph.run_hotwords()`，返回体包装成与主图一致的 state 结构，前端无需区分走了哪条线。
 
 历史上根因是 `ThreadPoolExecutor` 的 worker 线程**不继承主线程的 contextvars**，而
 LangSmith 把父 run 存在 contextvar 里；并发逐词时 `wrap_openai` 找不到父，每个 LLM 都
-成了独立根 trace。修法在工具层：批次 span 自动挂到 LangGraph 节点下，逐词 span **显式传
+成了独立根 trace。修法在工具层：根 span 自动挂到 LangGraph 节点下，逐词 span **显式传
 `parent=`**（`observability/langsmith.py:run_traced`），并把本词 run 继续传给所有 `tool:*`
 子 span。2026-11-19 起逐词调度改为独立的条件边回环图（现 `nodes/hotword_nodes.py`，串行），显式
 parent 链路保留以维持上面这棵层级树；不是「每词一条独立 trace」。
 
 **工具可见性**（2026-11-13）：以前只有 `wrap_openai` 自动打点，SERP / Trends / KV 读写在
-Smith 上完全看不见，页面只显示「SERP 源不可用，本批已跳过 SERP」这类结果文字，无法判断
+Smith 上完全看不见，页面只显示「SERP 源不可用，本轮已跳过 SERP」这类结果文字，无法判断
 到底调用过没有、卡在哪一步。现在每个工具调用都是一条 `run_type=tool` 的 span：
 - 源级故障（`SourceUnavailable`）会让 `tool:serp` / `tool:trend` **标红并带完整 traceback**，
-  业务侧照常降级；后续词走「本批已跳过」分支时也会留一条 `skipped` span，不会凭空消失。
+  业务侧照常降级；后续词走「本轮已跳过」分支时也会留一条 `skipped` span，不会凭空消失。
 - `tool:kv.write` 的 Outputs 里逐个列出 `ai:v3:` / `aihints` / `saved` / `rejected` 的
   key 与 `ok`，排查「正文写了、状态没写」不用再翻日志。
-- 26 个 RuntimeTool 连 Input 校验失败（参数缺失/类型错）也有 span 并标红，因为追踪包在
+- 25 个 RuntimeTool 连 Input 校验失败（参数缺失/类型错）也有 span 并标红，因为追踪包在
   `RuntimeTool.run` 最外层；tracer 由 `registry.py` **注入**，`base.py` 仍是纯叶子模块。
 - 出入参统一经过 `compact_io` 裁剪：单字符串最多 4000 字符、单容器最多 60 项、最多
   6 层，过长会标注原长度并截断，避免整张候选表/AI 正文把上报拖慢或撑爆 UI。
 - 关闭追踪时 `trace_tool` 就是原函数调用，`compact_io` 与 langsmith runtime 都不执行。
 
-- 整批共用一个 `thread_id`（= `batchId`），Threads 视图同样聚成一条；每词另有
-  独立 `word_id`，要单独看某个词按它检索即可。
-- `run_batch` 返回里带 `traceRun{batchId, runId, traceId, url}`（附加字段，
-  老前端忽略不受影响）。`url` 只在配了 `LANGSMITH_PROJECT_URL` 时生成，不额外发网络；
-  没配就用 `runId` 在 LangSmith 搜索框定位。
+- 整轮共用一个 `thread_id`（= `runId`，本地 id 形如 `hotwords-xxx`），Threads 视图同样聚成一条；
+  每词另有独立 `word_id`，要单独看某个词按它检索即可。
+- `run_hotwords` 返回里带 `traceRun{runId, traceRunId, traceId, url}`（附加字段，
+  老前端忽略不受影响）：`runId` 是本地业务 id，`traceRunId` 才是 LangSmith 根 run id。
+  `url` 只在配了 `LANGSMITH_PROJECT_URL` 时生成，不额外发网络；
+  没配就用 `traceRunId` 在 LangSmith 搜索框定位。
 - 关掉追踪时这层包装零开销：直接调函数，返回里没有 `traceRun`。
 - 回归护栏：`test/test_hotword_tracing.py`（含真实 LangGraph 节点场景）验证
-  「批次挂节点、每词挂批次、LLM 挂对应词」。
+  「根 span 挂节点、每词挂根、LLM 挂对应词」。
 
 **排障**：列表里一条都没有时，按顺序查 ① 两个环境变量是否都生效
 （`/health` 看不到，直接 `docker run` 或 Render Shell 里 `env | grep LANGSMITH`）；
@@ -277,7 +282,7 @@ Render 的 FastAPI 为准。
 
 ### 6.1 热词逐词写入与状态回填（2026-11-19）
 
-- 20 条热词由独立循环图（`nodes/hotword_nodes.py`）**一次一词串行分析**（原 4 worker 并发已于
+- 热词由独立循环图（`nodes/hotword_nodes.py`）**每轮问 tool 要一个词、取到就分析、再问还有没有**，串行推进（原 4 worker 并发已于
   2026-11-19 改为 StateGraph 条件边回环）。`saved` / `rejected` / `aihints` / `competition` /
   `interests` 这 5 张**整表**的「读 → 改 → 写 → 校验返回值」统一走
   `adapters/cloudflare/kv.py:atomic_update()` 的一把进程级 `threading.RLock`，不会互相覆盖。
@@ -285,7 +290,7 @@ Render 的 FastAPI 为准。
   丢更新，靠下面的 error + 回填兜底。
 - 每次 `put_text` / `put_json` 都检查返回值，失败写进 `items[].error` + `writeErrors`，
   该词**不算 analyzed**。正文写失败时直接收手，绝不写状态（不制造「有状态、没正文」）。
-- 正文已落库但状态整表没写上的词，`_select_pending` 会因「已有正文」永久剔除它。
+- 正文已落库但状态整表没写上的词，`select_pending` 会因「已有正文」永久剔除它。
   用 `POST /backfill` 从正文第 7/8 节反推结论补写（不调 LLM、不重抓数据）：
 
   ```bash

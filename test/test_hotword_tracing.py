@@ -9,7 +9,7 @@
      存在 contextvar 里，于是 20 个 wrap_openai 调用全变成孤立根 trace（Traces 页面
      「连不起来」）。这里用真实 SDK（只把 post/patch 换成内存收集）验证显式 parent
      能钉死父子链，且 LLM run 真的挂在对应词 span 下。
-  ② 只有 wrap_openai 会自动打点，SERP / Trends / KV 读写 / 26 个 RuntimeTool 在
+  ② 只有 wrap_openai 会自动打点，SERP / Trends / KV 读写 / 25 个 RuntimeTool 在
      Smith 上完全看不见；源挂了只剩一段 note，排查时不知道调用发生过没有。这里验证
      每个工具调用都有 `run_type=tool` 的 span、带真实出入参，失败会标红。
 """
@@ -26,7 +26,7 @@ from langsmith.run_trees import RunTree
 from src.app.config import settings
 from src.app.tools.adapters.terms import hotwords as hw
 from src.app.tools.adapters.terms import hotword_llm
-from src.app.graph import hotword_batch
+from src.app.graph import hotword_graph
 from src.app.services.hotword_service import TOOL_TRACE_PREFIX
 from src.app.tools.registry import tool_registry
 
@@ -89,9 +89,9 @@ def test_batch_tree_is_nested_under_graph_root(fake_kv, monkeypatch, traced_runs
     _seed(fake_kv, monkeypatch, count=6, llm=llm)
 
     with ls_trace("site-agent:analyze_hotwords") as root:
-        out = hotword_batch.run_batch(limit=6)
+        out = hotword_graph.run_hotwords(limit=6)
 
-    batch = next(r for r in traced_runs if r.name == hw.BATCH_TRACE_NAME)
+    batch = next(r for r in traced_runs if r.name == hw.RUN_TRACE_NAME)
     words = [r for r in traced_runs if r.name.startswith(hw.WORD_TRACE_PREFIX)]
     llms = [r for r in traced_runs if r.name == "ChatOpenAI"]
 
@@ -106,11 +106,11 @@ def test_batch_tree_is_nested_under_graph_root(fake_kv, monkeypatch, traced_runs
     assert {parent for _, _, parent in seen_in_llm} == {str(batch.id)}
 
     assert out["analyzed"] == 6
-    assert out["traceRun"]["batchId"].startswith("hotwords-")
-    assert out["traceRun"]["runId"] == str(batch.id)
-    # 整批共用 thread_id，Threads 视图也聚成一条而不是 6 条
+    assert out["traceRun"]["runId"].startswith("hotwords-")
+    assert out["traceRun"]["traceRunId"] == str(batch.id)
+    # 整轮共用 thread_id，Threads 视图也聚成一条而不是 6 条
     assert {r.extra["metadata"]["thread_id"] for r in [batch, *words]} == {
-        out["traceRun"]["batchId"]}
+        out["traceRun"]["runId"]}
     assert len({r.extra["metadata"]["word_id"] for r in words}) == 6
     # worker 线程没有把 contextvar 泄漏回主线程
     assert run_helpers.get_current_run_tree() is None
@@ -128,9 +128,9 @@ def test_word_span_marks_business_error_without_breaking_others(fake_kv, monkeyp
     _seed(fake_kv, monkeypatch, count=5, llm=llm)
 
     with ls_trace("site-agent:analyze_hotwords") as root:
-        out = hotword_batch.run_batch(limit=5)
+        out = hotword_graph.run_hotwords(limit=5)
 
-    batch = next(r for r in traced_runs if r.name == hw.BATCH_TRACE_NAME)
+    batch = next(r for r in traced_runs if r.name == hw.RUN_TRACE_NAME)
     words = [r for r in traced_runs if r.name.startswith(hw.WORD_TRACE_PREFIX)]
     assert str(batch.parent_run_id) == str(root.id)
     assert len(words) == 5
@@ -161,14 +161,14 @@ def test_batch_nests_under_real_langgraph_node(fake_kv, monkeypatch, traced_runs
     def node(state: S) -> dict:
         current = run_helpers.get_current_run_tree()
         node_run_ids.append(str(current.id) if current else "")
-        return {"out": hotword_batch.run_batch(limit=3)}
+        return {"out": hotword_graph.run_hotwords(limit=3)}
 
     graph = (StateGraph(S).add_node("analyze", node)
              .add_edge(START, "analyze").add_edge("analyze", END).compile())
     result = graph.invoke({"out": {}},
                           config={"run_name": "site-agent:analyze_hotwords"})
 
-    batch = next(r for r in traced_runs if r.name == hw.BATCH_TRACE_NAME)
+    batch = next(r for r in traced_runs if r.name == hw.RUN_TRACE_NAME)
     words = [r for r in traced_runs if r.name.startswith(hw.WORD_TRACE_PREFIX)]
     assert node_run_ids and node_run_ids[0]
     assert str(batch.parent_run_id) == node_run_ids[0]
@@ -183,15 +183,15 @@ def test_early_return_still_has_batch_span_and_link(monkeypatch, traced_runs):
         def get_json(self, *a, **k):
             raise RuntimeError("unreachable")
 
-    monkeypatch.setattr(hotword_batch, "get_kv", lambda: BoomKV())
+    monkeypatch.setattr(hotword_graph, "get_kv", lambda: BoomKV())
     with ls_trace("site-agent:analyze_hotwords") as root:
-        out = hotword_batch.run_batch(limit=5)
+        out = hotword_graph.run_hotwords(limit=5)
 
-    batch = next(r for r in traced_runs if r.name == hw.BATCH_TRACE_NAME)
+    batch = next(r for r in traced_runs if r.name == hw.RUN_TRACE_NAME)
     assert str(batch.parent_run_id) == str(root.id)
-    assert "候选池读取失败" in out["error"]
-    assert out["traceRun"]["runId"] == str(batch.id)
-    assert batch.outputs["error"].startswith("候选池读取失败")
+    assert "候选查询失败" in out["error"]
+    assert out["traceRun"]["traceRunId"] == str(batch.id)
+    assert batch.outputs["error"].startswith("候选查询失败")
 
 
 def test_tracing_off_has_no_spans_and_plain_result(fake_kv, monkeypatch):
@@ -200,45 +200,45 @@ def test_tracing_off_has_no_spans_and_plain_result(fake_kv, monkeypatch):
     monkeypatch.setattr(settings, "langsmith_api_key", "")
     _seed(fake_kv, monkeypatch, count=3)
 
-    out = hotword_batch.run_batch(limit=3)
+    out = hotword_graph.run_hotwords(limit=3)
     assert out["analyzed"] == 3
     assert "traceRun" not in out
     assert run_helpers.get_current_run_tree() is None
 
 
 # ---------------------------------------------------------------------------
-# 工具可见性：SERP / Trends / KV / 26 个 RuntimeTool 都要在 Smith 上看得到出入参
+# 工具可见性：SERP / Trends / KV / 25 个 RuntimeTool 都要在 Smith 上看得到出入参
 # ---------------------------------------------------------------------------
-def test_batch_tool_spans_capture_serp_trend_kv_io(fake_kv, monkeypatch, traced_runs):
-    """每词三条 tool span + 批次候选池读 + 判例读两条 span，父链与出入参都要对。"""
+def test_run_tool_spans_capture_serp_trend_kv_io(fake_kv, monkeypatch, traced_runs):
+    """每词三条 tool span + 每轮一次取词 + 判例读一次，父链与出入参都要对。"""
     def llm(messages):
         _fake_openai_call("x")
         return "7) 结论：不做，影视作品\n8) 信号标签：工具查询", "fake"
 
     _seed(fake_kv, monkeypatch, count=3, llm=llm)
     with ls_trace("site-agent:analyze_hotwords") as root:
-        out = hotword_batch.run_batch(limit=3)
+        out = hotword_graph.run_hotwords(limit=3)
 
-    batch = next(r for r in traced_runs if r.name == hw.BATCH_TRACE_NAME)
+    run = next(r for r in traced_runs if r.name == hw.RUN_TRACE_NAME)
     words = [r for r in traced_runs if r.name.startswith(hw.WORD_TRACE_PREFIX)]
     tools = [r for r in traced_runs if r.name.startswith(TOOL_TRACE_PREFIX)]
-    assert str(batch.parent_run_id) == str(root.id)
+    assert str(run.parent_run_id) == str(root.id)
     assert len(words) == 3
-    # 3 词 × (serp/trend/kv.write) + 1 条候选池读 + 1 条判例读
-    assert len(tools) == 11
+    # 3 词 × (serp/trend/kv.write) + 3 次取词（达 limit 即停，不多取） + 1 条判例读
+    assert len(tools) == 13
     assert all(r.run_type == "tool" for r in tools)
 
-    readers = [r for r in tools if r.name == "tool:kv.read-candidates"]
-    assert len(readers) == 1 and str(readers[0].parent_run_id) == str(batch.id)
-    assert readers[0].inputs["limit"] == 3
-    assert readers[0].outputs["selected"] == 3
-    assert len(readers[0].outputs["terms"]) == 3
+    readers = [r for r in tools if r.name == "tool:next-candidate"]
+    assert len(readers) == 3 and all(str(r.parent_run_id) == str(run.id) for r in readers)
+    assert readers[0].inputs["seenCount"] == 0
+    assert readers[0].outputs["term"] == "term 0"
+    assert readers[-1].outputs["term"] == "term 2"   # 第 3 词取完即达 limit 收尾
 
-    # 判例读 span 挂在 batch 下（不是词级），单独校验
+    # 判例读 span 挂在根 run 下（不是词级），单独校验
     ex_readers = [r for r in tools if r.name == "tool:kv.read-examples"]
-    assert len(ex_readers) == 1 and str(ex_readers[0].parent_run_id) == str(batch.id)
+    assert len(ex_readers) == 1 and str(ex_readers[0].parent_run_id) == str(run.id)
 
-    per_word = [r for r in tools if r is not readers[0] and r is not ex_readers[0]]
+    per_word = [r for r in tools if r not in readers and r not in ex_readers]
     word_ids = {str(w.id) for w in words}
     assert all(str(r.parent_run_id) in word_ids for r in per_word)
     for name in ("tool:serp", "tool:trend", "tool:kv.write"):
@@ -293,7 +293,7 @@ def test_source_down_marks_tool_spans_red_and_batch_continues(fake_kv, monkeypat
     monkeypatch.setattr(hw.scrape_trend, "fetch_interest", trend_boom)
 
     with ls_trace("site-agent:analyze_hotwords"):
-        out = hotword_batch.run_batch(limit=8)
+        out = hotword_graph.run_hotwords(limit=8)
 
     serp_spans = [r for r in traced_runs if r.name == "tool:serp"]
     trend_spans = [r for r in traced_runs if r.name == "tool:trend"]
@@ -316,7 +316,7 @@ def test_kv_write_failure_is_visible_on_tool_span(fake_kv, monkeypatch, traced_r
     fake_kv.fail_keys.add(failed_key)
 
     with ls_trace("site-agent:analyze_hotwords"):
-        out = hotword_batch.run_batch(limit=1)
+        out = hotword_graph.run_hotwords(limit=1)
 
     span = next(r for r in traced_runs if r.name == "tool:kv.write")
     assert span.outputs["stoppedAfterTextFailure"] is True
@@ -328,7 +328,7 @@ def test_kv_write_failure_is_visible_on_tool_span(fake_kv, monkeypatch, traced_r
 
 
 def test_runtime_tools_emit_tool_spans_with_io(fake, traced_runs):
-    """26 个 RuntimeTool 统一打点：成功带返回体，Input 校验失败要让 span 标红。"""
+    """25 个 RuntimeTool 统一打点：成功带返回体，Input 校验失败要让 span 标红。"""
     ok = tool_registry.run("get_hotwords", limit=5)
     bad = tool_registry.run("get_flag")       # key 必填，故意不传
 

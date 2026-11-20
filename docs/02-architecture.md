@@ -11,7 +11,7 @@
 │           线1 用户线 api/routes.py(/run)·run()；线2 后台线 run_background()        │
 │           python -m src.app.main 直接起双服务；run()/run_background() 可单跑       │
 ├──────────────────────────────────────────────────────────────┤
-│ 编排      graph/（user_graph · hotword_graph · hotword_batch · state · constants · edges）│
+│ 编排      graph/（user_graph · hotword_graph〔图+运行入口〕· state · constants · edges）│
 ├──────────────────────────────────────────────────────────────┤
 │ 节点      nodes/（intent · processing · validation · output · error · hotword_nodes）│
 ├──────────────────────────────────────────────────────────────┤
@@ -27,7 +27,7 @@
 | 层 | 职责 | 允许依赖 |
 |---|---|---|
 | `api` / `main` | 收请求、构造入口 state、常驻拉起双线、返回结果 | graph |
-| `graph` | 图组装、状态契约、路由条件、批次驱动 | nodes、memory（后台图只依赖 nodes） |
+| `graph` | 图组装、状态契约、路由条件、运行入口 | nodes、memory（后台图只依赖 nodes） |
 | `nodes` | 单个步骤的逻辑，读 state 写 state | services、models |
 | `services` | 跨节点复用的能力（LLM、prompt、工具分发、评分、单词分析、回填） | tools、prompts、llm、observability |
 | `tools` | 25 个工具的定义与实现、外部 IO 适配器 | adapters（+ 包内 base） |
@@ -43,7 +43,7 @@
 1. `tools/base.py` 是包内叶子：只依赖标准库与 pydantic，不 import 任何 `src.app.*`。
 2. 没有函数内 `import` 解环：装配顺序由模块层级保证（`registry → *_tools → base`）。
    入口与编排层同样如此——两张图在 `graph/` 下对称命名（`user_graph` / `hotword_graph`），
-   节点在 `nodes/hotword_nodes.py`，批次驱动 `graph/hotword_batch.py` 顶层静态取图；
+   节点在 `nodes/hotword_nodes.py`，运行入口 `graph/hotword_graph.py` 顶层静态取图；
    统一门面是 `graph/__init__.py`，`main.py` 与 `api/routes.py` 只从 graph 包取能力，
    不穿透 services / tools / adapters。环从结构上消除而非靠延迟导入绕过。
 3. 全仓禁止函数内 `import src.app.*`：包内依赖一律在模块顶层声明。
@@ -65,7 +65,7 @@
 | 工具实例 | `tools/registry.py:tool_registry` | 把门面注入 25 个工具，一次构造 |
 | 图（用户线） | `graph/user_graph.py:get_user_graph()` | `lru_cache(1)`，checkpointer 连接跟着复用 |
 | 图（后台线） | `graph/hotword_graph.py:get_hotword_graph()` | 热词逐词循环图，`lru_cache(1)`，无 checkpointer |
-| 批次驱动 | `graph/hotword_batch.py:run_batch()` | 构造 state → invoke 后台图 → summarize |
+| 运行入口 | `graph/hotword_graph.py:run_hotwords()` | 构造 state → invoke 循环图 → summarize，与图同文件 |
 
 工具拿实现的唯一途径是构造注入：
 

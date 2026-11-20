@@ -5,8 +5,7 @@
 """词条业务的数据通道 + 外部取数（按业务域划分，不是按存储资源划分）。
 
 本包只放 adapters 层叶子；2026-11-20 分层归位后，编排/节点/业务服务已上移：
-    graph/hotword_graph.py     后台循环图装配（fetch_one → analyze_one → 条件边回环）。
-    graph/hotword_batch.py     批次驱动：构造 state → invoke 图 → summarize。
+    graph/hotword_graph.py     循环图装配 + 运行入口 run_hotwords（取一词→分析→再问还有吗）。
     nodes/hotword_nodes.py     循环节点：state / fetch_one / analyze_one / route / summarize。
     services/hotword_service.py   单词分析编排 _analyze_one（失败隔离到单词）。
     services/backfill_service.py  状态回填 backfill_states。

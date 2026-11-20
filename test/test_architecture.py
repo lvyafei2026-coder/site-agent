@@ -97,14 +97,13 @@ def test_tools_have_no_deferred_imports():
     assert not offenders, f"工具层出现函数内 import：{sorted(offenders)}"
 
 
-def test_entry_and_batch_have_no_deferred_imports():
-    """入口层与批次驱动不得再用函数内 import 解环——环已从结构上消除。
+def test_entry_and_graph_have_no_deferred_imports():
+    """入口层与图装配不得再用函数内 import 解环——环已从结构上消除。
 
-    main.py 顶层 import 全部依赖；hotword_batch.py 顶层静态取后台图。
-    两者若重现函数内 import，说明有人把加载期环又引回来了。
+    main.py 顶层 import 全部依赖；热词图的装配与运行入口同处 hotword_graph.py。
+    这些文件若重现函数内 import，说明有人把加载期环又引回来了。
     """
-    for rel in ("main.py", "graph/hotword_batch.py",
-                "graph/hotword_graph.py", "graph/user_graph.py"):
+    for rel in ("main.py", "graph/hotword_graph.py", "graph/user_graph.py"):
         tree = ast.parse((APP / rel).read_text(encoding="utf-8"))
         offenders = set()
         for node in ast.walk(tree):

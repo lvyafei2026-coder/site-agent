@@ -2,7 +2,7 @@
 
 > 25 个工具一张表；意图到工具集的映射；站点清单字段；新增工具的检查清单。
 > 契约与实现细节见 `03-tech-design.md §5`。
-> 热词分析不是工具：它是 `graph.run_batch()` 编排，在 API 入口按意图分流。
+> 热词分析不是工具：它是 `graph.run_hotwords()` 编排，在 API 入口按意图分流。
 
 ## 1. 全量工具（25）
 
@@ -19,7 +19,7 @@
 > （radar 候选池 + console 整理的 `saved`/`rejected`/`tags`）→ 补 SERP 竞争度与
 > 30 天趋势（读缓存，缺失现抓并写回）→ LLM 出 8 小节站点方案 → 直写 KV
 > （`ai:v3:` 正文 / `aihints` / `rejected` / `saved`）。实现见
-> `graph/hotword_batch.py` → `graph/hotword_graph.py` → `nodes/hotword_nodes.py`
+> `graph/hotword_graph.py` → `graph/hotword_graph.py` → `nodes/hotword_nodes.py`
 > → `services/hotword_service.py`。**只依赖存储介质，不调 console / radar 的 API**。
 
 ### 1.2 measurement（2）
@@ -79,7 +79,7 @@
 | `plan_promo` | `get_latest_plan` + `get_page_inventory` + `get_pending_events` |
 | `find_backlinks` | `get_backlink_ledger` + `search_reddit` + `list_devto_articles` |
 | `review_metrics` | `get_click_stats` + `get_search_analytics` + `get_page_inventory` | `get_click_stats` 现按站点×事件类型聚合；取数后 `run_processing` 再调 LLM `analyze_metrics`（提示词在 D1 的 `review_metrics` task）比对各站 PV/UV/点击/搜索，输出「表现好的站点」排名与理由，并入 `output` 报告 |
-| **`analyze_hotwords`** | **不走工具集：`api/routes.py` 入口直接分流到 `graph.run_batch()`**，返回体包装成主图一致的 state 结构 |
+| **`analyze_hotwords`** | **不走工具集：`api/routes.py` 入口直接分流到 `graph.run_hotwords()`**，返回体包装成主图一致的 state 结构 |
 | `general` | `get_pending_events` + `get_reflections` |
 
 默认集只含 read 工具。`analyze_hotwords` 是编排而非工具，由入口按意图分流，不占工具注册表。

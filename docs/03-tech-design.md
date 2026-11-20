@@ -44,15 +44,20 @@ START → classify_intent → run_processing → validate_result
 
 线 2｜后台线 `build_hotword_graph()` → `get_hotword_graph()`（逐词循环）：
 ```python
-START → fetch_one → analyze_one → should_continue ─┬─ fetch_one（还有词且未达 limit）
-                                                   └─ END（词用完 / 达 limit / KV 失败）
+START → fetch_one（每轮问 tool 要一个词）→ analyze_one → should_continue
+                    ├─ fetch_one（tool 还给得出词、未达 limit）
+                    └─ END（tool 取尽 / 达 limit / KV 失败）
 ```
+★这是用户视角的固定流程：每次真去问 tool 取一个词、分析、再问「还有吗」，有就继续、
+没有就结束，串行推进。`nodes/hotword_nodes.py` 里没有快照队列和 Python `while/for`——
+循环完全由条件边驱动；`seen` 集合只在本轮内排除已取过的 key（KV 最终一致兜底）。
+运行入口 `run_hotwords()` 与图装配同处 `graph/hotword_graph.py`。
 装配真身在 `graph/hotword_graph.py`，只依赖 `nodes/hotword_nodes.py` 的节点逻辑；
-两图经 `graph/__init__.py` 统一导出，`graph/hotword_batch.py` 顶层静态取图，无函数内 import。
+两图经 `graph/__init__.py` 统一导出，`graph/hotword_graph.py` 顶层静态取图，无函数内 import。
 节点逻辑在 `nodes/hotword_nodes.py`，单词分析在 `services/hotword_service.py`；
 入口是 `main.py:run_background()`（单跑）与 `main.py:serve()` 里的守护线程
 （常驻自动，周期 `BACKGROUND_INTERVAL_SEC`）。用户线 `analyze_hotwords` 意图在
-`api/routes.py` 直接分流到同一个 `graph.run_batch()`，返回体包装成主图一致的 state 结构。
+`api/routes.py` 直接分流到同一个 `graph.run_hotwords()`，返回体包装成主图一致的 state 结构。
 
 | 组件 | 内容 |
 |---|---|
@@ -103,9 +108,9 @@ START → fetch_one → analyze_one → should_continue ─┬─ fetch_one（�
 - 解析顺序：请求 `prompt_versions[task]` → `settings.default_prompt_versions[task]` → `v1`；
   文件不存在时回退 `v1.txt`。默认版本清单在 `config.py`，与目录一一对应。
 - 工具层（adapters）不能反向依赖 `services`，所以热词逐词分析走 `prompts/__init__.py`
-  的纯加载函数 `_prompt_pair()`（带进程内缓存，一批 20 词只读一次磁盘）；
-  `/run` 的 `prompt_versions.hotwords` 经 `processing → tool_service → AnalyzeHotwordsTool
-  → HotwordsOps → run_batch` 一路透传，批次 trace 的 inputs 里也记 `promptVersion`。
+  的纯加载函数 `_prompt_pair()`（带进程内缓存，一轮最多 50 词只读一次磁盘）；
+  `/run` 的 `prompt_versions.hotwords` 在 `api/routes.py` 入口分流时直接传给
+  `graph.run_hotwords(prompt_version=...)`，根 trace 的 inputs 里也记 `promptVersion`。
 - 每次加载打日志 `prompt_loaded`（task + version），排查「这轮用的是哪版」很快。
 
 ### 4.3 `tool_service`：意图 → 工具集
@@ -196,7 +201,7 @@ class GetHotwordsTool(RuntimeTool):
 | | `kv` | ★KV 唯一模块：`CloudflareKV`（共享表，fail-open，atomic_update+锁）+ `WorkersKV`（`agent:` 前缀，fail-fast）+ 键名契约；`__init__` 里 `keyvalue` 是 WorkersKV 单例 |
 | | `sql` | `Sql` / `PAGE_QUERIES` / `LEDGER_TABLES` / `SqlBuilder` |
 | `terms/` | `curation` | `snapshot(status, limit)` → `{items, meta, interests}`（只读共享 KV）+ `upsert_saved / upsert_rejected / set_hint_override`（与 console store.js 对齐的写侧口径） |
-| | `hotwords` | adapters 只读门面：只聚合本层叶子符号（不 re-export graph / services 入口，避免反向依赖）；hotword_contract（共享叶子：候选筛选+trace 常量）+ hotword_fetch（取数）+ hotword_criteria（判据）+ hotword_llm + hotword_kv_io（写账本）。上层编排见 `graph/hotword_batch.py` / `graph/hotword_graph.py`，节点见 `nodes/hotword_nodes.py`，单词与回填见 `services/hotword_service.py` / `services/backfill_service.py`。依赖单向无环：graph → nodes → services → adapters → cloudflare.kv |
+| | `hotwords` | adapters 只读门面：只聚合本层叶子符号（不 re-export graph / services 入口，避免反向依赖）；hotword_contract（共享叶子：候选筛选+trace 常量）+ hotword_fetch（取数）+ hotword_criteria（判据）+ hotword_llm + hotword_kv_io（写账本）。上层编排见 `graph/hotword_graph.py` / `graph/hotword_graph.py`，节点见 `nodes/hotword_nodes.py`，单词与回填见 `services/hotword_service.py` / `services/backfill_service.py`。依赖单向无环：graph → nodes → services → adapters → cloudflare.kv |
 | | `gsc` | `search_analytics(days, dimensions)`；无凭据返回 `[]` |
 | | `reddit` | `search(query, limit, timeframe)` 只读 |
 | | `scrape_serp` / `scrape_trend` | DDG SERP / Google Trends 抓取 |

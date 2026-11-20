@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 from src.app.config import BACKFILL_TOKEN, settings
 from src.app.enums import Intent
-from src.app.graph import get_user_graph, run_backfill, run_batch
+from src.app.graph import get_user_graph, run_backfill, run_hotwords
 from src.app.graph.state import initial_state
 from src.app.llm.quota import check_quota
 from src.app.observability.langsmith import public_config as langsmith_config
@@ -45,12 +45,12 @@ def _hotwords_state(payload: dict) -> dict:
     langsmith）；批次自己的 traceRun 在 out 里供 LangSmith 回链，前端无需区分走了哪条线。
     """
     versions = payload.get("prompt_versions") or {}
-    out = run_batch(prompt_version=versions.get("hotwords"))
+    out = run_hotwords(prompt_version=versions.get("hotwords"))
     ok = bool(out.get("ok"))
     reason = out.get("error") or out.get("note") or "本批热词分析完成"
     output = (f"intent=analyze_hotwords; tools=1; analyzed={out.get('analyzed', 0)}; "
               f"failed={out.get('failed', 0)}; ok={ok}")
-    # 批次自己的 traceRun{batchId,runId,url} 已在 out 里，前端可直接回链 LangSmith；
+    # 热词图自己的 traceRun{runId,url} 已在 out 里，前端可直接回链 LangSmith；
     # 这里不伪造主图的节点轨迹——这条意图走的是后台批次线，没有主图的 5 个节点。
     return {
         "intent": Intent.ANALYZE_HOTWORDS.value,
