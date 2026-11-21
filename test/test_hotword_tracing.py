@@ -336,8 +336,8 @@ def test_source_down_marks_tool_spans_red_and_batch_continues(fake_kv, monkeypat
     assert all(w.outputs.get("trendSkipped") for w in skipped)
     assert any("SERP 未取到" in (w.outputs.get("notice") or "") for w in words)
 
-    assert out["serpDisabled"] is True and out["trendsDisabled"] is True
-    assert "SERP 源不可用" in out["note"] and "趋势源不可用" in out["note"]
+    assert [s["key"] for s in out["disabledSources"]] == ["serp", "trend"]
+    assert "SERP：本轮已跳过" in out["note"] and "趋势：本轮已跳过" in out["note"]
     assert out["analyzed"] == 8 and out["failed"] == 0
 
 

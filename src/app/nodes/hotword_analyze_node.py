@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""热词线分析节点：把 current 一词走完「补数据 → LLM → 回写状态」。
+"""热词线分析节点：把 current 一词走完「补证据 → LLM → 后置动作」。
 
 单词的业务逻辑在 services/hotword_service.py（已被 @observed 装饰成词 span），
 本节点只负责推进循环计数与结果累积；失败只落在该词自己身上，不中断整轮。
+本轮的步骤计划（evidence / post）由入口状态工厂解析好，这里原样传下去。
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ def analyze_one(state: HotwordLoopState) -> dict[str, Any]:
     result = _analyze_one(
         item, state.get("degrade"),
         state.get("prompt_version"), state.get("examples", []),
+        state["evidence"], state["post"],
     )
     results.append(result)
     return {"results": results, "loop_count": loop_count + 1}

@@ -4,7 +4,7 @@
 
 """热词线终态汇总节点（与常规线 normal_output_node.py 对称）。
 
-把逐词结果聚合成对外结构；KV 失败 / 空池同样在这里收口，所以无论走哪条分支，
+把逐词结果聚合成对外结构；计划非法 / KV 失败 / 空池同样在这里收口，所以无论走哪条分支，
 终态都带 `summary`，运行入口直接取它做返回体，不在图外调聚合函数。
 """
 
@@ -18,10 +18,10 @@ from src.app.tools.adapters.hotwords.hotword_contract import OK_MIN_RATE
 
 
 def summary_node(state: HotwordLoopState) -> dict[str, Any]:
-    """聚合本轮：成功数 / 结论分布 / 源级降级提示。"""
+    """聚合本轮：成功数 / 结论分布 / 本轮证据步骤与源级降级提示。"""
     if state.get("load_error"):
         return {"summary": {
-            "ok": False, "error": "候选查询失败：" + state["load_error"],
+            "ok": False, "error": state["load_error"],
             "items": [], "fetched": 0, "analyzed": 0, "failed": 0, "counts": {}}}
 
     results = state.get("results", [])
@@ -38,6 +38,8 @@ def summary_node(state: HotwordLoopState) -> dict[str, Any]:
     failed = len(results) - analyzed
     rate = analyzed / len(results)
     degrade = state.get("degrade")
+    evidence = state.get("evidence") or ()
+    disabled = [s for s in evidence if degrade and s.key in degrade.disabled]
 
     out = {
         "ok": rate >= OK_MIN_RATE,
@@ -47,15 +49,12 @@ def summary_node(state: HotwordLoopState) -> dict[str, Any]:
         "successRate": round(rate, 3),
         "counts": counts,
         "items": results,
-        "serpDisabled": bool(degrade and degrade.serp_off),  # type: ignore[union-attr]
-        "trendsDisabled": bool(degrade and degrade.trends_off),  # type: ignore[union-attr]
+        # 前端按这份计划渲染逐词表的证据列，不写死 SERP / 趋势
+        "evidenceSteps": [{"key": s.key, "label": s.label} for s in evidence],
+        "disabledSources": [{"key": s.key, "label": s.label} for s in disabled],
         "llmFailures": int(degrade.llm_failures) if degrade else 0,  # type: ignore[union-attr]
     }
-    degraded = []
-    if out["serpDisabled"]:
-        degraded.append("SERP 源不可用，本轮已跳过 SERP（结论缺少辨形线索）")
-    if out["trendsDisabled"]:
-        degraded.append("趋势源不可用，本轮已禁用趋势")
-    if degraded:
-        out["note"] = "；".join(degraded) + "；其余词仍照常分析并回写"
+    if disabled:
+        out["note"] = ("；".join(f"{s.label}：本轮已跳过（源不可用）" for s in disabled)
+                       + "；其余词仍照常分析并回写")
     return {"summary": out}

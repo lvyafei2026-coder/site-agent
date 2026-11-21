@@ -49,19 +49,20 @@ _last_serp_at = 0.0
 def serp(term: str) -> dict[str, Any]:
     """KV 已有 serp:v1: 直接读；缺失则现抓并写回。全局串行避免并发同时打 DDG。
 
-    返回 {data, error, fromCache, engine, itemCount, competition, writes, writeErrors}：
-    data 是完整 payload（判据层拿它算辨形摘要），writes / writeErrors 是本次写入明细。
+    返回 {ok, data, error, fromCache, engine, itemCount, competition, writes, writeErrors}：
+    与 trend 同一形状（证据步骤的统一契约），data 是完整 payload，判据层拿它算辨形摘要。
     """
     kv = get_kv()
     key = term_key(term)
     writes = _WriteLog(term)
     writes.phase = AnalysisPhase.SERP.value
-    out: dict[str, Any] = {"data": None, "error": "", "fromCache": False, "engine": "",
-                           "itemCount": 0, "competition": {}, "writes": [], "writeErrors": []}
+    out: dict[str, Any] = {"ok": False, "data": None, "error": "", "fromCache": False,
+                           "engine": "", "itemCount": 0, "competition": {},
+                           "writes": [], "writeErrors": []}
 
     cached = kv.get_json(SERP_PREFIX + key)
     if cached:
-        out.update(data=cached, fromCache=True, engine=cached.get("engine", ""),
+        out.update(ok=True, data=cached, fromCache=True, engine=cached.get("engine", ""),
                    itemCount=len(cached.get("items") or []),
                    competition=cached.get("competition") or {})
         return out
@@ -89,7 +90,7 @@ def serp(term: str) -> dict[str, Any]:
     # competition 是整表：读-改-写必须走原子更新
     entry = {"score": comp["score"], "level": comp["level"], "at": payload["at"]}
     writes.table(kv, COMPETITION_KEY, lambda m: {**m, key: entry}, reader=_kv_dict)
-    out.update(data=payload, engine=payload["engine"], itemCount=len(payload["items"]),
+    out.update(ok=True, data=payload, engine=payload["engine"], itemCount=len(payload["items"]),
                competition=comp, writes=writes.records, writeErrors=writes.failed)
     return out
 
@@ -97,7 +98,7 @@ def serp(term: str) -> dict[str, Any]:
 def trend(term: str) -> dict[str, Any]:
     """KV 已有 trend:v1: 直接读；缺失则现抓并写回 + 更新 interests 摘要表。
 
-    返回 {ok, error, fromCache, pointCount, writes, writeErrors}。
+    返回 {ok, data, error, fromCache, pointCount, writes, writeErrors}（与 serp 同一形状）。
     ★源级不可用抛 SourceUnavailable：趋势只是辅助证据，不该因为它连不上就让整轮
       分析白跑，但也不该每个词都去撞一遍超时——降级置位由编排层决定。
     """
@@ -105,12 +106,13 @@ def trend(term: str) -> dict[str, Any]:
     key = term_key(term)
     writes = _WriteLog(term)
     writes.phase = AnalysisPhase.TREND.value
-    out: dict[str, Any] = {"ok": False, "error": "", "fromCache": False,
+    out: dict[str, Any] = {"ok": False, "data": None, "error": "", "fromCache": False,
                            "pointCount": 0, "writes": [], "writeErrors": []}
 
     cached = kv.get_json(TREND_PREFIX + key)
     if cached:
-        out.update(ok=True, fromCache=True, pointCount=len(cached.get("points") or []))
+        out.update(ok=True, data=cached, fromCache=True,
+                   pointCount=len(cached.get("points") or []))
         return out
 
     try:
@@ -131,6 +133,6 @@ def trend(term: str) -> dict[str, Any]:
         "points": [p["v"] for p in t["points"]],
     }
     writes.table(kv, INTERESTS_KEY, lambda m: {**m, key: entry}, reader=_kv_dict)
-    out.update(ok=True, pointCount=len(t["points"]),
+    out.update(ok=True, data=payload, pointCount=len(t["points"]),
                writes=writes.records, writeErrors=writes.failed)
     return out

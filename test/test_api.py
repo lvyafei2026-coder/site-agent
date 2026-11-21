@@ -53,17 +53,23 @@ def test_hotwords_is_a_separate_entry(fake, monkeypatch):
 
     seen = {}
 
-    def fake_run(*, limit=20, prompt_version=None):
-        seen["limit"] = limit
-        seen["prompt_version"] = prompt_version
+    def fake_run(*, limit=20, prompt_version=None, evidence=None, post=None):
+        seen.update(limit=limit, prompt_version=prompt_version,
+                    evidence=evidence, post=post)
         return {"ok": True, "analyzed": 3, "failed": 0, "items": []}
 
     monkeypatch.setattr(routes, "run_hotwords", fake_run)
     client = TestClient(api)
 
     r = client.post("/hotwords", json={"limit": 5, "prompt_version": "v2"})
-    assert r.status_code == 200 and seen == {"limit": 5, "prompt_version": "v2"}
+    assert r.status_code == 200
+    assert seen == {"limit": 5, "prompt_version": "v2", "evidence": None, "post": None}
     assert r.json()["analyzed"] == 3
+
+    # 步骤名单原样透传给 run_hotwords：白名单校验在 state 工厂，入口层不重复一遍
+    r = client.post("/hotwords", json={"evidence": ["trend"], "post": []})
+    assert r.status_code == 200
+    assert seen["evidence"] == ["trend"] and seen["post"] == []
 
     # /run 仍走主图，不再因 intent=analyze_hotwords 分流到热词图
     r2 = client.post("/run", json={"input_text": "分析热词", "intent": "analyze_hotwords"})

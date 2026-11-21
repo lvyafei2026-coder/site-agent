@@ -40,7 +40,7 @@ kind（真源 enums.ToolKind）：read 15 / ledger 11 / write 4。
 
 唯一入口 = services/tool_service.py，两条线共用同一 registry：
     常规线 execute_for_intent(intent) 按意图分发工具集；
-    热词线 run(name, **kwargs) 逐词调 next_candidate / fetch_serp / fetch_trend /
-    write_hotword_result（见 services/hotword_service.py、nodes/hotword_*_node.py）。
+    热词线 run(name, **kwargs) 按计划逐词调补证据 / 后置动作工具——「哪几步、调哪个工具」
+    声明在 services/hotword_plan.py，循环本身在 services/hotword_service.py。
 两条线都是**编排**，编排本身不进 registry；LLM 与纯判据也不是工具（横切能力）。
 """

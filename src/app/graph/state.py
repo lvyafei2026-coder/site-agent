@@ -23,6 +23,7 @@ from __future__ import annotations
 from typing import Any, Optional, TypedDict
 
 from src.app.config import settings
+from src.app.services.hotword_plan import Evidence, PostAction, resolve_plan
 from src.app.services.hotword_service import _DegradeState
 
 
@@ -112,15 +113,17 @@ def initial_workflow_state(
 class HotwordLoopState(TypedDict, total=False):
     """热词循环图在节点间流转的状态。字段全为名词，避免与节点名撞名。
 
-    与 WorkflowState 的差别只在内容：这里带本轮的降级状态（degrade）与逐词明细，
-    所以对外返回体取终态的 `summary` 字段，而不是整份 state。
+    与 WorkflowState 的差别只在内容：这里带本轮的步骤计划（evidence / post）、
+    降级状态（degrade）与逐词明细，所以对外返回体取终态的 `summary` 字段，而不是整份 state。
     KV 句柄不进 state：工具自己取 get_kv()，两条线一致。
     """
 
     # ——入口参数（initial_hotword_state 注入，节点只读）——
     limit: int                       # 本次最多分析的词数（= 最大循环次数）
     prompt_version: Optional[str]    # 本轮提示词版本（None → 节点侧回退默认）
-    degrade: _DegradeState           # 源级降级状态（SERP/Trends/LLM）
+    degrade: _DegradeState           # 源级降级状态（已关掉的证据步骤 + LLM 失败次数）
+    evidence: tuple[Evidence, ...]   # 本轮 LLM 之前的补证据步骤（hotword_plan 白名单解析）
+    post: tuple[PostAction, ...]     # 本轮 LLM 之后的后置动作步骤
 
     # ——节点间流转——
     seen: set[str]                   # 本轮已取过的 key（防 KV 最终一致导致重复取词）
@@ -130,20 +133,24 @@ class HotwordLoopState(TypedDict, total=False):
     current: dict[str, Any]          # 本轮取出的待分析词
     results: list[dict[str, Any]]
     loop_count: int
-    load_error: str                  # 候选池读取失败信息（非空 → 直接收尾）
+    load_error: str                  # 本轮开跑前就失败的原因（计划非法 / 候选池读取失败）
 
     # ——输出（build_summary 节点产出，运行入口直接取用）——
     summary: dict[str, Any]
 
 
 def initial_hotword_state(limit: int = 20,
-                          prompt_version: Optional[str] = None) -> HotwordLoopState:
+                          prompt_version: Optional[str] = None,
+                          evidence: Optional[list[str]] = None,
+                          post: Optional[list[str]] = None) -> HotwordLoopState:
     """构造热词线一轮的入口状态（与 initial_workflow_state 对称）。
 
     limit 是最大循环次数，收口在 1-50。prompt_version 原样带上（可为 None）：
     默认版本由 prompts.registry 结合 D1 的默认版本决定，不在这里提前拍死。
+    evidence / post 是步骤名单（None=默认计划，[]=该段什么都不做）；名单里有未知 key
+    时不抛给调用方，收进 load_error 走与候选池不可达同一条收尾路径，trace 与回链照常。
     """
-    return {
+    state: HotwordLoopState = {
         "limit": max(1, min(int(limit or 20), 50)),
         "prompt_version": prompt_version,
         "degrade": _DegradeState(),
@@ -155,3 +162,8 @@ def initial_hotword_state(limit: int = 20,
         "results": [],
         "loop_count": 0,
     }
+    try:
+        state["evidence"], state["post"] = resolve_plan(evidence, post)
+    except ValueError as exc:
+        state["load_error"] = str(exc)
+    return state

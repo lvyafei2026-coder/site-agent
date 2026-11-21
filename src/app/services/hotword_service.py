@@ -2,18 +2,21 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""热词分析的单词编排层：一个词走完「补数据 → LLM → 结论解析 → 回写状态」。
+"""热词分析的单词编排层：一个词走完「补证据 → LLM → 后置动作」三段通用流程。
 
-与常规线同构：IO 一律经 tool_service 调 registry 里的工具（fetch_serp / fetch_trend /
-write_hotword_result），统一拿 ToolOutput、统一 retryable 分类、统一 tool span。
-本层只做编排与判读——纯判据在 hotword_criteria、LLM 传输在 hotword_llm，两者都不是
-工具（常规线的 LLM 同样走 llm/completion 而不经 registry）。
+本层**不认识具体工具名**：每一步调哪个工具、怎么绑参、结果怎么喂提示词 / 怎么回填，
+全声明在 services/hotword_plan.py 的 Evidence / PostAction 里，这里只按计划遍历执行。
+加一个证据源或后置动作 = plan 里加一条声明，本文件与循环、节点、图、请求模型都不用改。
 
-★不抛异常给上层：SERP/Trends/LLM/KV 任一环出问题都写进 items[].error，其它词继续跑。
+与常规线同构：IO 一律经 tool_service 调 registry 里的工具，统一拿 ToolOutput、
+统一 retryable 分类、统一 tool span。LLM 与纯判据不是工具（横切能力）：
+传输在 hotword_llm、判据在 hotword_criteria。
+
+★不抛异常给上层：证据/LLM/KV 任一环出问题都写进 items[].error，其它词继续跑。
 ★源级降级是**编排级**决策：工具报 ok=False + retryable=True（SourceUnavailable / 网络层）
-  就置位 serp_off / trends_off，后续词跳过该源——跳过的是「取数」这一步，不是整词分析。
+  就把该步骤 key 记进 degrade.disabled，后续词跳过这一步——跳过的是「取数」，不是整词分析。
   跳过时没有工具调用，也就不伪造 tool span，只用 note() 在词 span 上留一条痕。
-★写入明细由各工具自报（result.writes / writeErrors），本层跨工具汇总进该词 error。
+★写入明细由各工具自报（result.writes / writeErrors），本层跨步骤汇总进该词 error。
 ★trace 是声明式切面：_analyze_one 在定义处用 @observed 声明词 span，父子靠 contextvar
   自动继承——函数体不拼 parent / run_id。
 """
@@ -24,11 +27,12 @@ import logging
 from typing import Any, Optional
 
 from src.app.observability.langsmith import note, observed
+from src.app.services.hotword_plan import (
+    DEFAULT_EVIDENCE_STEPS, DEFAULT_POST_STEPS, Evidence, PostAction,
+)
 from src.app.services.tool_service import tool_service
 from src.app.tools.adapters.hotwords.hotword_contract import WORD_TRACE_PREFIX
-from src.app.tools.adapters.hotwords.hotword_criteria import (
-    serp_brief, work_signal, build_messages, decide, signals_of,
-)
+from src.app.tools.adapters.hotwords.hotword_criteria import build_messages, decide, signals_of
 from src.app.tools.adapters.hotwords import hotword_llm
 from src.app.tools.adapters.hotwords.hotword_llm import LLMEmptyContent
 
@@ -36,12 +40,11 @@ log = logging.getLogger(__name__)
 
 
 class _DegradeState:
-    """整轮**降级状态**（旧名 _BatchAbort，2026-11-20 去掉 batch 概念）。
+    """整轮**降级状态**：哪些证据步骤本轮已关掉，外加 LLM 失败次数。
 
-    单词级失败隔离后只保留三件事，全是「省时间 / 供汇总」，不拦任何词：
+    单词级失败隔离后这里只保留「省时间 / 供汇总」两件事，不拦任何词：
 
-      ・SERP 源不可用 → serp_off：后续词跳过 SERP（省掉每词 4 发超时），照常走 LLM；
-      ・Trends 不可用 → trends_off：同上，趋势只是辅助证据；
+      ・某步源不可用 → disabled.add(key)：后续词跳过这一步（省掉每词几发超时），照常走 LLM；
       ・LLM 失败      → 只累加次数供汇总，不中止。
 
     源级故障是「出口 IP 不通」这类全局问题，让 20 个词各撞一遍超时毫无意义；
@@ -51,20 +54,13 @@ class _DegradeState:
     """
 
     def __init__(self) -> None:
-        self.trends_off = False
-        self.serp_off = False
+        self.disabled: set[str] = set()
         self.llm_failures = 0
 
-    def disable_trends(self) -> bool:
-        """首次调用返回 True（用于只打一条日志）；之后恒 False。"""
-        first = not self.trends_off
-        self.trends_off = True
-        return first
-
-    def disable_serp(self) -> bool:
-        """后续词不再尝试 SERP；返回是否首次置位。"""
-        first = not self.serp_off
-        self.serp_off = True
+    def disable(self, key: str) -> bool:
+        """关掉一个证据步骤；返回是否首次置位（用于只打一条日志）。"""
+        first = key not in self.disabled
+        self.disabled.add(key)
         return first
 
     def note_llm_failure(self) -> int:
@@ -87,8 +83,8 @@ def _word_span_name(item: dict, *args, **kwargs) -> str:
 
 
 def _word_outputs(out: dict[str, Any]) -> dict[str, Any]:
-    """逐词 span 的 outputs：结论、状态、补数情况与写入失败明细。"""
-    keys = ("verdict", "status", "model", "serp", "trend", "notice",
+    """逐词 span 的 outputs：结论、状态、补证情况与写入失败明细。"""
+    keys = ("verdict", "status", "model", "evidence", "notice",
             "writeErrors", "error", "llm_diag")
     return {k: out[k] for k in keys if k in out}
 
@@ -102,69 +98,59 @@ def _word_error(out: dict[str, Any]) -> str | None:
 def _analyze_one(item: dict[str, Any],
                  state: Optional[_DegradeState] = None,
                  prompt_version: Optional[str] = None,
-                 examples: Optional[list[dict[str, str]]] = None) -> dict[str, Any]:
-    """一个词走完「补数据 → LLM → 回写状态」，失败只落在这个词自己身上。"""
+                 examples: Optional[list[dict[str, str]]] = None,
+                 evidence: tuple[Evidence, ...] = DEFAULT_EVIDENCE_STEPS,
+                 post: tuple[PostAction, ...] = DEFAULT_POST_STEPS) -> dict[str, Any]:
+    """一个词按计划走完三段，失败只落在这个词自己身上。
+
+    evidence / post 是已解析的步骤元组（hotword_plan.resolve_plan）；不传就是默认计划。
+    """
     term = str(item.get("term") or "").strip()
     out: dict[str, Any] = {"term": term, "verdict": "", "status": "", "model": "",
-                           "serp": False, "trend": False, "error": ""}
+                           "evidence": {s.key: False for s in evidence}, "error": ""}
     if not term:
         out["error"] = "空词"
         return out
 
     write_errors: list[str] = []
+    notices: list[str] = []
+    signals: list[str] = []
+    body = dict(item)
+    ctx: dict[str, Any] = {"item": item, "term": term}
 
-    # ---- SERP：读缓存 / 现抓 / 写回，全在 fetch_serp 工具里（tool:fetch_serp span）----
-    serp_data: dict | None = None
-    serp_err = ""
-    if state is not None and state.serp_off:
-        serp_err = "本轮已跳过 SERP（源不可用）"
-        note(serpSkipped=True)
-    else:
-        res = tool_service.run("fetch_serp", term=term)
-        if res["ok"]:
-            serp_data = res["result"]["data"]
-            serp_err = res["result"]["error"]
-            write_errors.extend(res["result"]["writeErrors"])
-        else:
-            serp_err = res["error"]
+    # ---- ① 补证据：读缓存 / 现抓 / 写回全在工具里（tool:<name> span）----
+    for step in evidence:
+        if state is not None and step.key in state.disabled:
+            notices.append(f"{step.label} 未取到：本轮已跳过（源不可用）")
+            note(**{step.key + "Skipped": True})
+            continue
+        res = tool_service.run(step.tool, **step.bind(ctx))
+        if not res["ok"]:
+            notices.append(f"{step.label} 未取到：{res['error']}")
             # retryable=True = 源级/网络级不可用：后续词别再撞一遍超时
-            if res["retryable"] and state is not None and state.disable_serp():
-                log.warning("SERP 源不可用，后续词跳过 SERP（结论缺少辨形线索）：%s", serp_err)
-    out["serp"] = serp_data is not None
+            if res["retryable"] and state is not None and state.disable(step.key):
+                log.warning("%s 源不可用，后续词跳过这一步：%s", step.label, res["error"])
+            continue
+        result = res["result"]
+        write_errors.extend(result.get("writeErrors") or [])
+        out["evidence"][step.key] = bool(result.get("ok"))
+        if result.get("error"):
+            notices.append(f"{step.label} 未取到：{result['error']}")
+        if not result.get("ok") or not step.feed:
+            continue
+        shaped = step.shape(result.get("data"))
+        body[step.key] = shaped
+        if step.signal:
+            hard = step.signal(shaped)
+            if hard:
+                signals.append(hard)
+    if notices:
+        out["notice"] = "；".join(notices)
 
-    # ---- Trends：同上，工具是 fetch_trend ----
-    trend_ok = False
-    trend_err = ""
-    if state is not None and state.trends_off:
-        trend_err = "本轮已禁用趋势（源不可用）"
-        note(trendSkipped=True)
-    else:
-        res = tool_service.run("fetch_trend", term=term)
-        if res["ok"]:
-            trend_ok = bool(res["result"]["ok"])
-            trend_err = res["result"]["error"]
-            write_errors.extend(res["result"]["writeErrors"])
-        else:
-            trend_err = res["error"]
-            if res["retryable"] and state is not None and state.disable_trends():
-                log.warning("本轮禁用趋势：%s", trend_err)
-    out["trend"] = trend_ok
-
-    notes = []
-    if serp_err:
-        notes.append("SERP 未取到：" + serp_err)
-    if trend_err:
-        notes.append("趋势未取到：" + trend_err)
-    if notes:
-        out["notice"] = "；".join(notes)
-
-    # 从缓存或现抓结果里取 SERP 摘要（brief 只读 payload，纯判据无 IO）
-    brief = serp_brief(serp_data)
-    signal = work_signal(brief)
+    # ---- ② LLM：body 带着各步喂进来的证据，硬证据能把结论压成「不做」----
     try:
-        text, model = hotword_llm._llm(build_messages(dict(item, serp=brief),
-                                                       prompt_version=prompt_version,
-                                                       examples=examples))
+        text, model = hotword_llm._llm(build_messages(body, prompt_version=prompt_version,
+                                                      examples=examples))
     except LLMEmptyContent as exc:
         out["error"] = str(exc)
         out["llm_diag"] = exc.diag
@@ -180,17 +166,17 @@ def _analyze_one(item: dict[str, Any],
         return _finalize(out, write_errors)
     out["model"] = model
 
-    verdict, reason = decide(text, signal)
+    verdict, reason = decide(text, "；".join(signals))
     out["verdict"] = verdict
-    hints = signals_of(text)
+    ctx.update(text=text, verdict=verdict, reason=reason, hints=signals_of(text))
 
-    # ---- 回写：正文先写、失败即收手的不变量在 write_hotword_result 工具里 ----
-    res = tool_service.run("write_hotword_result", item=item, text=text,
-                           verdict=verdict, reason=reason, hints=hints)
-    if res["ok"]:
-        out["status"] = res["result"]["status"]
-        write_errors.extend(res["result"]["writeErrors"])
-    else:
-        detail = "结论回写失败：" + res["error"]
-        out["error"] = (out["error"] + "；" if out["error"] else "") + detail
+    # ---- ③ 后置动作：正文先写、失败即收手的不变量在工具里 ----
+    for step in post:
+        res = tool_service.run(step.tool, **step.bind(ctx))
+        if res["ok"]:
+            step.apply(out, res["result"])
+            write_errors.extend(res["result"].get("writeErrors") or [])
+        else:
+            detail = f"{step.label}失败：{res['error']}"
+            out["error"] = (out["error"] + "；" if out["error"] else "") + detail
     return _finalize(out, write_errors)

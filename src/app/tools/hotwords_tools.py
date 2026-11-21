@@ -10,9 +10,11 @@
     get_hotwords                候选池快照（常规线 select_pages 用）
     next_candidate              取下一个未跟进的词（热词线每轮一次）
     read_examples               读人工判例（热词线每轮一次）
-    fetch_serp / fetch_trend    补数据：读缓存 → 现抓 → 写回（ledger：会写缓存表）
-    write_hotword_result        结论回写：正文 / 标签 / 状态（ledger：幂等 upsert）
+    fetch_serp / fetch_trend    补证据：读缓存 → 现抓 → 写回（ledger：会写缓存表）
+    write_hotword_result        后置动作：正文 / 标签 / 状态回写（ledger：幂等 upsert）
 LLM 与纯判据不是工具，编排层（services/hotword_service.py）直接复用。
+「本轮走哪几步补证据、哪几个后置动作」不在这里写死：步骤名单与工具名的对应关系声明在
+services/hotword_plan.py——加一个证据源 = 本文件加工具 + 那里加一条 Evidence，循环不动。
 """
 
 from __future__ import annotations

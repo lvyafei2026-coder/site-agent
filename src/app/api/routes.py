@@ -11,7 +11,8 @@
 
 入口层只做 HTTP 绑定：请求模型 → graph 层的 run_*()。不构造 state、不驱动图、
 不拼 trace——两条线的构造与触发机制在 graph/ 里完全一致（normal_graph / hotword_graph），
-差别只在节点类型与 state 内容。热词分析不是主图的一个节点，也不经过工具注册表。
+差别只在节点类型与 state 内容。热词线的 IO 与常规线走同一个工具注册表，
+区别只是它按**步骤计划**逐词循环调用（计划声明在 services/hotword_plan.py）。
 """
 
 from __future__ import annotations
@@ -36,6 +37,8 @@ class WorkflowRequest(BaseModel):
 class HotwordsRequest(BaseModel):
     limit: int = 20
     prompt_version: str | None = None
+    evidence: list[str] | None = None    # 本轮补证据的步骤名单（None=默认）
+    post: list[str] | None = None        # 本轮后置动作的步骤名单（None=默认）
 
 
 api = FastAPI(title=settings.project_name)
@@ -51,8 +54,11 @@ def run(request: WorkflowRequest) -> dict:
 def hotwords(request: HotwordsRequest) -> dict:
     """热词循环图：请求字段与 run_hotwords 签名一一对应，直接展开。
 
-    返回图终态的汇总（ok / analyzed / failed / items …）+ trace + langsmith，
+    返回图终态的汇总（ok / analyzed / failed / items / evidenceSteps …）+ trace + langsmith，
     与 /run 同一套封装；limit 最大 50，由 state 工厂收口。
+    evidence / post 只能取步骤白名单里的 key（serp / trend / write_result），
+    不是任意工具名——这个入口不带强鉴权，不能让它变成不可逆写工具的旁路；
+    名单非法时整轮 ok=False，不跑任何词。
     """
     return run_hotwords(**request.model_dump())
 

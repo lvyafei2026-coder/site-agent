@@ -19,6 +19,7 @@ from src.app.tools.adapters.hotwords import hotword_fetch
 from src.app.tools.adapters.hotwords import hotword_llm
 from src.app.tools.adapters.hotwords import scrape_serp, scrape_trend
 from src.app.graph import hotword_graph
+from src.app.services import hotword_plan
 from src.app.services.hotword_service import _analyze_one
 from src.app.services.tool_service import INTENT_TOOLS
 from src.app.tools.registry import tool_registry
@@ -227,7 +228,7 @@ def test_run_hotwords_writes_kv(fake_kv, monkeypatch):
 def test_run_hotwords_serp_source_down_only_skips_serp(fake_kv, monkeypatch):
     """★2026-11-13：SERP 源挂不再中止整批，只让这批词跳过 SERP 照常出结论。
 
-    仍要避免 12 个词各撞一遍 4 发超时（第一批并发发现后就置 serp_off）。
+    仍要避免 12 个词各撞一遍 4 发超时（第一次 retryable 失败就把该步记进 degrade.disabled）。
     """
     monkeypatch.setattr(hotword_fetch, "SERP_GAP_SEC", 0)
     fake_kv.put_json("candidates", [{"term": f"term {i}"} for i in range(12)])
@@ -248,10 +249,10 @@ def test_run_hotwords_serp_source_down_only_skips_serp(fake_kv, monkeypatch):
     out = hotword_graph.run_hotwords(limit=20)
 
     assert not out.get("aborted")            # 没有「整批中止」这回事了
-    assert out["serpDisabled"] is True
+    assert [s["key"] for s in out["disabledSources"]] == ["serp"]
     assert out["fetched"] == 12 and out["analyzed"] == 12
     assert calls["n"] <= 1   # 发现源挂后本批不再撞 DDG
-    assert all(r["serp"] is False for r in out["items"])
+    assert all(r["evidence"]["serp"] is False for r in out["items"])
     assert any("SERP 未取到" in (r.get("notice") or "") for r in out["items"])
     assert len(fake_kv.list_keys(kvk.AI_CACHE_PREFIX)) == 12
 
@@ -342,6 +343,105 @@ def test_run_hotwords_no_candidates(fake_kv):
     out = hotword_graph.run_hotwords(limit=20)
     assert out["ok"] is True and out["fetched"] == 0
     assert "没有未跟进" in (out.get("note") or "")
+
+
+# ---- 步骤计划：补哪些证据、做哪些后置动作由参数选，编排不写死工具名 ----
+
+def test_resolve_plan_defaults_order_and_rejects_unknown():
+    ev, post = hotword_plan.resolve_plan()
+    assert [s.key for s in ev] == ["serp", "trend"]
+    assert [s.tool for s in post] == ["write_hotword_result"]
+
+    ev, _ = hotword_plan.resolve_plan(["trend", "serp"])   # 顺序按名单，不按默认
+    assert [s.key for s in ev] == ["trend", "serp"]
+
+    ev, post = hotword_plan.resolve_plan([], [])           # 空名单 = 这一段什么都不做
+    assert ev == () and post == ()
+
+    with pytest.raises(ValueError, match="未知证据步骤"):
+        hotword_plan.resolve_plan(["git_push"])
+    with pytest.raises(ValueError, match="未知后置动作步骤"):
+        hotword_plan.resolve_plan(None, ["fetch_serp"])
+
+
+def test_step_plan_whitelist_excludes_irreversible_tools():
+    """★/hotwords 无强鉴权，步骤白名单里绝不能出现 write 类工具（git_push / send_notice…）。"""
+    for step in (*hotword_plan.EVIDENCE.values(), *hotword_plan.POST.values()):
+        assert tool_registry.get(step.tool).kind != "write", step.tool
+
+
+def test_run_hotwords_evidence_plan_skips_unselected_source(fake_kv, monkeypatch):
+    """名单里没写 SERP，就一个 SERP 请求都不发；逐词结果与汇总列都只剩选中的步骤。"""
+    monkeypatch.setattr(hotword_fetch, "SERP_GAP_SEC", 0)
+    fake_kv.put_json("candidates", [{"term": f"term {i}"} for i in range(3)])
+    serp_calls = {"n": 0}
+
+    def count_serp(term, session=None, limit=10):
+        serp_calls["n"] += 1
+        return {"engine": "duckduckgo", "items": [], "attempts": []}
+
+    monkeypatch.setattr(scrape_serp, "fetch_serp", count_serp)
+    monkeypatch.setattr(scrape_trend, "fetch_interest",
+                        lambda term, session=None, geo="": {
+                            "points": [{"d": "2026-01-01", "v": 50}],
+                            "summary": {"avg": 50}, "attempts": []})
+    monkeypatch.setattr(hotword_llm, "_llm", lambda m: ("7) 结论：观望", "fake"))
+
+    out = hotword_graph.run_hotwords(limit=3, evidence=["trend"])
+
+    assert serp_calls["n"] == 0
+    assert out["analyzed"] == 3
+    assert [sorted(r["evidence"]) for r in out["items"]] == [["trend"]] * 3
+    assert out["evidenceSteps"] == [{"key": "trend", "label": "趋势"}]
+    assert out["disabledSources"] == []
+
+
+def test_run_hotwords_post_plan_can_write_nothing(fake_kv, monkeypatch):
+    """后置动作名单为空 → 只出结论、一个字都不回写（结论照常算分析成功）。"""
+    monkeypatch.setattr(hotword_fetch, "SERP_GAP_SEC", 0)
+    fake_kv.put_json("candidates", [{"term": f"term {i}"} for i in range(3)])
+    monkeypatch.setattr(scrape_serp, "fetch_serp",
+                        lambda term, session=None, limit=10: {
+                            "engine": "duckduckgo", "items": [], "attempts": []})
+    monkeypatch.setattr(scrape_trend, "fetch_interest",
+                        lambda term, session=None, geo="": {
+                            "points": [{"d": "2026-01-01", "v": 50}],
+                            "summary": {"avg": 50}, "attempts": []})
+    monkeypatch.setattr(hotword_llm, "_llm",
+                        lambda m: ("7) 结论：做，工具站\n8) 信号标签：工具查询", "fake"))
+
+    out = hotword_graph.run_hotwords(limit=3, post=[])
+
+    assert out["analyzed"] == 3
+    assert all(r["status"] == "" for r in out["items"])
+    assert fake_kv.list_keys(kvk.AI_CACHE_PREFIX) == []
+    assert fake_kv.get_json("saved", []) == []
+
+
+def test_run_hotwords_unknown_step_fails_before_any_io(fake_kv, monkeypatch):
+    """非法步骤名在入口就被拒：不发 SERP、不调 LLM、不写 KV。"""
+    monkeypatch.setattr(hotword_fetch, "SERP_GAP_SEC", 0)
+    fake_kv.put_json("candidates", [{"term": f"term {i}"} for i in range(3)])
+    calls = {"serp": 0, "llm": 0}
+
+    def count_serp(term, session=None, limit=10):
+        calls["serp"] += 1
+        return {"engine": "duckduckgo", "items": [], "attempts": []}
+
+    def count_llm(messages):
+        calls["llm"] += 1
+        return "7) 结论：观望", "fake"
+
+    monkeypatch.setattr(scrape_serp, "fetch_serp", count_serp)
+    monkeypatch.setattr(hotword_llm, "_llm", count_llm)
+
+    out = hotword_graph.run_hotwords(limit=3, evidence=["git_push"])
+
+    assert out["ok"] is False
+    assert "未知证据步骤" in out["error"] and "git_push" in out["error"]
+    assert out["fetched"] == 0
+    assert calls == {"serp": 0, "llm": 0}
+    assert fake_kv.list_keys(kvk.AI_CACHE_PREFIX) == []
 
 
 # ---- 2026-11-13：DeepSeek 上线后的三处修复（防止悄悄退化） ----
