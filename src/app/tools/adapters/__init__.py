@@ -11,7 +11,7 @@
                  agent 私有状态 keyvalue、SQL 契约 sql）。换厂商只动这个包。
                  ledger / promotion 两个域只用它（纯台账，无外部系统）。
   hotwords/      词条业务：候选快照与整理口径、SERP / Trends 取数、判据、LLM、KV 写账本。
-                 消费方 tools/hotwords_tools.py + 热词线（graph / nodes / hotword_service）。
+                 消费方 tools/hotwords_tools.py + 热词线（graph / nodes 直接 import 叶子）。
   measurement/   效果度量：Search Console 取数（埋点聚合在 cloudflare/database）。
                  消费方 tools/measurement_tools.py。
   distribution/  外链分发：Reddit 只读搜索 + Dev.to 列热门 / 发文。

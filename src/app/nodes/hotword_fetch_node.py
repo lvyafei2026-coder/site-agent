@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""热词线取词节点：每轮经 next_candidate 工具要一个词。
+"""热词线取词节点：每轮经 next_candidate 工具要一个词，并把逐词通道铺好。
 
-    START → fetch_one → analyze_one → route_after_analyze ─┬─ fetch_one（还有词）
-                                                          └─ build_summary → END
+    START → fetch_one → route_after_fetch ─┬─ analyze_word（逐词子图）→ 回环 / 收尾
+                                          └─ build_summary → END（取尽 / 名单非法）
 
 循环由**图的条件边驱动**（路由在 graph/edges.py），Python 层不写 while/for；
 取不到词（result 为 None）就置 has_more=False，由条件边收尾。
@@ -21,6 +21,7 @@ from typing import Any
 
 from src.app.graph.state import HotwordLoopState
 from src.app.services.tool_service import tool_service
+from src.app.tools.adapters.hotwords.hotword_contract import new_word
 
 log = logging.getLogger(__name__)
 
@@ -61,4 +62,8 @@ def fetch_one(state: HotwordLoopState) -> dict[str, Any]:
         return {**updates, "current": None, "has_more": False}
 
     seen.add(str(item["key"]))
-    return {**updates, "current": item, "has_more": True, "seen": seen}
+    # 取到词就同时把逐词通道铺好：word = 该词结果骨架，body = 喂 AI 的素材起点，
+    # 之后每个补证据节点往这两个通道里填，collect_word 落账时清空。
+    return {**updates, "current": item, "has_more": True, "seen": seen,
+            "word": new_word(item["term"]), "body": dict(item),
+            "signals": [], "ai": {}}

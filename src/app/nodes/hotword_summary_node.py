@@ -18,7 +18,11 @@ from src.app.tools.adapters.hotwords.hotword_contract import OK_MIN_RATE
 
 
 def summary_node(state: HotwordLoopState) -> dict[str, Any]:
-    """聚合本轮：成功数 / 结论分布 / 本轮证据步骤与源级降级提示。"""
+    """聚合本轮：成功数 / 结论分布 / 本轮证据步骤与源级降级步骤。
+
+    对外只给**步骤名**（`evidenceSteps` / `disabledSources`）——人读名是前端的事，
+    后端把 label 塞进返回体就等于让 agent 认识 UI 文案。
+    """
     if state.get("load_error"):
         return {"summary": {
             "ok": False, "error": state["load_error"],
@@ -37,11 +41,10 @@ def summary_node(state: HotwordLoopState) -> dict[str, Any]:
     analyzed = sum(1 for r in results if not r["error"])
     failed = len(results) - analyzed
     rate = analyzed / len(results)
-    degrade = state.get("degrade")
-    evidence = state.get("evidence") or ()
-    disabled = [s for s in evidence if degrade and s.key in degrade.disabled]
+    degrade = state["degrade"]
+    evidence = list(state.get("evidence") or ())
 
-    out = {
+    return {"summary": {
         "ok": rate >= OK_MIN_RATE,
         "fetched": len(results),
         "analyzed": analyzed,
@@ -49,12 +52,8 @@ def summary_node(state: HotwordLoopState) -> dict[str, Any]:
         "successRate": round(rate, 3),
         "counts": counts,
         "items": results,
-        # 前端按这份计划渲染逐词表的证据列，不写死 SERP / 趋势
-        "evidenceSteps": [{"key": s.key, "label": s.label} for s in evidence],
-        "disabledSources": [{"key": s.key, "label": s.label} for s in disabled],
-        "llmFailures": int(degrade.llm_failures) if degrade else 0,  # type: ignore[union-attr]
-    }
-    if disabled:
-        out["note"] = ("；".join(f"{s.label}：本轮已跳过（源不可用）" for s in disabled)
-                       + "；其余词仍照常分析并回写")
-    return {"summary": out}
+        # 前端按这份名单渲染逐词表的证据列，不写死 SERP / 趋势
+        "evidenceSteps": evidence,
+        "disabledSources": [s for s in evidence if s in degrade.disabled],
+        "llmFailures": degrade.llm_failures,
+    }}

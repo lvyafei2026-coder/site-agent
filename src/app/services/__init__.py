@@ -9,21 +9,18 @@
     nodes/normal_intent_node.py      → intent_service.IntentService
     nodes/normal_processing_node.py  → processing_service.ProcessingService
     nodes/normal_validation_node.py  → validation_service.ValidationService
-    nodes/hotword_analyze_node.py    → hotword_service（按计划逐词跑「补证据 → LLM → 后置动作」）
     nodes/hotword_fetch_node.py      → tool_service（取词 / 判例只是工具调用，无独立 service）
 
-热词线的步骤声明单独成文件：
-
-    hotword_plan        EVIDENCE / POST 白名单 + resolve_plan（名单 → 步骤元组）。
-                        编排只遍历计划、函数体不写死工具名：加一个证据源 = tools/hotwords_tools.py
-                        加一个工具 + 这里加一条 Evidence；循环、节点、图、请求模型都不动。
+热词线没有 service 层：逐词编排就是 graph/hotword_graph.py 编译出来的**逐词子图**，
+补证据 / LLM / 后置动作 / 落账各是一个节点（nodes/hotword_*_node.py），
+名单 → 节点的对应表和白名单校验也在那张图里，本层只被节点按名调用工具。
 
 共用能力（被上面的实现类组合，不直接对节点暴露业务语义）：
 
     extraction_service  按 ExtractionSchema 抽字段（processing 用）
     metrics_service     review_metrics 的站点表现分析（processing 用）
     tool_service        两条线共用的工具入口：常规线按意图分发（processing 用），
-                        热词线逐词按计划按名调用（hotword_service 与 hotword_fetch_node 用）
+                        热词线逐词按节点调用（fetch_one 与各步骤节点用）
     prompt_service      从 D1 取提示词并留日志（intent / extraction / metrics 用）
 
 LLM 传输与解析降级不在本层：见 llm/completion.py（complete_json / complete_text）。

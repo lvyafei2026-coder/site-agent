@@ -5,7 +5,7 @@
 """常规线主图：装配 + 运行入口（与 hotword_graph.py 同构）。
 
     normal_graph.py   常规线主图（本文件）：classify_intent → run_processing → … → output
-    hotword_graph.py  热词线循环图：fetch_one → analyze_one → 回环 / build_summary
+    hotword_graph.py  热词线循环图：fetch_one → analyze_word（逐词子图）→ 回环 / build_summary
 
 两图并列、互不嵌套，由 graph/__init__.py 统一导出；两条线各有独立 HTTP 入口
 （`POST /run` / `POST /hotwords`），但**构造与触发机制完全一致**：

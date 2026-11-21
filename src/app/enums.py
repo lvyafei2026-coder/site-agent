@@ -59,10 +59,18 @@ class GraphNode(StrEnum):
     VALIDATION = "validate_result"  # 校验
     OUTPUT = "build_output"         # 生成报告
     ERROR = "handle_error"          # 终态错误处理
-    # 热词循环图（graph/hotword_graph.py）：取一词 → 分析 → 回环 / 汇总
+    # 热词循环图（graph/hotword_graph.py）：取一词 → 逐词子图 → 回环 / 汇总
     FETCH_ONE = "fetch_one"         # 问 tool 要下一个候选词
-    ANALYZE_ONE = "analyze_one"     # 分析当前词并回写状态
+    ANALYZE_WORD = "analyze_word"   # 逐词子图整体（按本轮名单连线，一个词一次调用）
     SUMMARY = "build_summary"       # 终态汇总（与常规线 build_output 对称）
+
+    # 逐词子图内的步骤节点：LLM 之前补证据，LLM 之后做后置动作，最后落账。
+    # 「本轮走哪几步」就是 hotword_graph 里的连线，名单 → 节点名的表也在那儿。
+    GATHER_SERP = "gather_serp"     # 补 SERP 辨形证据（fetch_serp 工具）
+    GATHER_TREND = "gather_trend"   # 补 Google 趋势证据（fetch_trend 工具，只落库不进提示词）
+    LLM_ANALYZE = "llm_analyze"     # 素材进提示词 → AI 结论 → 硬证据压结论
+    WRITE_RESULT = "write_result"   # 结论回写（write_hotword_result 工具）
+    COLLECT_WORD = "collect_word"   # 该词结果落进 results + 轮次计数
 
 
 class RouteTag(StrEnum):
@@ -74,6 +82,9 @@ class RouteTag(StrEnum):
     VALIDATE = "validate"    # processing 无硬失败 → 进 validation
     LOOP = "loop"            # 热词还有词且未达上限 → 回 fetch_one
     SUMMARIZE = "summarize"  # 热词取尽 / 达上限 / KV 失败 → build_summary
+    ANALYZE = "analyze"      # 取到词了 → 进逐词子图
+    NEXT = "next"            # 逐词子图：LLM 出了结论 → 继续走后置动作
+    COLLECT = "collect"      # 逐词子图：LLM 失败 / 没有后置动作 → 直接落账
 
 
 class TraceName(StrEnum):

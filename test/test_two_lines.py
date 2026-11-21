@@ -24,7 +24,7 @@ def test_graph_package_exposes_two_distinct_graphs():
     normal = {str(n) for n in graph.get_normal_graph().get_graph().nodes}
     hw = {str(n) for n in graph.get_hotword_graph().get_graph().nodes}
     assert "classify_intent" in normal and "fetch_one" not in normal
-    assert {"fetch_one", "analyze_one"} <= hw and "classify_intent" not in hw
+    assert {"fetch_one", "analyze_word"} <= hw and "classify_intent" not in hw
     assert graph.get_normal_graph() is not graph.get_hotword_graph()
     assert graph.get_normal_graph is normal_graph.get_normal_graph
     assert graph.get_hotword_graph is hotword_graph.get_hotword_graph

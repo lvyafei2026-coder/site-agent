@@ -12,7 +12,7 @@
 入口层只做 HTTP 绑定：请求模型 → graph 层的 run_*()。不构造 state、不驱动图、
 不拼 trace——两条线的构造与触发机制在 graph/ 里完全一致（normal_graph / hotword_graph），
 差别只在节点类型与 state 内容。热词线的 IO 与常规线走同一个工具注册表，
-区别只是它按**步骤计划**逐词循环调用（计划声明在 services/hotword_plan.py）。
+区别只是它按**步骤名单**逐词循环调用（名单 → 节点的连线在 graph/hotword_graph.py）。
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ def hotwords(request: HotwordsRequest) -> dict:
 
     返回图终态的汇总（ok / analyzed / failed / items / evidenceSteps …）+ trace + langsmith，
     与 /run 同一套封装；limit 最大 50，由 state 工厂收口。
-    evidence / post 只能取步骤白名单里的 key（serp / trend / write_result），
+    evidence / post 只能取步骤白名单里的名字（serp / trend / write_result），
     不是任意工具名——这个入口不带强鉴权，不能让它变成不可逆写工具的旁路；
     名单非法时整轮 ok=False，不跑任何词。
     """

@@ -14,8 +14,9 @@
 
 两条线的走向（见 graph/normal_graph.py、graph/hotword_graph.py）：
   常规线  classify_intent → run_processing → validate_result → build_output / retry / handle_error
-  热词线  fetch_one → analyze_one → route_after_analyze ─┬─ fetch_one（回环）
-                                                        └─ build_summary（收尾）
+  热词线  fetch_one → analyze_word → 回环 ┬ fetch_one（还有词）
+                                         └ build_summary（收尾）
+          analyze_word 是按本轮名单编译的**逐词子图**：补证据节点 → LLM → 后置动作节点 → 落账。
 """
 
 from __future__ import annotations
@@ -23,8 +24,6 @@ from __future__ import annotations
 from typing import Any, Optional, TypedDict
 
 from src.app.config import settings
-from src.app.services.hotword_plan import Evidence, PostAction, resolve_plan
-from src.app.services.hotword_service import _DegradeState
 
 
 class WorkflowState(TypedDict, total=False):
@@ -110,30 +109,65 @@ def initial_workflow_state(
     return state
 
 
+class DegradeState:
+    """热词线一轮的**降级状态**：哪些证据步骤本轮已关掉，外加 LLM 失败次数。
+
+    单词级失败隔离后这里只保留「省时间 / 供汇总」两件事，不拦任何词：
+
+      ・某步源不可用 → disabled.add(key)：后续词跳过这一步（省掉每词几发超时），照常走 LLM；
+      ・LLM 失败      → 只累加次数供汇总，不中止。
+
+    源级故障是「出口 IP 不通」这类全局问题，让 20 个词各撞一遍超时毫无意义；
+    跳过的是「取数」那一个节点，不是整词分析。
+
+    key 就是步骤名（与 GraphNode 连线用的名单同一套），谁 disable 谁负责，不在这里表驱动。
+    热词图逐词串行（无常驻线程），状态只在本轮内单向推进，无需加锁。
+    """
+
+    def __init__(self) -> None:
+        self.disabled: set[str] = set()
+        self.llm_failures = 0
+
+    def disable(self, step: str) -> bool:
+        """关掉一个证据步骤；返回是否首次置位（用于只打一条日志）。"""
+        first = step not in self.disabled
+        self.disabled.add(step)
+        return first
+
+    def note_llm_failure(self) -> int:
+        """记一次 LLM 失败，返回累计次数。只用于日志/汇总。"""
+        self.llm_failures += 1
+        return self.llm_failures
+
+
 class HotwordLoopState(TypedDict, total=False):
     """热词循环图在节点间流转的状态。字段全为名词，避免与节点名撞名。
 
-    与 WorkflowState 的差别只在内容：这里带本轮的步骤计划（evidence / post）、
-    降级状态（degrade）与逐词明细，所以对外返回体取终态的 `summary` 字段，而不是整份 state。
+    与 WorkflowState 的差别只在内容：这条线的「编排」就是图的连线，所以 state 里带
+    本轮名单（evidence / post，由 graph/hotword_graph.py 解析校验）、降级状态和逐词通道。
     KV 句柄不进 state：工具自己取 get_kv()，两条线一致。
     """
 
     # ——入口参数（initial_hotword_state 注入，节点只读）——
     limit: int                       # 本次最多分析的词数（= 最大循环次数）
     prompt_version: Optional[str]    # 本轮提示词版本（None → 节点侧回退默认）
-    degrade: _DegradeState           # 源级降级状态（已关掉的证据步骤 + LLM 失败次数）
-    evidence: tuple[Evidence, ...]   # 本轮 LLM 之前的补证据步骤（hotword_plan 白名单解析）
-    post: tuple[PostAction, ...]     # 本轮 LLM 之后的后置动作步骤
+    degrade: DegradeState            # 源级降级状态（已关掉的步骤名 + LLM 失败次数）
+    evidence: tuple[str, ...]        # 本轮 LLM 之前的补证据步骤名（= 子图里连了哪几个 gather）
+    post: tuple[str, ...]            # 本轮 LLM 之后的后置动作步骤名
 
     # ——节点间流转——
     seen: set[str]                   # 本轮已取过的 key（防 KV 最终一致导致重复取词）
     examples_loaded: bool            # 人工判例是否已读（只读一次）
     examples: list[dict[str, str]]
     has_more: bool                   # fetch_one 本轮是否取到词（False → 条件边收尾）
-    current: dict[str, Any]          # 本轮取出的待分析词
+    current: dict[str, Any]          # 本轮取出的候选词（KV 里的原始条目）
+    word: dict[str, Any]             # 该词的结果骨架，步骤节点逐步填，collect_word 落账
+    body: dict[str, Any]             # 提示词素材：current + 各证据节点写进来的部分
+    signals: list[str]               # 硬证据（能把结论压成「不做」），decide 按顺序取
+    ai: dict[str, Any]               # LLM 产出：正文 / 结论 / 理由 / 标签，给后置动作节点用
     results: list[dict[str, Any]]
     loop_count: int
-    load_error: str                  # 本轮开跑前就失败的原因（计划非法 / 候选池读取失败）
+    load_error: str                  # 本轮开跑前就失败的原因（名单非法 / 候选池读取失败）
 
     # ——输出（build_summary 节点产出，运行入口直接取用）——
     summary: dict[str, Any]
@@ -141,29 +175,30 @@ class HotwordLoopState(TypedDict, total=False):
 
 def initial_hotword_state(limit: int = 20,
                           prompt_version: Optional[str] = None,
-                          evidence: Optional[list[str]] = None,
-                          post: Optional[list[str]] = None) -> HotwordLoopState:
+                          evidence: tuple[str, ...] = (),
+                          post: tuple[str, ...] = ()) -> HotwordLoopState:
     """构造热词线一轮的入口状态（与 initial_workflow_state 对称）。
 
     limit 是最大循环次数，收口在 1-50。prompt_version 原样带上（可为 None）：
     默认版本由 prompts.registry 结合 D1 的默认版本决定，不在这里提前拍死。
-    evidence / post 是步骤名单（None=默认计划，[]=该段什么都不做）；名单里有未知 key
-    时不抛给调用方，收进 load_error 走与候选池不可达同一条收尾路径，trace 与回链照常。
+    evidence / post 是**已解析校验过的步骤名单**——名单与节点的对应关系在
+    graph/hotword_graph.py（那里同时决定图怎么连线），这里只负责把通道初始化好。
     """
-    state: HotwordLoopState = {
+    return {
         "limit": max(1, min(int(limit or 20), 50)),
         "prompt_version": prompt_version,
-        "degrade": _DegradeState(),
+        "degrade": DegradeState(),
+        "evidence": evidence,
+        "post": post,
         "seen": set(),
         "examples_loaded": False,
         "examples": [],
         "has_more": False,
         "current": None,
+        "word": {},
+        "body": {},
+        "signals": [],
+        "ai": {},
         "results": [],
         "loop_count": 0,
     }
-    try:
-        state["evidence"], state["post"] = resolve_plan(evidence, post)
-    except ValueError as exc:
-        state["load_error"] = str(exc)
-    return state

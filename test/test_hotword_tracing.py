@@ -2,20 +2,23 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""LangSmith 层级与工具可见性回归（声明式切面版）。
+"""LangSmith 层级与工具可见性回归（声明式切面 + LangGraph 子图版）。
 
-trace 全部由 observability.observed 切面声明，父子靠 contextvar 自动继承：
-    外层 root → 热词 run → LangGraph → 节点 → 词 → IO / LLM
+trace 由两层拼出来：LangGraph 自己为每个节点（含逐词子图里的步骤节点）建 run，
+`observability.observed` 切面为根与工具建 span，父子都靠 contextvar 自动继承：
+    外层 root → 热词 run → LangGraph → fetch_one / analyze_word
+                                        └─ 子图：gather_serp → gather_trend → llm_analyze
+                                                    → write_result → collect_word
 本文件验证三件事：
-  ① 一条树：6 个词展开在同一条 trace 下，不散成独立根；LLM 挂在对应词下；
+  ① 一条树：6 个词展开在同一条 trace 下，不散成独立根；LLM 挂在对应词的 llm_analyze 下；
   ② 可观测：热词线与常规线共用 registry 的统一 tool span（tool:fetch_serp /
-     tool:fetch_trend / tool:write_hotword_result / tool:next_candidate …），
-     出入参是真实 ToolOutput；源挂了 span 标红且 retryable=True，业务照常降级，
-     被跳过的取数不伪造 span，只在词 span 上留 note；
+     tool:fetch_trend / tool:write_hotword_result / tool:next_candidate …），且各自嵌在
+     调用它的那个步骤节点下；出入参是真实 ToolOutput；源挂了 span 标红且 retryable=True，
+     业务照常降级，被跳过的取数不伪造 span（该步的词结果里留下 notice 与 evidence=False）；
   ③ 零开销：关追踪时不建 span、不注入回链字段、不 import SDK 运行时。
 
 父子断言用「后代关系」而不是「直接 parent」——LangGraph 会自动插入图/节点层，
-切面不该假设中间没有这些层；重要的是整棵树连通、叶子挂在正确的词下。
+切面不该假设中间没有这些层；重要的是整棵树连通、叶子挂在正确的步骤下。
 """
 
 from __future__ import annotations
@@ -93,8 +96,19 @@ def _under(runs: list[RunTree], run: RunTree, ancestor_id: str) -> bool:
     return False
 
 
+def _named(runs: list[RunTree], node: str) -> list[RunTree]:
+    """按节点名取 LangGraph 自己建的 run——步骤节点名只出现在逐词子图那一层。"""
+    return [r for r in runs if r.name == node]
+
+
+def _word(run: RunTree) -> dict:
+    """从步骤节点的 run 里取出它处理的那个词的结果（state 通道 word）。"""
+    outputs = run.outputs or {}
+    return outputs.get("word") or {}
+
+
 def test_batch_tree_is_nested_under_graph_root(fake_kv, monkeypatch, traced_runs):
-    """一条根展开看完 6 个词：run 挂外层根、每词在 run 下、LLM 在对应词下。"""
+    """一条根展开看完 6 个词：run 挂外层根、每词一条 collect_word 在 run 下、LLM 在对应词的 llm_analyze 下。"""
     seen_in_llm: list[tuple[str, str]] = []
 
     def llm(messages):
@@ -110,17 +124,18 @@ def test_batch_tree_is_nested_under_graph_root(fake_kv, monkeypatch, traced_runs
         out = hotword_graph.run_hotwords(limit=6)
 
     run = next(r for r in traced_runs if r.name == TraceName.HOTWORD_RUN)
-    words = [r for r in traced_runs if r.name.startswith(hwk.WORD_TRACE_PREFIX)]
+    words = _named(traced_runs, "collect_word")
+    analyzes = _named(traced_runs, "llm_analyze")
     llms = [r for r in traced_runs if r.name == "ChatOpenAI"]
 
     assert str(run.parent_run_id) == str(root.id)   # 根切面挂外层 root
     assert len(words) == 6 and len(llms) == 6
     assert all(_under(traced_runs, w, str(run.id)) for w in words)
-    # 每个 LLM run 在某词 span 下（contextvar 自动继承），不是散落的根
-    assert all(any(_under(traced_runs, r, str(w.id)) for w in words) for r in llms)
+    # 每个 LLM run 挂在本词的 llm_analyze 节点下（contextvar 自动继承），不是散落的根
+    assert all(any(_under(traced_runs, r, str(a.id)) for a in analyzes) for r in llms)
     assert len(seen_in_llm) == 6
-    assert all(name.startswith(hwk.WORD_TRACE_PREFIX) for name, _ in seen_in_llm)
-    # 每个词 span 都有自己的 run，没有互相串
+    assert all(name == "llm_analyze" for name, _ in seen_in_llm)
+    # 每个词的判定 run 都是独立 run，没有互相串
     assert len({wid for _, wid in seen_in_llm}) == 6
 
     assert out["analyzed"] == 6
@@ -131,9 +146,9 @@ def test_batch_tree_is_nested_under_graph_root(fake_kv, monkeypatch, traced_runs
     assert run_helpers.get_current_run_tree() is None
 
 
-def test_word_span_marks_business_error_without_breaking_others(fake_kv, monkeypatch,
-                                                                traced_runs):
-    """某词 LLM 抛异常：该词 span 标红写 error，其余词照常完成且在同一棵树下。"""
+def test_word_failure_is_recorded_without_breaking_others(fake_kv, monkeypatch,
+                                                          traced_runs):
+    """某词 LLM 抛异常：该词的 llm_analyze run 里带真因，其余词照常完成且在同一棵树下。"""
     def llm(messages):
         term = messages[-1]["content"].split("关键词：")[1].split("\n")[0]
         if term.endswith("2"):
@@ -146,12 +161,13 @@ def test_word_span_marks_business_error_without_breaking_others(fake_kv, monkeyp
         out = hotword_graph.run_hotwords(limit=5)
 
     run = next(r for r in traced_runs if r.name == TraceName.HOTWORD_RUN)
-    words = [r for r in traced_runs if r.name.startswith(hwk.WORD_TRACE_PREFIX)]
+    analyzes = _named(traced_runs, "llm_analyze")
     assert str(run.parent_run_id) == str(root.id)
-    assert len(words) == 5
-    assert all(_under(traced_runs, w, str(run.id)) for w in words)
-    failed = [w for w in words if w.error]
-    assert len(failed) == 1 and "LLM 连接超时" in failed[0].error
+    assert len(analyzes) == 5
+    assert all(_under(traced_runs, a, str(run.id)) for a in analyzes)
+    # 节点不抛异常，失败写在 state 的 word.error 上——所以可见性靠节点 run 的产出
+    failed = [a for a in analyzes if "LLM 连接超时" in str(_word(a).get("error"))]
+    assert len(failed) == 1
     assert out["analyzed"] == 4 and out["failed"] == 1
     assert run.outputs["analyzed"] == 4
 
@@ -190,13 +206,12 @@ def test_batch_nests_under_real_langgraph_node(fake_kv, monkeypatch, traced_runs
                           config={"run_name": "site-agent:analyze_hotwords"})
 
     run = next(r for r in traced_runs if r.name == TraceName.HOTWORD_RUN)
-    words = [r for r in traced_runs if r.name.startswith(hwk.WORD_TRACE_PREFIX)]
+    tools = [r for r in traced_runs if r.run_type == "tool"]
     assert node_run_ids and node_run_ids[0]
     assert str(run.parent_run_id) == node_run_ids[0]
-    assert len(words) == 3
     # 中间节点 run 被本用例 stub 掉持久化，traced_runs 里没有它们，
-    # 无法沿 parent 链回溯；只断言词 span 都在 run 之下即可（完整层级由首个用例验）。
-    assert all(str(w.parent_run_id) for w in words)
+    # 无法沿 parent 链回溯；只断言工具 span 都认得到一个父（完整层级由首个用例验）。
+    assert len(tools) == 13 and all(str(t.parent_run_id) for t in tools)
     assert result["out"]["analyzed"] == 3
 
 
@@ -233,7 +248,7 @@ def test_tracing_off_has_no_spans_and_plain_result(fake_kv, monkeypatch):
 # 工具可见性：热词线与常规线共用 registry 的 30 个 RuntimeTool，都要看得到出入参
 # ---------------------------------------------------------------------------
 def test_run_tool_spans_capture_serp_trend_kv_io(fake_kv, monkeypatch, traced_runs):
-    """每词三条 tool span + 每轮一次取词 + 判例读一次，父链与出入参都要对。"""
+    """每词三条 tool span + 每轮一次取词 + 判例读一次，各自嵌在调用它的步骤节点下。"""
     def llm(messages):
         _fake_openai_call("x")
         return "7) 结论：不做，影视作品\n8) 信号标签：工具查询", "fake"
@@ -243,10 +258,9 @@ def test_run_tool_spans_capture_serp_trend_kv_io(fake_kv, monkeypatch, traced_ru
         out = hotword_graph.run_hotwords(limit=3)
 
     run = next(r for r in traced_runs if r.name == TraceName.HOTWORD_RUN)
-    words = [r for r in traced_runs if r.name.startswith(hwk.WORD_TRACE_PREFIX)]
     tools = [r for r in traced_runs if r.run_type == "tool"]
     assert str(run.parent_run_id) == str(root.id)
-    assert len(words) == 3
+    assert len(_named(traced_runs, "collect_word")) == 3
     # 3 词 × (fetch_serp/fetch_trend/write_hotword_result) + 3 次取词（达 limit 即停）+ 1 条判例读
     assert len(tools) == 13
 
@@ -261,13 +275,17 @@ def test_run_tool_spans_capture_serp_trend_kv_io(fake_kv, monkeypatch, traced_ru
     assert len(ex_readers) == 1 and _under(traced_runs, ex_readers[0], str(run.id))
     assert ex_readers[0].outputs["ok"] is True
 
-    per_word = [r for r in tools if r not in readers and r not in ex_readers]
-    word_ids = {str(w.id) for w in words}
-    assert all(any(_under(traced_runs, r, wid) for wid in word_ids) for r in per_word)
-    for name in ("tool:fetch_serp", "tool:fetch_trend", "tool:write_hotword_result"):
-        assert sum(1 for r in per_word if r.name == name) == 3
+    # ★工具挂在哪一步下面，由「哪个节点调它」决定——连线即层级，测试把这条不变量钉住
+    for tool_name, node_name in (("tool:next_candidate", "fetch_one"),
+                                 ("tool:fetch_serp", "gather_serp"),
+                                 ("tool:fetch_trend", "gather_trend"),
+                                 ("tool:write_hotword_result", "write_result")):
+        hosts = _named(traced_runs, node_name)
+        spans = [r for r in tools if r.name == tool_name]
+        assert len(spans) == len(hosts) == 3, (tool_name, node_name)
+        assert all(any(_under(traced_runs, s, str(h.id)) for h in hosts) for s in spans)
 
-    serp = next(r for r in per_word if r.name == "tool:fetch_serp")
+    serp = next(r for r in tools if r.name == "tool:fetch_serp")
     assert serp.inputs == {"term": "term 0"}
     assert serp.outputs["ok"] is True
     body = serp.outputs["result"]
@@ -277,16 +295,16 @@ def test_run_tool_spans_capture_serp_trend_kv_io(fake_kv, monkeypatch, traced_ru
     assert any(k.startswith(kvk.SERP_PREFIX) for k in serp_keys)
     assert kvk.COMPETITION_KEY in serp_keys
     assert all(w["ok"] for w in body["writes"])
-    # 适配器 note 的诊断属于这次工具调用，不漂到外层词 span
+    # 适配器 note 的诊断属于这次工具调用，不漂到外层步骤节点 run
     assert serp.outputs["engine"] == "duckduckgo"
 
-    trend = next(r for r in per_word if r.name == "tool:fetch_trend")
+    trend = next(r for r in tools if r.name == "tool:fetch_trend")
     assert trend.inputs == {"term": "term 0"}
     tbody = trend.outputs["result"]
     assert tbody["ok"] is True and "pointCount" in tbody and tbody["writes"]
     assert trend.outputs["pointCount"] == 1
 
-    kvwrite = next(r for r in per_word if r.name == "tool:write_hotword_result")
+    kvwrite = next(r for r in tools if r.name == "tool:write_hotword_result")
     assert kvwrite.inputs["verdict"] == "不做"
     assert kvwrite.inputs["item"]["term"] == "term 0"
     wbody = kvwrite.outputs["result"]
@@ -298,14 +316,15 @@ def test_run_tool_spans_capture_serp_trend_kv_io(fake_kv, monkeypatch, traced_ru
 
     llms = [r for r in traced_runs if r.name == "ChatOpenAI"]
     assert len(llms) == 3
-    assert all(any(_under(traced_runs, r, wid) for wid in word_ids) for r in llms)
+    assert all(any(_under(traced_runs, r, str(a.id))
+                   for a in _named(traced_runs, "llm_analyze")) for r in llms)
     assert out["analyzed"] == 3
 
 
 def test_source_down_marks_tool_spans_red_and_batch_continues(fake_kv, monkeypatch,
                                                              traced_runs):
     """源整体挂掉：只撞一次，span 标红带真因且 retryable=True；后续词跳过取数
-    （没有工具调用就不伪造 span，只在词 span 上留 note），整轮不中止。"""
+    （没有工具调用就不伪造 span，词结果里留 notice + evidence=False），整轮不中止。"""
     _seed(fake_kv, monkeypatch, count=8)
 
     def serp_boom(term, session=None, limit=10):
@@ -329,15 +348,15 @@ def test_source_down_marks_tool_spans_red_and_batch_continues(fake_kv, monkeypat
     assert serp_spans[0].outputs["retryable"] is True
     assert trend_spans[0].outputs["retryable"] is True
 
-    words = [r for r in traced_runs if r.name.startswith(hwk.WORD_TRACE_PREFIX)]
-    assert len(words) == 8
-    skipped = [w for w in words if w.outputs.get("serpSkipped")]
-    assert len(skipped) == 7                       # 首词真撞了一次，其余 7 词跳过
-    assert all(w.outputs.get("trendSkipped") for w in skipped)
-    assert any("SERP 未取到" in (w.outputs.get("notice") or "") for w in words)
+    assert len(_named(traced_runs, "collect_word")) == 8
+    # 跳过的 7 词没有工具 span，但 gather_serp 节点的产出里带着那条 notice
+    serp_nodes = _named(traced_runs, "gather_serp")
+    assert len(serp_nodes) == 8
+    assert sum("本轮已跳过" in str(n.outputs) for n in serp_nodes) == 7
 
-    assert [s["key"] for s in out["disabledSources"]] == ["serp", "trend"]
-    assert "SERP：本轮已跳过" in out["note"] and "趋势：本轮已跳过" in out["note"]
+    assert out["disabledSources"] == ["serp", "trend"]   # 只给名字，人读名是前端的事
+    assert sum("SERP 未取到" in (r.get("notice") or "") for r in out["items"]) == 8
+    assert all(r["evidence"] == {"serp": False, "trend": False} for r in out["items"])
     assert out["analyzed"] == 8 and out["failed"] == 0
 
 

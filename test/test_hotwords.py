@@ -6,12 +6,14 @@
 run_hotwords 经共享 KV 的端到端写回（不碰 console / radar / OpenAI / DDG / Google）。
 
 2026-11-12 去接口化后，run_hotwords 直接读写共享 KV（见 ../cloudflare/kv.py）。这里用
-内存 FakeKV + monkeypatch 外部抓取/LLM，离线验证「候选 → 分析 → 回写状态」全链路。
+内存 FakeKV + monkeypatch 外部抓取/LLM，离线验证「候选 → 逐词子图 → 回写状态」全链路。
 """
+
+import inspect
 
 import pytest
 
-from src.app.enums import Intent
+from src.app.enums import Intent, ToolKind
 from src.app.tools.adapters.cloudflare import kv as kvk
 from src.app.tools.adapters.hotwords import hotword_contract as hwk
 from src.app.tools.adapters.hotwords import hotword_criteria as hwc
@@ -19,8 +21,7 @@ from src.app.tools.adapters.hotwords import hotword_fetch
 from src.app.tools.adapters.hotwords import hotword_llm
 from src.app.tools.adapters.hotwords import scrape_serp, scrape_trend
 from src.app.graph import hotword_graph
-from src.app.services import hotword_plan
-from src.app.services.hotword_service import _analyze_one
+from src.app.graph.hotword_graph import resolve_steps
 from src.app.services.tool_service import INTENT_TOOLS
 from src.app.tools.registry import tool_registry
 
@@ -249,7 +250,7 @@ def test_run_hotwords_serp_source_down_only_skips_serp(fake_kv, monkeypatch):
     out = hotword_graph.run_hotwords(limit=20)
 
     assert not out.get("aborted")            # 没有「整批中止」这回事了
-    assert [s["key"] for s in out["disabledSources"]] == ["serp"]
+    assert out["disabledSources"] == ["serp"]
     assert out["fetched"] == 12 and out["analyzed"] == 12
     assert calls["n"] <= 1   # 发现源挂后本批不再撞 DDG
     assert all(r["evidence"]["serp"] is False for r in out["items"])
@@ -345,29 +346,35 @@ def test_run_hotwords_no_candidates(fake_kv):
     assert "没有未跟进" in (out.get("note") or "")
 
 
-# ---- 步骤计划：补哪些证据、做哪些后置动作由参数选，编排不写死工具名 ----
+# ---- 步骤名单：补哪些证据、做哪些后置动作由参数选，选中即图上多一个节点 ----
 
-def test_resolve_plan_defaults_order_and_rejects_unknown():
-    ev, post = hotword_plan.resolve_plan()
-    assert [s.key for s in ev] == ["serp", "trend"]
-    assert [s.tool for s in post] == ["write_hotword_result"]
+def test_resolve_steps_defaults_order_and_rejects_unknown():
+    ev, post = resolve_steps()
+    assert (ev, post) == (("serp", "trend"), ("write_result",))
 
-    ev, _ = hotword_plan.resolve_plan(["trend", "serp"])   # 顺序按名单，不按默认
-    assert [s.key for s in ev] == ["trend", "serp"]
+    ev, _ = resolve_steps(["trend", "serp"])   # 顺序按名单，不按默认
+    assert ev == ("trend", "serp")
 
-    ev, post = hotword_plan.resolve_plan([], [])           # 空名单 = 这一段什么都不做
-    assert ev == () and post == ()
+    assert resolve_steps([], []) == ((), ())   # 空名单 = 那一段一个节点都不连
 
     with pytest.raises(ValueError, match="未知证据步骤"):
-        hotword_plan.resolve_plan(["git_push"])
+        resolve_steps(["git_push"])
     with pytest.raises(ValueError, match="未知后置动作步骤"):
-        hotword_plan.resolve_plan(None, ["fetch_serp"])
+        resolve_steps(None, ["fetch_serp"])
 
 
-def test_step_plan_whitelist_excludes_irreversible_tools():
-    """★/hotwords 无强鉴权，步骤白名单里绝不能出现 write 类工具（git_push / send_notice…）。"""
-    for step in (*hotword_plan.EVIDENCE.values(), *hotword_plan.POST.values()):
-        assert tool_registry.get(step.tool).kind != "write", step.tool
+def test_step_nodes_never_call_irreversible_tools():
+    """★/hotwords 无强鉴权：名单能指向的节点绝不能调 write 类工具（git_push / send_notice…）。
+
+    白名单就是 hotword_graph 的两张表，所以这里查的是表里那些节点函数的源码——
+    往节点里塞一个不可逆动作，这个测试就红。
+    """
+    write_tools = tool_registry.by_kind(ToolKind.WRITE.value)
+    steps = {**hotword_graph.EVIDENCE_STEPS, **hotword_graph.POST_STEPS}
+    for name, (_, fn) in steps.items():
+        body = inspect.getsource(fn)
+        for tool in write_tools:
+            assert tool not in body, f"{name} 步骤节点里出现了不可逆工具 {tool}"
 
 
 def test_run_hotwords_evidence_plan_skips_unselected_source(fake_kv, monkeypatch):
@@ -392,7 +399,7 @@ def test_run_hotwords_evidence_plan_skips_unselected_source(fake_kv, monkeypatch
     assert serp_calls["n"] == 0
     assert out["analyzed"] == 3
     assert [sorted(r["evidence"]) for r in out["items"]] == [["trend"]] * 3
-    assert out["evidenceSteps"] == [{"key": "trend", "label": "趋势"}]
+    assert out["evidenceSteps"] == ["trend"]     # 只给名字，人读名是前端的事
     assert out["disabledSources"] == []
 
 
@@ -419,7 +426,7 @@ def test_run_hotwords_post_plan_can_write_nothing(fake_kv, monkeypatch):
 
 
 def test_run_hotwords_unknown_step_fails_before_any_io(fake_kv, monkeypatch):
-    """非法步骤名在入口就被拒：不发 SERP、不调 LLM、不写 KV。"""
+    """非法步骤名在装配图之前就被拒：不发 SERP、不调 LLM、不写 KV。"""
     monkeypatch.setattr(hotword_fetch, "SERP_GAP_SEC", 0)
     fake_kv.put_json("candidates", [{"term": f"term {i}"} for i in range(3)])
     calls = {"serp": 0, "llm": 0}
@@ -489,7 +496,7 @@ def test_llm_uses_shared_client_and_normalizes_dict(monkeypatch, caplog):
 def test_llm_empty_content_reports_real_cause(monkeypatch, caplog):
     """线上真实响应：finish_reason=length、content=""、reasoning_tokens=2000。
 
-    此前 _analyze_one 一律报「LLM_API_KEY 未配置或返回为空」，与现场对不上。
+    此前逐词分析一律报「LLM_API_KEY 未配置或返回为空」，与现场对不上。
     现在必须指向「输出预算耗尽」，并带全 finish_reason / reasoning_tokens。
     """
     import logging
@@ -554,7 +561,13 @@ def test_empty_content_without_reasoning_blames_text_budget(monkeypatch):
     assert "调大 MAX_TOKENS" in ei.value.diag["hint"]
 
 
-def test_analyze_one_error_matches_real_cause(fake_kv, monkeypatch):
+def test_select_pending_skips_blank_term(fake_kv):
+    """脏候选（没有 term）在取词工具那一层就被跳过——取词节点因此不必再判空词。"""
+    fake_kv.put_json("candidates", [{"term": ""}, {"note": "没 term 字段"}, {"term": "real term"}])
+    assert hwk.select_pending(set())["term"] == "real term"
+
+
+def test_word_llm_failure_reports_real_cause(fake_kv, monkeypatch):
     """整批 items[].error 要带真实诊断，且空正文时绝不回写状态。"""
     term = "ato unpaid super recovery"
     fake_kv.put_json("candidates", [{"term": term}])
@@ -664,13 +677,6 @@ def test_select_pending_survives_shape_drift(fake_kv):
 
     fake_kv.put_json("candidates", {"a": 1})  # 期望 list，实际 dict
     assert hwk.select_pending(set()) is None
-
-
-def test_analyze_one_skips_blank(fake_kv):
-    out = _analyze_one({"term": ""})
-    assert out["error"] == "空词"
-    # 不写任何 KV
-    assert fake_kv.writes == 0
 
 
 def test_run_hotwords_kv_unreachable_returns_error(fake_kv, monkeypatch):

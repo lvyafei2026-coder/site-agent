@@ -5,7 +5,8 @@
 """两条线的条件边路由：节点只产出 state，「下一步去哪」全在这里。
 
     常规线 normal_graph   route_after_processing / route_after_validation
-    热词线 hotword_graph  route_after_analyze（逐词回环唯一的闸门）
+    热词线 hotword_graph  route_after_fetch / route_after_word（逐词回环的闸门）
+                          route_after_llm（逐词子图内：有结论才做后置动作）
 
 写法两条线一致：路由函数返回 RouteTag，*_EDGE_MAP 把标签翻成 GraphNode 节点名，
 图装配处只声明结构。取值真源在 src.app.enums，这里不写裸字符串。
@@ -56,22 +57,40 @@ EDGE_MAP = {
 }
 
 
-def route_after_analyze(state: HotwordLoopState) -> str:
-    """KV 失败 / 没词了 / 达上限 → build_summary 收尾；否则回 fetch_one 再问 tool。
+def route_after_fetch(state: HotwordLoopState) -> str:
+    """取到词才进逐词子图；候选池取尽 / KV 失败 / 名单非法 → 直接进汇总节点收尾。"""
+    if state.get("load_error") or not state.get("has_more"):
+        return RouteTag.SUMMARIZE
+    return RouteTag.ANALYZE
 
-    ★这是循环唯一的闸门——「最多分析几个词」完全由此处的图路由决定，
-      Python 调用方不写任何 while/for 驱动。收尾也走图内节点，不在图外后处理。
+
+FETCH_EDGE_MAP = {
+    RouteTag.ANALYZE: GraphNode.ANALYZE_WORD,
+    RouteTag.SUMMARIZE: GraphNode.SUMMARY,
+}
+
+
+def route_after_word(state: HotwordLoopState) -> str:
+    """一个词跑完子图后：达上限就收尾，否则回 fetch_one 再问 tool 要一个词。
+
+    ★「最多分析几个词」完全由此处的图路由决定，Python 调用方不写任何 while/for 驱动；
+      收尾也走图内节点，不在图外做后处理。
     """
-    if state.get("load_error"):
-        return RouteTag.SUMMARIZE
     if state.get("loop_count", 0) >= state["limit"]:
-        return RouteTag.SUMMARIZE
-    if not state.get("has_more"):
         return RouteTag.SUMMARIZE
     return RouteTag.LOOP
 
 
-HOTWORD_EDGE_MAP = {
+WORD_EDGE_MAP = {
     RouteTag.LOOP: GraphNode.FETCH_ONE,
     RouteTag.SUMMARIZE: GraphNode.SUMMARY,
 }
+
+
+def route_after_llm(state: HotwordLoopState) -> str:
+    """逐词子图内：LLM 出了结论才走后置动作链；失败/空正文的词不写 KV，直接落账。
+
+    映射表由装配处按本轮名单给出（NEXT → 第一个后置节点，COLLECT → collect_word），
+    这里只判「有没有结论」，不认识具体步骤名。
+    """
+    return RouteTag.NEXT if state.get("ai") else RouteTag.COLLECT

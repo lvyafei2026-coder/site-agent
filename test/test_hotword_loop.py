@@ -2,12 +2,12 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""逐词循环图（nodes/hotword_*_node.py + graph/edges.py）的图机制单测：
-条件边回环、limit 封顶、串行推进。
+"""逐词循环图（nodes/hotword_*_node.py + graph/edges.py + graph/hotword_graph.py）的图机制单测：
+条件边回环、limit 封顶、名单 → 连线、串行推进。
 
 不重复 test_hotwords.py 的写回/降级语义（那些已被 run_hotwords 端到端覆盖），这里只钉
-「循环由图驱动、每轮问 tool 取一个词」这件事本身：节点拓扑、route_after_analyze 的四种
-路由、fetch_one 真的每轮取一个、limit 真能提前收口。
+「循环由图驱动、每轮问 tool 取一个词」这件事本身：外层节点拓扑、子图按名单连线、
+三个路由函数的分支、fetch_one 真的每轮取一个、limit 真能提前收口。
 """
 
 from __future__ import annotations
@@ -16,7 +16,10 @@ from langgraph.graph import END
 
 from src.app.enums import GraphNode, RouteTag
 from src.app.graph import get_hotword_graph, hotword_graph
-from src.app.graph.edges import HOTWORD_EDGE_MAP, route_after_analyze
+from src.app.graph.edges import (
+    FETCH_EDGE_MAP, WORD_EDGE_MAP, route_after_fetch, route_after_llm, route_after_word,
+)
+from src.app.graph.hotword_graph import DEFAULT_EVIDENCE, DEFAULT_POST, build_word_graph
 from src.app.graph.state import initial_hotword_state
 from src.app.nodes.hotword_fetch_node import fetch_one
 from src.app.tools.adapters.cloudflare import kv as kvk
@@ -25,24 +28,52 @@ from src.app.tools.adapters.hotwords import hotword_llm
 from src.app.tools.adapters.hotwords import scrape_serp, scrape_trend
 
 
+def _nodes(word_graph):
+    return set(word_graph.get_graph().nodes.keys())
+
+
 def test_loop_graph_topology():
-    """图有三个业务节点（取词 / 分析 / 汇总），且 analyze_one 有回环边指回 fetch_one。"""
-    g = get_hotword_graph().get_graph()
-    nodes = set(g.nodes.keys())
-    assert {"fetch_one", "analyze_one", "build_summary"} <= nodes
-    # 条件边的分支里应含回环目标与收尾节点，汇总节点再连到 END
+    """外层三个业务节点（取词 / 逐词子图 / 汇总），回环由 analyze_word 的条件边给出。"""
+    nodes = _nodes(get_hotword_graph())
+    assert {"fetch_one", "analyze_word", "build_summary"} <= nodes
     assert END in nodes
+    # 步骤节点在外层不可见——它们是子图内部的事（trace 因此保持逐词粒度）
+    assert not {"gather_serp", "llm_analyze", "collect_word"} & nodes
 
 
-def test_route_after_analyze():
-    """路由返回标签、由 HOTWORD_EDGE_MAP 翻成节点名——与常规线 edges 同一套写法。"""
+def test_word_graph_is_wired_from_step_names():
+    """★名单就是连线：不在名单上的步骤，图上根本没有那个节点。"""
+    assert _nodes(build_word_graph(DEFAULT_EVIDENCE, DEFAULT_POST)) >= {
+        "gather_serp", "gather_trend", "llm_analyze", "write_result", "collect_word"}
+
+    serp_only = _nodes(build_word_graph(("serp",), ()))
+    assert {"gather_serp", "llm_analyze", "collect_word"} <= serp_only
+    assert not {"gather_trend", "write_result"} & serp_only
+
+    no_step = _nodes(build_word_graph((), ()))          # 两段名单都空
+    assert no_step >= {"llm_analyze", "collect_word"}
+    assert not {"gather_serp", "gather_trend", "write_result"} & no_step
+
+
+def test_route_after_fetch_and_word():
+    """两道闸门：取到词才进子图；跑完一个词没达上限就回 fetch_one——与常规线 edges 同一套写法。"""
     base = {"limit": 5, "has_more": True, "loop_count": 0, "load_error": ""}
-    assert route_after_analyze(base) == RouteTag.LOOP                            # 还有词、未达上限 → 回环
-    assert route_after_analyze({**base, "loop_count": 5}) == RouteTag.SUMMARIZE   # 达上限
-    assert route_after_analyze({**base, "has_more": False}) == RouteTag.SUMMARIZE  # tool 取尽
-    assert route_after_analyze({**base, "load_error": "boom"}) == RouteTag.SUMMARIZE  # KV 失败
-    assert HOTWORD_EDGE_MAP == {RouteTag.LOOP: GraphNode.FETCH_ONE,
-                                RouteTag.SUMMARIZE: GraphNode.SUMMARY}
+    assert route_after_fetch(base) == RouteTag.ANALYZE                              # 有词 → 子图
+    assert route_after_fetch({**base, "has_more": False}) == RouteTag.SUMMARIZE     # tool 取尽
+    assert route_after_fetch({**base, "load_error": "boom"}) == RouteTag.SUMMARIZE  # KV 失败
+    assert FETCH_EDGE_MAP == {RouteTag.ANALYZE: GraphNode.ANALYZE_WORD,
+                              RouteTag.SUMMARIZE: GraphNode.SUMMARY}
+
+    assert route_after_word(base) == RouteTag.LOOP                     # 还有额度 → 回环
+    assert route_after_word({**base, "loop_count": 5}) == RouteTag.SUMMARIZE   # 达上限
+    assert WORD_EDGE_MAP == {RouteTag.LOOP: GraphNode.FETCH_ONE,
+                             RouteTag.SUMMARIZE: GraphNode.SUMMARY}
+
+
+def test_route_after_llm_skips_post_actions_without_conclusion():
+    """LLM 没产出（失败 / 空正文）就不做后置动作：不给没结论的词写 KV。"""
+    assert route_after_llm({"ai": {"text": "7) 结论：做"}}) == RouteTag.NEXT
+    assert route_after_llm({"ai": {}}) == RouteTag.COLLECT
 
 
 def test_fetch_one_asks_tool_each_round(fake_kv, monkeypatch):

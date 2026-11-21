@@ -11,8 +11,8 @@
   ② **单词问题**（这个词没结果、CSV 解析空）：降级即可，不影响其它词。
 
 ★2026-11-13 改：源级不可用**不再中止整轮**。scrape_serp / scrape_trend 抛出后，
-  services/hotword_service 把该词的这一步降级成 notice，并把步骤 key 记进本轮降级状态
-  （_DegradeState.disabled）让后续词跳过这一步；LLM 与后置动作照常进行（一词一结果，互不影响）。
+  对应的取数节点把该词的这一步降级成 notice，并把步骤名记进本轮降级状态
+  （DegradeState.disabled）让后续词跳过这一步；LLM 与后置动作照常进行（一词一结果，互不影响）。
 """
 
 from __future__ import annotations
