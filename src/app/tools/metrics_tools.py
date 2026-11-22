@@ -2,7 +2,11 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""measurement 域：埋点聚合与 Search Console 取数（定义 + 实现同文件）。"""
+"""metrics 域：线上站点的实际运营效果——用户点击与搜索表现（定义 + 实现同文件）。
+
+只回答「跑得怎么样」：D1 埋点看站内点击，Search Console 看站外曝光与排名。
+不碰发布状态（publishing）、也不写任何台账，全部是 read 工具。
+"""
 
 from __future__ import annotations
 
@@ -12,12 +16,12 @@ from pydantic import BaseModel, Field
 
 from src.app.tools.adapters.cloudflare import database
 from src.app.tools.adapters.cloudflare.sql import Sql
-from src.app.tools.adapters.measurement import gsc
+from src.app.tools.adapters.metrics import gsc
 from src.app.tools.base import RuntimeTool
 
 
-class MeasurementOps:
-    """measurement 域的实现：只读 D1 埋点与 GSC。"""
+class MetricsOps:
+    """metrics 域的实现：只读 D1 埋点与 GSC。"""
 
     def click_stats(self, days=7):
         """按站点 × 事件类型（浏览 / 点击 / 外链 / 提交…，event 列全量）统计

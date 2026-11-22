@@ -38,10 +38,10 @@ from src.app.tools.ledger_tools import (
     SetFlagTool,
     WriteLedgerTool,
 )
-from src.app.tools.measurement_tools import (
+from src.app.tools.metrics_tools import (
     GetClickStatsTool,
     GetSearchAnalyticsTool,
-    MeasurementOps,
+    MetricsOps,
 )
 from src.app.tools.notification_tools import (
     NotificationOps,
@@ -95,7 +95,7 @@ def _tool_tracer(name: str, kind: str, method: str, kwargs: dict, call):
 
 
 class RuntimeService(HotwordsOps, DistributionOps, LedgerOps,
-                     MeasurementOps, NotificationOps, PromotionOps, PublishingOps):
+                     MetricsOps, NotificationOps, PromotionOps, PublishingOps):
     """30 个工具的唯一门面：实现见各域 Ops 类，这里只有组合。"""
 
 

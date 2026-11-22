@@ -11,8 +11,9 @@
     hotwords_tools.py      6 个  get_hotwords / next_candidate / read_examples /
                                  fetch_serp / fetch_trend / write_hotword_result
                                  → adapters/hotwords
-    measurement_tools.py   2 个  get_click_stats / get_search_analytics
-                                 → cloudflare.database + adapters/measurement
+    metrics_tools.py       2 个  get_click_stats / get_search_analytics
+                                 （线上站点的实际运营效果：站内点击 + 站外曝光排名）
+                                 → cloudflare.database + adapters/metrics
     promotion_tools.py     2 个  get_latest_plan / write_promo_slot
                                  → cloudflare.database（纯台账，无外部系统）
     distribution_tools.py  4 个  get_backlink_ledger / search_reddit /
@@ -32,6 +33,9 @@
 test_architecture.test_tools_import_only_own_adapters）：域之间的横向依赖一旦回来，
 「改一个外部系统只动一个包」就不再成立。发信从 ledger 挪出来就是这个规矩的产物——
 台账写幂等可重放，邮件发出去收不回，两者放一个域会让人以为 ledger 可随便重跑。
+
+域名与调用方同词：metrics 对齐 Intent.REVIEW_METRICS 与 services/metrics_service.py，
+它就是流量复盘那条线取数的地方。
 
 装配只在 registry.py：RuntimeService 多继承 7 个 Ops 成门面 → ToolRegistry.bind(ops)
 把门面与 LangSmith tracer 注入每个工具 → RuntimeTool.run 校验 Input、调 ops.method、

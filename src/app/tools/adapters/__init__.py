@@ -12,8 +12,8 @@
                  ledger / promotion 两个域只用它（纯台账，无外部系统）。
   hotwords/      词条业务：候选快照与整理口径、SERP / Trends 取数、判据、LLM、KV 写账本。
                  消费方 tools/hotwords_tools.py + 热词线（graph / nodes 直接 import 叶子）。
-  measurement/   效果度量：Search Console 取数（埋点聚合在 cloudflare/database）。
-                 消费方 tools/measurement_tools.py。
+  metrics/       运营效果：Search Console 的曝光 / 排名取数（站内点击聚在 cloudflare/database）。
+                 消费方 tools/metrics_tools.py。
   distribution/  外链分发：Reddit 只读搜索 + Dev.to 列热门 / 发文。
                  消费方 tools/distribution_tools.py。
   publishing/    站点发布：GitHub 仓库、页面渲染、构建验活。

@@ -13,7 +13,7 @@ import pytest
 from src.app.tools import (
     distribution_tools,
     ledger_tools,
-    measurement_tools,
+    metrics_tools,
     promotion_tools,
     publishing_tools,
 )
@@ -26,7 +26,7 @@ from src.app.tools.adapters.cloudflare.sql import (
 from src.app.tools.registry import RuntimeService
 
 # 实现按域分散在各 *_tools.py，假库要逐个模块替换
-DB_MODULES = (distribution_tools, ledger_tools, measurement_tools,
+DB_MODULES = (distribution_tools, ledger_tools, metrics_tools,
               promotion_tools, publishing_tools)
 
 
@@ -169,7 +169,7 @@ def test_click_stats_groups_by_site_and_event(db):
         {"site": "a.example", "event": "click", "cnt": 12},
         {"site": "b.example", "event": "page_view", "cnt": 5},
     ]
-    out = measurement_tools.MeasurementOps().click_stats(days=7)
+    out = metrics_tools.MetricsOps().click_stats(days=7)
     assert out["total_events"] == 47
     assert out["range"]["days"] == 7
     assert out["by_site"] == {
@@ -187,8 +187,8 @@ def test_click_stats_handles_query_failure(db, monkeypatch):
             raise RuntimeError("D1 挂了")
         def execute(self, *a, **k):
             pass
-    monkeypatch.setattr(measurement_tools, "database", BoomDb())
-    out = measurement_tools.MeasurementOps().click_stats(days=3)
+    monkeypatch.setattr(metrics_tools, "database", BoomDb())
+    out = metrics_tools.MetricsOps().click_stats(days=3)
     assert out["total_events"] == 0
     assert out["by_site"] == {}
 
