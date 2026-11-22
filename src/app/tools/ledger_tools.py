@@ -2,7 +2,11 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""ledger 域：Agent 台账 / KV / 事件 / 通知（定义 + 实现同文件）。"""
+"""ledger 域：Agent 台账表 / KV 状态标记 / 事件队列（定义 + 实现同文件）。
+
+本域全是**幂等记账**（read / ledger 两种 kind）；对外发信不在这里，见
+tools/notification_tools.py。
+"""
 
 from __future__ import annotations
 
@@ -15,12 +19,11 @@ from pydantic import BaseModel, Field
 from src.app.enums import EventKind, EventStatus, LedgerStrategy, ToolKind
 from src.app.tools.adapters.cloudflare import database, keyvalue
 from src.app.tools.adapters.cloudflare.sql import LEDGER_TABLES, Sql, SqlBuilder
-from src.app.tools.adapters.publishing import email
 from src.app.tools.base import RuntimeTool, stable_key
 
 
 class LedgerOps:
-    """ledger 域的实现：白名单台账表 + agent: 命名空间 KV + 通知发信。"""
+    """ledger 域的实现：白名单台账表 + agent: 命名空间 KV。"""
 
     def reflections(self, limit=8):
         return database.query(Sql.REFLECTIONS, [limit])
@@ -85,9 +88,6 @@ class LedgerOps:
             "reason": reason[:200], "detail": detail[:600],
             "created_at": int(time.time()),
         })
-
-    def send_notice(self, subject, html):
-        return {"sent": bool(email.send(subject, html))}
 
 
 class GetFlagTool(RuntimeTool):
@@ -182,15 +182,3 @@ class ConsumeEventTool(RuntimeTool):
     class Input(BaseModel):
         event_key: str = Field(..., description="事件幂等键")
         thread_id: str = Field('', description="消费方 thread_id")
-
-
-class SendNoticeTool(RuntimeTool):
-    """给运营者发一封通知邮件（日报、告警、已批准草稿）。不可逆：经 Resend 真发信，发出去收不回。"""
-
-    tool_name = "send_notice"
-    method = "send_notice"
-    kind = ToolKind.WRITE.value
-
-    class Input(BaseModel):
-        subject: str = Field(..., description="标题")
-        html: str = Field(..., description="HTML 正文")

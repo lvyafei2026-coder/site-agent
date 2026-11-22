@@ -15,6 +15,7 @@ APP = Path(__file__).resolve().parents[1] / "src" / "app"
 # 装配 / 循环引用风险。2026-11-17 起允许叶子模块 base.py、sql.py 引用它取枚举值，
 # 这不破坏「叶子」的实质（无副作用、无反向依赖）。
 ENUMS = "src.app.enums"
+ADAPTERS = "src.app.tools.adapters"
 
 
 def imports_of(package: str) -> set[str]:
@@ -77,6 +78,35 @@ def test_adapters_are_leaves():
                  if m.startswith(("src.app.tools.base", "src.app.tools.registry",
                                   "src.app.services", "src.app.graph", "src.app.nodes"))}
     assert not offenders, f"adapters 反向依赖：{sorted(offenders)}"
+
+
+def test_tools_import_only_own_adapters():
+    """域文件只碰厂商层 + 自己同名的适配器包：adapters 的包划分不能只是文档口径。
+
+    send_notice 曾住在 ledger_tools.py 里伸手拿 publishing.email——改一个域要动另一个域
+    的包，「换外部系统只动一个包」当场失效。发信已独立成 notification 域，这条守卫负责
+    让横向引用不再回来：<domain>_tools.py 只许 import adapters.cloudflare 和
+    adapters.<domain>。
+    """
+    vendors = f"{ADAPTERS}.cloudflare"
+    offenders = set()
+    for path in (APP / "tools").glob("*_tools.py"):
+        own = f"{ADAPTERS}.{path.name[: -len('_tools.py')]}"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                refs = ([f"{ADAPTERS}.{alias.name}" for alias in node.names]
+                        if node.module == ADAPTERS
+                        else [node.module] if node.module.startswith(f"{ADAPTERS}.") else [])
+            elif isinstance(node, ast.Import):
+                refs = [alias.name for alias in node.names
+                        if alias.name.startswith(f"{ADAPTERS}.")]
+            else:
+                refs = []
+            for ref in refs:
+                if not ref.startswith((own, vendors)):
+                    offenders.add(f"{path.name}::{ref}")
+    assert not offenders, f"域文件跨包引用适配器：{sorted(offenders)}"
 
 
 def test_entry_depends_only_on_graph():

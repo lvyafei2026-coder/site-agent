@@ -4,7 +4,9 @@
 
 """工具层：30 个工具 = 声明（RuntimeTool 子类）+ 实现（同文件的 <Domain>Ops）。
 
-六个域，业务域与 adapters 的包一一对应（cloudflare 是厂商层，各域共用）：
+切分维度是**业务对象**，不是副作用等级——后者由 kind（read / ledger / write）单独表达，
+同一个域里可以混合出现（publishing 既有只读的 get_build_status，也有不可逆的 git_push）。
+七个域，有外部系统的域才有同名的 adapters 包（cloudflare 是厂商层，各域共用）：
 
     hotwords_tools.py      6 个  get_hotwords / next_candidate / read_examples /
                                  fetch_serp / fetch_trend / write_hotword_result
@@ -12,19 +14,26 @@
     measurement_tools.py   2 个  get_click_stats / get_search_analytics
                                  → cloudflare.database + adapters/measurement
     promotion_tools.py     2 个  get_latest_plan / write_promo_slot
-                                 → cloudflare.database
+                                 → cloudflare.database（纯台账，无外部系统）
     distribution_tools.py  4 个  get_backlink_ledger / search_reddit /
                                  list_devto_articles / publish_devto_article
                                  → cloudflare.database + adapters/distribution
     publishing_tools.py    7 个  get_page_inventory / get_build_status / check_live_page /
                                  render_files / wait_build / queue_indexing / git_push
                                  → cloudflare.database + adapters/publishing
-    ledger_tools.py        9 个  get_flag / get_reflections / get_pending_events /
+    ledger_tools.py        8 个  get_flag / get_reflections / get_pending_events /
                                  write_ledger / set_flag / emit_event / record_reflection /
-                                 consume_event / send_notice
-                                 → cloudflare.database + cloudflare.kv + adapters/publishing(email)
+                                 consume_event
+                                 → cloudflare.database + cloudflare.kv
+    notification_tools.py  1 个  send_notice
+                                 → adapters/notification
 
-装配只在 registry.py：RuntimeService 多继承 6 个 Ops 成门面 → ToolRegistry.bind(ops)
+一个域文件只允许 import cloudflare 与自己同名的 adapters 包（守卫见
+test_architecture.test_tools_import_only_own_adapters）：域之间的横向依赖一旦回来，
+「改一个外部系统只动一个包」就不再成立。发信从 ledger 挪出来就是这个规矩的产物——
+台账写幂等可重放，邮件发出去收不回，两者放一个域会让人以为 ledger 可随便重跑。
+
+装配只在 registry.py：RuntimeService 多继承 7 个 Ops 成门面 → ToolRegistry.bind(ops)
 把门面与 LangSmith tracer 注入每个工具 → RuntimeTool.run 校验 Input、调 ops.method、
 统一返回 ToolOutput{tool, ok, result, error, retryable}。base.py 是纯叶子，不认识任何域。
 工具类只声明 tool_name / method / kind / fixed / Input / docstring，不覆盖 run()：

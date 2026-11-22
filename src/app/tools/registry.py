@@ -4,8 +4,8 @@
 
 """工具装配 + 注册。
 
-全包唯一同时认识「全部实现（6 个域 Ops）」和「全部工具（30 个类）」的模块，
-所以装配放在这里：RuntimeService 把 6 个域拼成一个门面，再逐个注入给工具。
+全包唯一同时认识「全部实现（7 个域 Ops）」和「全部工具（30 个类）」的模块，
+所以装配放在这里：RuntimeService 把 7 个域拼成一个门面，再逐个注入给工具。
 依赖方向固定为 registry → *_tools → base →（标准库 / pydantic），全程静态 import，
 不需要任何延迟导入；base 不反过来认识任何域，工具也不自己去取门面。
 
@@ -35,7 +35,6 @@ from src.app.tools.ledger_tools import (
     GetReflectionsTool,
     LedgerOps,
     RecordReflectionTool,
-    SendNoticeTool,
     SetFlagTool,
     WriteLedgerTool,
 )
@@ -43,6 +42,10 @@ from src.app.tools.measurement_tools import (
     GetClickStatsTool,
     GetSearchAnalyticsTool,
     MeasurementOps,
+)
+from src.app.tools.notification_tools import (
+    NotificationOps,
+    SendNoticeTool,
 )
 from src.app.tools.promotion_tools import (
     GetLatestPlanTool,
@@ -92,7 +95,7 @@ def _tool_tracer(name: str, kind: str, method: str, kwargs: dict, call):
 
 
 class RuntimeService(HotwordsOps, DistributionOps, LedgerOps,
-                     MeasurementOps, PromotionOps, PublishingOps):
+                     MeasurementOps, NotificationOps, PromotionOps, PublishingOps):
     """30 个工具的唯一门面：实现见各域 Ops 类，这里只有组合。"""
 
 
