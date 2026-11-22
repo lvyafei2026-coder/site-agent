@@ -4,9 +4,9 @@
 
 """热词分析的结论回写层：一个词的正文 / 信号标签 / 跟进状态写回共享 KV。
 
-与 hotword_fetch（补数据）对称，这里只管「分析完了怎么落库」。表形状与去重口径在
-curation（upsert_saved / upsert_rejected / set_hint_override），键名契约在
-../cloudflare/kv.py，写入成败记录在 hotword_kv_io 的 _WriteLog。
+与 fetch（补数据）对称，这里只管「分析完了怎么落库」。表形状与去重口径在
+wordlib（upsert_saved / upsert_rejected / set_hint_override），键名契约在
+../cloudflare/kv.py，写入成败记录在 kv_io 的 _WriteLog。
 
 ★正文先写：正文写失败就收手，绝不写状态——否则留下「有状态、没正文」的悬空词，
   select_pending 既不会重跑它，前端也看不到方案。
@@ -23,8 +23,8 @@ from src.app.enums import CurationStatus, RejectSource, Verdict
 from src.app.tools.adapters.cloudflare.kv import (
     get_kv, term_key, AI_CACHE_PREFIX, SAVED_KEY, REJECTED_KEY, HINTS_KEY,
 )
-from .curation import set_hint_override, upsert_rejected, upsert_saved
-from .hotword_kv_io import _WriteLog, _kv_dict, _kv_list
+from .wordlib import set_hint_override, upsert_rejected, upsert_saved
+from .kv_io import _WriteLog, _kv_dict, _kv_list
 
 # 判定「做」时从候选条目带进 saved 表的字段（与 console 人工收藏同一套形状）
 _SAVED_CANDIDATE_FIELDS = ("term", "related", "hints", "geos", "geoCount",

@@ -26,8 +26,7 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 from src.app.enums import CandidateStatus, ToolKind
-from src.app.tools.adapters.hotwords import curation as candidates
-from src.app.tools.adapters.hotwords import hotword_contract, hotword_fetch, hotword_write
+from src.app.tools.adapters.hotwords import fetch, wordlib, writeback
 from src.app.tools.base import RuntimeTool
 
 
@@ -35,22 +34,22 @@ class HotwordsOps:
     """hotwords 域的实现：只碰 hotwords 适配器。"""
 
     def hotwords(self, status=CandidateStatus.DOING.value, limit=40):
-        return candidates.snapshot(status=status, limit=limit)
+        return wordlib.snapshot(status=status, limit=limit)
 
     def next_candidate(self, seen=()):
-        return hotword_contract.select_pending(set(seen))
+        return wordlib.select_pending(set(seen))
 
     def read_examples(self):
-        return hotword_contract.read_examples()
+        return wordlib.read_examples()
 
     def fetch_serp(self, term):
-        return hotword_fetch.serp(term)
+        return fetch.serp(term)
 
     def fetch_trend(self, term):
-        return hotword_fetch.trend(term)
+        return fetch.trend(term)
 
     def write_hotword_result(self, item, text, verdict, reason="", hints=None):
-        return hotword_write.write_result(item, text, hints, verdict, reason)
+        return writeback.write_result(item, text, hints, verdict, reason)
 
 
 class GetHotwordsTool(RuntimeTool):

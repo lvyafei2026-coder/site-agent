@@ -2,19 +2,21 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""词库整理域：候选池只读快照 + 整理写侧口径（candidates / curation 合并于此）。
+"""词库层：共享 KV 里那几张词表的读写口径（candidates / saved / rejected / hints）。
 
-读侧（原 candidates.py）：
-    直读共享 KV 的 candidates / meta / interests，不调 radar 的 App 接口——radar 把
-    抓取结果写进同一个 KV（见 google-trend-radar/src/index.js runRefresh），agent
-    直接读这份共享数据。Snapshot 原样透出 meta（updatedMs / geosOk / raw / failed）：
-    判断「有没有新热词」看 meta.updatedMs，不能看 candidates 是否非空——累计词库
-    几乎永远非空。
+读侧（radar 把抓取结果写进同一个 KV，见 google-trend-radar/src/index.js runRefresh，
+agent 直接读这份共享数据，不调 radar 的 App 接口）：
+    snapshot        候选 + meta + interests 的完整快照。Snapshot 原样透出 meta
+                    （updatedMs / geosOk / raw / failed）：判断「有没有新热词」看
+                    meta.updatedMs，不能看 candidates 是否非空——累计词库几乎永远非空。
+    select_pending  取下一个未跟进的词（saved / rejected / tags / ai:v3: 取并集后跳过）。
+    read_examples   读人工「不做」标记，挑出可喂回 AI 的判例（挑选规则在 criteria）。
 
-写侧（与 console/src/store.js 原样对齐）：
+写侧口径（与 console/src/store.js 原样对齐）：
     agent 直写共享 KV，必须和 console 人工操作落在同一套键、同一套状态枚举上——
-    否则 agent 写的 saved 和人工点的收藏对不上。这里只动数据结构，不碰网络
-    （网络与键名契约在 ../cloudflare/kv.py，全项目唯一的 KV 模块）。
+    否则 agent 写的 saved 和人工点的收藏对不上。下面三个 upsert / set_* 是**纯函数**：
+    传进现有表、返回新表，不碰网络（写回与逐词写入账本在 writeback.py，
+    网络与键名契约在 ../cloudflare/kv.py，全项目唯一的 KV 模块）。
 
 saved 表：[{key, term, status, at, updatedAt, ...}]，status ∈ STATUSES。
 rejected 表：[{key, term, reason, source, at, updatedAt}]。
@@ -30,8 +32,11 @@ from typing import Any, Optional
 from src.app.enums import CandidateStatus, CurationStatus, HintName, RejectSource
 
 from src.app.tools.adapters.cloudflare.kv import (
-    CANDIDATES_KEY, INTERESTS_KEY, CloudflareKV, get_kv, term_key,
+    AI_CACHE_PREFIX, CANDIDATES_KEY, INTERESTS_KEY, REJECTED_KEY, SAVED_KEY,
+    TAGS_KEY, CloudflareKV, get_kv, term_key,
 )
+from .criteria import pick_examples
+from .kv_io import _kv_dict, _kv_list
 
 log = logging.getLogger(__name__)
 
@@ -45,17 +50,10 @@ HINT_NAMES = [h.value for h in HintName]
 # ---- 读侧：候选池快照 ----
 
 def _read(kv: CloudflareKV, status: str, limit: int, light: bool) -> dict[str, Any]:
-    # ★形状兜底：这三张表由 radar / console 写，形状漂移时不能让整个工具调用失败
-    candidates = kv.get_json(CANDIDATES_KEY, [])
-    if not isinstance(candidates, list):
-        log.warning("KV 键 %s 期望数组，实际 %s，按空处理", CANDIDATES_KEY, type(candidates).__name__)
-        candidates = []
-    meta = kv.get_json("meta", {})
-    if not isinstance(meta, dict):
-        meta = {}
-    interests = {} if light else kv.get_json(INTERESTS_KEY, {})
-    if not isinstance(interests, dict):
-        interests = {}
+    # ★这三张表由 radar / console 写，形状漂移时按空处理，不能让整次工具调用失败
+    candidates = _kv_list(kv, CANDIDATES_KEY)
+    meta = _kv_dict(kv, "meta")
+    interests = {} if light else _kv_dict(kv, INTERESTS_KEY)
 
     items = candidates if not limit else candidates[:limit]
     # 候选条目一般不带 status 字段（status 在 saved/rejected/tags 里），按原 radar.py 语义
@@ -77,6 +75,62 @@ def snapshot(status: str = CandidateStatus.DOING.value, limit: int = 40,
     except Exception as exc:  # noqa: BLE001
         log.warning("candidates 读取失败：%s", exc)
         return {"items": [], "meta": {}, "error": str(exc), "interests": {}}
+
+
+# ---- 读侧：取下一词 / 读判例 ----
+
+def read_examples() -> list[dict[str, str]]:
+    """读人工「不做」标记并挑出可喂回 AI 的判例（挑选规则在纯判据层）。"""
+    return pick_examples(_kv_list(get_kv(), REJECTED_KEY))
+
+
+def select_pending(seen: set[str]) -> dict[str, Any] | None:
+    """取「下一个」未跟进的热词；没有就返回 None。
+
+    每轮只取一条，由调用方（循环图的 fetch_one 节点经 next_candidate 工具）反复调用
+    直到 None 或达上限。
+    ★seen 是本轮已取过的 key：KV 最终一致，刚写的状态可能读不到，靠它在**本轮内**
+      防止同一个词被重复取出。跨轮的幂等仍由 curated / analyzed 两张 KV 表兜底。
+
+    ★形状兜底：这几张表由 console / radar 写，一旦漂移（比如 tags 变成数组、
+      candidates 变成对象）按原样迭代会整轮失败；_kv_list / _kv_dict 统一当成空处理
+      并 warn，让漂移可见但不阻断分析。
+    """
+    kv = get_kv()
+    candidates = _kv_list(kv, CANDIDATES_KEY)
+    saved = _kv_list(kv, SAVED_KEY)
+    rejected = _kv_list(kv, REJECTED_KEY)
+    tags = _kv_dict(kv, TAGS_KEY)
+
+    curated = set()
+    for x in (saved + rejected):
+        if isinstance(x, dict) and x.get("key"):
+            curated.add(term_key(x["key"]))
+    for k, v in tags.items():
+        if v:
+            curated.add(term_key(k))
+
+    analyzed = {k[len(AI_CACHE_PREFIX):] for k in kv.list_keys(AI_CACHE_PREFIX)}
+
+    for c in candidates:
+        if not isinstance(c, dict) or not c.get("term"):
+            continue
+        key = term_key(c.get("key") or c.get("term"))
+        if key in curated or key in analyzed or key in seen:
+            continue
+        return {
+            "key": key,
+            "term": str(c.get("term") or "")[:120],
+            "related": [str(x) for x in (c.get("related") or [])][:6],
+            "hints": [str(x) for x in (c.get("hints") or [])][:6],
+            "geos": [str(x) for x in (c.get("geos") or [])][:16],
+            "geoCount": int(c.get("geoCount") or (len(c.get("geos") or []))),
+            "traffic": int(c.get("traffic") or 0),
+            "count": int(c.get("count") or 1),
+            "score": int(c.get("score") or 0),
+            "src": str(c.get("src") or "trends"),
+        }
+    return None
 
 
 # ---- 写侧：saved / rejected / aihints ----

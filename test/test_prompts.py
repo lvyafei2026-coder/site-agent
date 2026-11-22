@@ -5,7 +5,7 @@
 """提示词集中化守卫（D1 真源版）：所有发给 LLM 的文本只能来自 radar-rules D1。
 
 回归背景（2026-11-13 → 11-17）：逐词分析的 ``AI_SYSTEM``（1600 余字）与 user 模板
-原本硬编码在热词判据模块（现 ``tools/adapters/hotwords/hotword_criteria.py``），先收拢到本地 versions/*.txt，
+原本硬编码在热词判据模块（现 ``tools/adapters/hotwords/criteria.py``），先收拢到本地 versions/*.txt，
 再整体迁进 D1（prompts / prompt_defaults 两表），本地 txt 已删除。这里同时守住：
   1. 业务代码里不再出现整段提示词（反粘回）；
   2. task 清单 / config 默认版本 / D1 桩三者对应；
@@ -22,7 +22,7 @@ from pathlib import Path
 
 from src.app.config import settings
 from src.app.prompts import PROMPT_TASKS, available_versions, load_prompt
-from src.app.tools.adapters.hotwords import hotword_criteria as hwc
+from src.app.tools.adapters.hotwords import criteria as hwc
 
 APP = Path(__file__).resolve().parents[1] / "src" / "app"
 

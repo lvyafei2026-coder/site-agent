@@ -33,10 +33,9 @@ from langsmith.run_trees import RunTree
 from src.app.config import settings
 from src.app.enums import TraceName
 from src.app.tools.adapters.cloudflare import kv as kvk
-from src.app.tools.adapters.hotwords import hotword_contract as hwk
-from src.app.tools.adapters.hotwords import hotword_fetch
-from src.app.tools.adapters.hotwords import hotword_llm
+from src.app.tools.adapters.hotwords import fetch, llm_io
 from src.app.tools.adapters.hotwords import scrape_serp, scrape_trend
+from src.app.tools.adapters.hotwords import wordlib
 from src.app.tools.adapters.hotwords.source_errors import SourceUnavailable
 from src.app.graph import hotword_graph
 from src.app.tools.registry import tool_registry
@@ -63,7 +62,7 @@ def traced_runs(monkeypatch):
 
 def _seed(fake_kv, monkeypatch, count=6, llm=None):
     """离线铺候选词：SERP / Trends / LLM 全部替身，不碰任何外部服务。"""
-    monkeypatch.setattr(hotword_fetch, "SERP_GAP_SEC", 0)
+    monkeypatch.setattr(fetch, "SERP_GAP_SEC", 0)
     fake_kv.put_json("candidates", [{"term": f"term {i}"} for i in range(count)])
     monkeypatch.setattr(scrape_serp, "fetch_serp",
                         lambda term, session=None, limit=10: {
@@ -72,7 +71,7 @@ def _seed(fake_kv, monkeypatch, count=6, llm=None):
                         lambda term, session=None, geo="": {
                             "points": [{"d": "2026-01-01", "v": 50}],
                             "summary": {"avg": 50}, "attempts": []})
-    monkeypatch.setattr(hotword_llm, "_llm", llm or (lambda messages: (
+    monkeypatch.setattr(llm_io, "_llm", llm or (lambda messages: (
         "7) 结论：观望，等长尾\n8) 信号标签：工具查询", "fake")))
 
 
@@ -221,7 +220,7 @@ def test_early_return_still_has_batch_span_and_link(monkeypatch, traced_runs):
         def get_json(self, *a, **k):
             raise RuntimeError("unreachable")
 
-    monkeypatch.setattr(hwk, "get_kv", lambda: BoomKV())
+    monkeypatch.setattr(wordlib, "get_kv", lambda: BoomKV())
     with ls_trace("site-agent:analyze_hotwords") as root:
         out = hotword_graph.run_hotwords(limit=5)
 

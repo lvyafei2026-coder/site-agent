@@ -4,15 +4,15 @@
 
 """热词分析的外部取数层：SERP / Trends 读缓存 → 缺失则现抓 → 写回共享 KV。
 
-只负责「补数据」，不碰判据 / LLM / 结论回写（判据在 hotword_criteria，回写在
-hotword_write，谁来调这一步是 graph/hotword_graph.py 的连线）。
+只负责「补数据」，不碰判据 / LLM / 结论回写（判据在 criteria，回写在
+writeback，谁来调这一步是 graph/hotword_graph.py 的连线）。
 
 ★源级不可用（连不上 / 被挑战页占满）原样抛 SourceUnavailable：工具契约把它判成
   retryable=True 的失败，取数节点据此让后续词跳过该源，不中止整轮。其它异常在本层
   降级成「无数据 + error」，不拦 AI。
 ★本层不打 tool span：span 由 tools/registry.py 的统一 tracer 建（tool:fetch_serp /
   tool:fetch_trend），这里只用 note() 把抓取诊断挂到当前 span。
-★KV 句柄自己取（get_kv()），与 curation.snapshot 一致，调用方不传句柄；写入明细
+★KV 句柄自己取（get_kv()），与 wordlib.snapshot 一致，调用方不传句柄；写入明细
   （writes / writeErrors）随结果返回，由取数节点汇总进该词的 error。
 """
 
@@ -29,7 +29,7 @@ from src.app.tools.adapters.cloudflare.kv import (
     term_key, get_kv,
     SERP_PREFIX, TREND_PREFIX, COMPETITION_KEY, INTERESTS_KEY,
 )
-from .hotword_kv_io import _WriteLog, _kv_dict
+from .kv_io import _WriteLog, _kv_dict
 
 # 模块引用（不是 from ... import fetch_*）：测试 monkeypatch.setattr(scrape_serp, ...)
 # patch 的是模块对象属性，所有共享该对象的地方都会生效。

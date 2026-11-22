@@ -35,7 +35,7 @@ class FakeRuntime(PromotionOps):
 
     # ---- 读 ----
     # 说明：生产里 HotwordsOps.hotwords 已不再委托给这里的同名方法（2026-11-12 去接口化：
-    # 改由 adapters/hotwords/curation 直读共享 KV）。但 FakeRuntime 作为 RuntimeService 的
+    # 改由 adapters/hotwords/wordlib 直读共享 KV）。但 FakeRuntime 作为 RuntimeService 的
     # 测试替身，仍需提供 hotwords 数据桩——get_hotwords 工具经 tool_registry 走到
     # self.ops.hotwords。真正的 KV 读写由 test_kv_hotwords.py + test_hotwords.py 经 fake_kv
     # 夹具覆盖；热词线的 next_candidate / fetch_serp / fetch_trend / write_hotword_result
@@ -246,11 +246,11 @@ def fake_kv(monkeypatch):
     """
     from src.app.tools.adapters.cloudflare import kv as kvmod
     from src.app.tools.adapters.hotwords import (
-        curation, hotword_contract, hotword_fetch, hotword_write,
+        fetch, wordlib, writeback,
     )
 
     fake = FakeKV()
-    for mod in (kvmod, curation, hotword_contract, hotword_fetch, hotword_write):
+    for mod in (kvmod, wordlib, fetch, writeback):
         monkeypatch.setattr(mod, "get_kv", lambda: fake)
     return fake
 
@@ -335,7 +335,7 @@ def fake_prompt_store(monkeypatch):
     是同一个单例）。测试内部若自行 monkeypatch configured / prompt_store，优先级更高。
     """
     from src.app.prompts.d1_source import D1PromptStore, prompt_store
-    from src.app.tools.adapters.hotwords import hotword_criteria
+    from src.app.tools.adapters.hotwords import criteria
 
     def fetch(_account, _token, _db):
         # 深拷贝，避免某测试改动桩数据污染其它测试
@@ -345,7 +345,7 @@ def fake_prompt_store(monkeypatch):
     monkeypatch.setattr(D1PromptStore, "configured", staticmethod(lambda: True))
     monkeypatch.setattr(prompt_store, "_fetcher", fetch)
     prompt_store._cache = None
-    hotword_criteria._prompt_pair.cache_clear()
+    criteria._prompt_pair.cache_clear()
     yield
     prompt_store._cache = None
-    hotword_criteria._prompt_pair.cache_clear()
+    criteria._prompt_pair.cache_clear()

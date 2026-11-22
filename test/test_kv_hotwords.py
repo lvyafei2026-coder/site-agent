@@ -21,7 +21,7 @@ import requests as _requests
 from src.app.tools.adapters.cloudflare import kv as kvmod
 from src.app.tools.adapters.hotwords import scrape_serp as ss
 from src.app.tools.adapters.hotwords import scrape_trend as st
-from src.app.tools.adapters.hotwords import curation as cur
+from src.app.tools.adapters.hotwords import wordlib
 from src.app.tools.adapters.hotwords.source_errors import SourceUnavailable
 
 
@@ -373,53 +373,53 @@ def test_summarize_interest():
 
 
 # ---------------------------------------------------------------------------
-# curation.py：整理写侧（与 console/src/store.js 同口径）
+# wordlib.py：整理写侧（与 console/src/store.js 同口径）
 # ---------------------------------------------------------------------------
 def test_upsert_saved_dedup_and_keep_at():
-    key = cur.term_key("Free Invoice Calculator")
-    arr = cur.upsert_saved([], {"term": "Free Invoice Calculator", "status": "todo", "related": ["a"]})
+    key = wordlib.term_key("Free Invoice Calculator")
+    arr = wordlib.upsert_saved([], {"term": "Free Invoice Calculator", "status": "todo", "related": ["a"]})
     assert len(arr) == 1 and arr[0]["key"] == key and arr[0]["status"] == "todo"
-    arr = cur.upsert_saved(arr, {"term": "free invoice calculator", "status": "wip"})
+    arr = wordlib.upsert_saved(arr, {"term": "free invoice calculator", "status": "wip"})
     assert len(arr) == 1  # 同词去重
     assert arr[0]["status"] == "wip" and "at" in arr[0] and "updatedAt" in arr[0]
     # 非法 status 回落到已有 / 默认
-    arr = cur.upsert_saved([], {"term": "x", "status": "bogus"})
+    arr = wordlib.upsert_saved([], {"term": "x", "status": "bogus"})
     assert arr[0]["status"] == "saved"
 
 
 def test_upsert_rejected_manual_priority():
-    arr = cur.upsert_rejected([], {"term": "Foo", "reason": "manual reason", "source": "manual"})
-    arr = cur.upsert_rejected(arr, {"term": "Foo", "reason": "ai reason", "source": "ai"})
+    arr = wordlib.upsert_rejected([], {"term": "Foo", "reason": "manual reason", "source": "manual"})
+    arr = wordlib.upsert_rejected(arr, {"term": "Foo", "reason": "ai reason", "source": "ai"})
     assert arr[0]["source"] == "manual"
     assert arr[0]["reason"] == "manual reason"  # AI 不覆盖人工标记
 
 
 def test_set_hint_override_filters_names():
-    m = cur.set_hint_override({}, "Foo", ["工具查询", "不存在", "价格规格", "日程日期"])
-    assert m[cur.term_key("Foo")] == ["工具查询", "价格规格", "日程日期"]  # 只留 HINT_NAMES 内、最多 3
+    m = wordlib.set_hint_override({}, "Foo", ["工具查询", "不存在", "价格规格", "日程日期"])
+    assert m[wordlib.term_key("Foo")] == ["工具查询", "价格规格", "日程日期"]  # 只留 HINT_NAMES 内、最多 3
 
 
 # ---------------------------------------------------------------------------
-# curation.py（候选快照部分）：只读（直读 KV，不调 radar /api/candidates）
+# wordlib.py（候选快照部分）：只读（直读 KV，不调 radar /api/candidates）
 # ---------------------------------------------------------------------------
 def test_snapshot_reads_kv(fake_kv, monkeypatch):
     fake_kv.put_json("candidates", [{"term": "a"}, {"term": "b"}])
     fake_kv.put_json("meta", {"updatedMs": 123, "geosOk": 5, "raw": 2907})
     fake_kv.put_json("interests", {"a": {"summary": "x"}})
-    snap = cur.snapshot()
+    snap = wordlib.snapshot()
     assert len(snap["items"]) == 2
     assert snap["meta"]["geosOk"] == 5
     assert snap["interests"]["a"]["summary"] == "x"
     # light=True 仍回 interests 字段，只是代码路径里不读 KV（保证调用方契约稳定）
-    snap2 = cur.snapshot(light=True)
+    snap2 = wordlib.snapshot(light=True)
     assert "interests" in snap2
 
     # 异常兜底：KV 抛错返回空结构不崩溃
     class BoomKV:
         def get_json(self, *a, **k):
             raise RuntimeError("boom")
-    monkeypatch.setattr(cur, "get_kv", lambda: BoomKV())
-    failed = cur.snapshot()
+    monkeypatch.setattr(wordlib, "get_kv", lambda: BoomKV())
+    failed = wordlib.snapshot()
     assert failed["items"] == [] and "error" in failed
 
 
@@ -428,7 +428,7 @@ def test_snapshot_survives_shape_drift(fake_kv):
     fake_kv.put_json("candidates", {"a": {"term": "a"}})   # 期望数组
     fake_kv.put_json("meta", ["x"])                         # 期望对象
     fake_kv.put_json("interests", "垃圾")                   # 期望对象
-    snap = cur.snapshot()
+    snap = wordlib.snapshot()
     assert snap["items"] == [] and snap["meta"] == {} and snap["interests"] == {}
 
 
@@ -438,7 +438,7 @@ def test_snapshot_status_filter_keeps_default_doing(fake_kv):
         {"term": "b", "status": "live"},
         {"term": "c"},  # 无 status 视为 doing
     ])
-    snap = cur.snapshot(status="doing")
+    snap = wordlib.snapshot(status="doing")
     terms = {i["term"] for i in snap["items"]}
     assert terms == {"a", "c"}  # 默认 doing；b(live) 被过滤，但 c 无字段不丢
 

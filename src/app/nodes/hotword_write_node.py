@@ -16,7 +16,7 @@ from typing import Any
 from src.app.enums import HotwordStep
 from src.app.graph.state import HotwordLoopState
 from src.app.services.tool_service import tool_service
-from src.app.tools.adapters.hotwords.hotword_contract import add_error, add_write_errors
+from src.app.tools.adapters.hotwords.word_result import add_error, add_write_errors
 
 STEP = HotwordStep.WRITE_RESULT.value   # 步骤名：后置动作名单与工具路由都用它
 

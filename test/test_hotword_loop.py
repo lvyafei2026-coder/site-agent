@@ -23,9 +23,9 @@ from src.app.graph.hotword_graph import DEFAULT_EVIDENCE, DEFAULT_POST, build_wo
 from src.app.graph.state import initial_hotword_state
 from src.app.nodes.hotword_fetch_node import fetch_one
 from src.app.tools.adapters.cloudflare import kv as kvk
-from src.app.tools.adapters.hotwords import hotword_contract
-from src.app.tools.adapters.hotwords import hotword_llm
+from src.app.tools.adapters.hotwords import llm_io
 from src.app.tools.adapters.hotwords import scrape_serp, scrape_trend
+from src.app.tools.adapters.hotwords import wordlib
 
 
 def _nodes(word_graph):
@@ -81,7 +81,7 @@ def test_fetch_one_asks_tool_each_round(fake_kv, monkeypatch):
     fake_kv.put_json("candidates", [{"term": f"t{i}"} for i in range(4)])
     monkeypatch.setattr(scrape_serp, "fetch_serp", lambda *a, **k: {"engine": "duckduckgo", "items": [], "attempts": []})
     monkeypatch.setattr(scrape_trend, "fetch_interest", lambda *a, **k: {"points": [], "summary": {}, "attempts": []})
-    monkeypatch.setattr(hotword_llm, "_llm", lambda m: ("7) 结论：观望\n8) 信号标签：无", "fake"))
+    monkeypatch.setattr(llm_io, "_llm", lambda m: ("7) 结论：观望\n8) 信号标签：无", "fake"))
 
     s = initial_hotword_state(limit=10)
     s1 = {**s, **fetch_one(s)}
@@ -104,7 +104,7 @@ def test_loop_stops_at_limit(fake_kv, monkeypatch):
     fake_kv.put_json("candidates", [{"term": f"term {i}"} for i in range(8)])
     monkeypatch.setattr(scrape_serp, "fetch_serp", lambda *a, **k: {"engine": "duckduckgo", "items": [], "attempts": []})
     monkeypatch.setattr(scrape_trend, "fetch_interest", lambda *a, **k: {"points": [], "summary": {}, "attempts": []})
-    monkeypatch.setattr(hotword_llm, "_llm", lambda m: ("7) 结论：观望\n8) 信号标签：无", "fake"))
+    monkeypatch.setattr(llm_io, "_llm", lambda m: ("7) 结论：观望\n8) 信号标签：无", "fake"))
 
     out = hotword_graph.run_hotwords(limit=3)
     assert out["fetched"] == 3 and len(out["items"]) == 3
@@ -124,7 +124,7 @@ def test_loop_kv_unreachable_short_circuits(monkeypatch):
         def list_keys(self, *a, **k):
             raise RuntimeError("kv down")
 
-    monkeypatch.setattr(hotword_contract, "get_kv", lambda: BoomKV())
+    monkeypatch.setattr(wordlib, "get_kv", lambda: BoomKV())
     out = hotword_graph.run_hotwords(limit=5)
     assert out["ok"] is False and "候选查询失败" in out["error"]
     assert out["items"] == [] and out["fetched"] == 0

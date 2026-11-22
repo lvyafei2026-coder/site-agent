@@ -4,7 +4,7 @@
 
 """热词分析的 LLM 调用层：逐词非流式调用、空正文现场诊断、DeepSeek 思考开关。
 
-拆分自 hotwords.py（2026-11-17）。与「判据层」（hotword_criteria.py）的分工：
+拆分自 hotwords.py（2026-11-17）。与「判据层」（criteria.py）的分工：
 本模块只负责「把 messages 发出去、把正文拿回来」，不解析内容；解析在判据层。
 
 ★DeepSeek 思考模式默认开启（effort=high），reasoning_content 单独返回且计入

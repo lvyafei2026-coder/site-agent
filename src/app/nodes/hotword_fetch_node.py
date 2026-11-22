@@ -23,7 +23,7 @@ from typing import Any
 from src.app.enums import HotwordStep
 from src.app.graph.state import HotwordLoopState
 from src.app.services.tool_service import tool_service
-from src.app.tools.adapters.hotwords.hotword_contract import new_word
+from src.app.tools.adapters.hotwords.word_result import new_word
 
 log = logging.getLogger(__name__)
 

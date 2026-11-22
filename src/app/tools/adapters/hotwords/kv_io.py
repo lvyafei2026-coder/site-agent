@@ -5,7 +5,7 @@
 """热词分析的 KV 写账本层：单词级写入成败记录 + 共享表形状兜底读取。
 
 拆分自 hotwords.py（2026-11-17）。只放「怎么安全地写 / 怎么容错地读」这一层；
-取数（serp / trend）在 hotword_fetch.py，结论回写在 hotword_write.py；把这几步串起来的
+取数（serp / trend）在 fetch.py，结论回写在 writeback.py；把这几步串起来的
 是 graph/hotword_graph.py 编译出的逐词子图（节点在 nodes/hotword_*_node.py）。
 
 ★_WriteLog 存在的理由：以前 `kv.put_json(...)` 的返回值被丢掉，Cloudflare 返回

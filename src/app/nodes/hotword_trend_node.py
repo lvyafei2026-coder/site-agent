@@ -17,7 +17,7 @@ from typing import Any
 from src.app.enums import HotwordStep
 from src.app.graph.state import HotwordLoopState
 from src.app.services.tool_service import tool_service
-from src.app.tools.adapters.hotwords.hotword_contract import add_notice, add_write_errors
+from src.app.tools.adapters.hotwords.word_result import add_notice, add_write_errors
 
 log = logging.getLogger(__name__)
 

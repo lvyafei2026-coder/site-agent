@@ -6,7 +6,7 @@
 
 这是逐词子图的最后一站，**所有分支都要走到这里**（LLM 失败也一样），所以
 「失败只落在这个词身上、不中断整轮」不靠 try/except，靠图的连线保证。
-收尾规则（写入失败算不算 analyzed）在 hotword_contract.finish_word。
+收尾规则（写入失败算不算 analyzed）在 word_result.finish_word。
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.app.graph.state import HotwordLoopState
-from src.app.tools.adapters.hotwords.hotword_contract import finish_word
+from src.app.tools.adapters.hotwords.word_result import finish_word
 
 
 def collect_word(state: HotwordLoopState) -> dict[str, Any]:
