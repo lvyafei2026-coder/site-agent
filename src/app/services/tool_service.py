@@ -4,8 +4,10 @@
 
 """工具调用入口：两条线都经这里进 registry，契约与打点一致。
 
-常规线按意图选一组工具采集事实（execute_for_intent，默认集只含 read 工具）；
-热词线按名逐个调（run）：取词 / 读判例 / 补 SERP 与趋势 / 回写结论。
+两条线都是「名字 → 工具」的表驱动分发，节点侧不写 registry 里的工具名：
+
+    execute_for_intent(意图, ...)  常规线：意图 → 一组取数的 read 工具（INTENT_TOOLS）
+    execute_for_step(步骤, **参数)  热词线：逐词步骤 → 该步的那一个工具（STEP_TOOLS）
 
 热词分析（POST /hotwords）与常规线（POST /run）都是「工具编排 + LLM + 落库」，
 本身都不是 registry 里的一个工具——差别只在节点类型：热词线逐词回环、收尾走汇总节点。
@@ -13,7 +15,7 @@
 
 from __future__ import annotations
 
-from src.app.enums import Intent, PageQueryMode
+from src.app.enums import HotwordStep, Intent, PageQueryMode
 from src.app.tools.registry import tool_registry
 
 INTENT_TOOLS: dict[str, tuple[str, ...]] = {
@@ -22,6 +24,16 @@ INTENT_TOOLS: dict[str, tuple[str, ...]] = {
     Intent.FIND_BACKLINKS.value: ("get_backlink_ledger", "search_reddit", "list_devto_articles"),
     Intent.REVIEW_METRICS.value: ("get_click_stats", "get_search_analytics", "get_page_inventory"),
     Intent.GENERAL.value: ("get_pending_events", "get_reflections"),
+}
+
+# 热词线：逐词步骤名 → 工具名。取词与读判例每轮必做（不在可选名单里），
+# serp / trend / write_result 是否出现由 graph/hotword_graph.py 的连线名单决定。
+STEP_TOOLS: dict[str, str] = {
+    HotwordStep.FETCH.value: "next_candidate",
+    HotwordStep.EXAMPLES.value: "read_examples",
+    HotwordStep.SERP.value: "fetch_serp",
+    HotwordStep.TREND.value: "fetch_trend",
+    HotwordStep.WRITE_RESULT.value: "write_hotword_result",
 }
 
 TOOL_ARGS = {
@@ -43,9 +55,20 @@ class ToolService:
         # 复用 tools/registry.py 的那个单例，避免工具被实例化两遍
         self.registry = tool_registry
 
-    def run(self, name: str, **kwargs):
-        """按名调一个工具，返回统一 ToolOutput dict（热词线的逐词 IO 走这里）。"""
+    def _run(self, name: str, **kwargs):
+        """按 registry 工具名调一个工具，返回统一 ToolOutput dict。
+
+        私有：两条线的调用方都只能通过名字表分发进来（execute_for_intent /
+        execute_for_step），不允许把工具名字面量写回节点。
+        """
         return self.registry.run(name, **kwargs)
+
+    def execute_for_step(self, step: str, **kwargs) -> dict:
+        """热词线：逐词步骤名 → 该步的工具，参数由节点按这一步的需要给出。"""
+        name = STEP_TOOLS.get(step)
+        if name is None or name not in self.registry.names():
+            return {"ok": False, "error": f"unknown step: {step}", "retryable": False}
+        return self._run(name, **kwargs)
 
     def execute_for_intent(self, intent: str, text: str,
                            extracted: dict, tools: list[str] | None = None,
@@ -60,7 +83,7 @@ class ToolService:
                 continue
             builder = TOOL_ARGS.get(name)
             kwargs = builder(text, extracted) if builder else {}
-            results[name] = self.run(name, **kwargs)
+            results[name] = self._run(name, **kwargs)
         return results
 
 

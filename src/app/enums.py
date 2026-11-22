@@ -65,11 +65,12 @@ class GraphNode(StrEnum):
     SUMMARY = "build_summary"       # 终态汇总（与常规线 build_output 对称）
 
     # 逐词子图内的步骤节点：LLM 之前补证据，LLM 之后做后置动作，最后落账。
-    # 「本轮走哪几步」就是 hotword_graph 里的连线，名单 → 节点名的表也在那儿。
-    GATHER_SERP = "gather_serp"     # 补 SERP 辨形证据（fetch_serp 工具）
-    GATHER_TREND = "gather_trend"   # 补 Google 趋势证据（fetch_trend 工具，只落库不进提示词）
+    # 「本轮走哪几步」就是 hotword_graph 里的连线（名单 → 节点名）；
+    # 每一步调哪个工具由 tool_service.STEP_TOOLS 决定（名单 → 工具名）。
+    GATHER_SERP = "gather_serp"     # 补 SERP 辨形证据（步骤名 serp）
+    GATHER_TREND = "gather_trend"   # 补 Google 趋势证据（步骤名 trend，只落库不进提示词）
     LLM_ANALYZE = "llm_analyze"     # 素材进提示词 → AI 结论 → 硬证据压结论
-    WRITE_RESULT = "write_result"   # 结论回写（write_hotword_result 工具）
+    WRITE_RESULT = "write_result"   # 结论回写（步骤名与之一致）
     COLLECT_WORD = "collect_word"   # 该词结果落进 results + 轮次计数
 
 
@@ -85,6 +86,22 @@ class RouteTag(StrEnum):
     ANALYZE = "analyze"      # 取到词了 → 进逐词子图
     NEXT = "next"            # 逐词子图：LLM 出了结论 → 继续走后置动作
     COLLECT = "collect"      # 逐词子图：LLM 失败 / 没有后置动作 → 直接落账
+
+
+class HotwordStep(StrEnum):
+    """逐词链路的步骤名，四处共用这一个口径：
+
+    图连线名单（graph/hotword_graph.py 的 EVIDENCE_STEPS / POST_STEPS）、
+    降级集合（state.degrade.disabled）、词结果 evidence 键、
+    工具路由表（services/tool_service.py 的 STEP_TOOLS）。
+    节点只说步骤名，registry 里的工具名只出现在路由表里。
+    """
+
+    FETCH = "fetch"                # 取下一个候选词：每轮必做，不进可选名单
+    EXAMPLES = "examples"          # 读人工判例：每轮一次，不进可选名单
+    SERP = "serp"                  # 可选证据步骤：补 SERP 竞争度
+    TREND = "trend"                # 可选证据步骤：补 30 天搜索趋势
+    WRITE_RESULT = "write_result"  # 可选后置动作：AI 结论回写 KV
 
 
 class TraceName(StrEnum):

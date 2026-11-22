@@ -47,6 +47,30 @@ def test_services_never_depend_on_nodes_or_graph():
     assert not offenders, f"services 反向依赖编排层：{sorted(offenders)}"
 
 
+def test_nodes_dispatch_by_name_never_by_tool_literal():
+    """编排层只说名字，不说工具名：意图 → INTENT_TOOLS、逐词步骤 → STEP_TOOLS。
+
+    两张路由表都在 services/tool_service.py，节点里再写一遍 registry 的工具名就是把
+    「哪一步调哪个工具」拆成两处真源——改工具名时节点会静默调到不存在的名字。
+    同时锁住覆盖关系：图上能连的步骤，路由表必须有对应行。
+    """
+    from src.app.graph.hotword_graph import EVIDENCE_STEPS, POST_STEPS
+    from src.app.services.tool_service import INTENT_TOOLS, STEP_TOOLS
+
+    routed = {n for names in INTENT_TOOLS.values() for n in names} | set(STEP_TOOLS.values())
+    offenders = set()
+    for path in (APP / "nodes").glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                if node.value in routed:
+                    offenders.add(f"{path.name}::{node.value}")
+    assert not offenders, f"节点里写死了 registry 工具名：{sorted(offenders)}"
+
+    # 图连线名单 ⊆ 工具路由表；fetch / examples 每轮必做，不在可选名单里也有路由
+    assert set(EVIDENCE_STEPS) | set(POST_STEPS) <= set(STEP_TOOLS)
+
+
 def test_adapters_are_leaves():
     """adapters 是最外层实现，不能反过来依赖 tools 契约、注册表、services 或编排层。"""
     offenders = {m for m in imports_of("tools/adapters")

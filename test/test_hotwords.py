@@ -13,7 +13,7 @@ import inspect
 
 import pytest
 
-from src.app.enums import Intent, ToolKind
+from src.app.enums import HotwordStep, Intent, ToolKind
 from src.app.tools.adapters.cloudflare import kv as kvk
 from src.app.tools.adapters.hotwords import hotword_contract as hwk
 from src.app.tools.adapters.hotwords import hotword_criteria as hwc
@@ -22,7 +22,7 @@ from src.app.tools.adapters.hotwords import hotword_llm
 from src.app.tools.adapters.hotwords import scrape_serp, scrape_trend
 from src.app.graph import hotword_graph
 from src.app.graph.hotword_graph import resolve_steps
-from src.app.services.tool_service import INTENT_TOOLS
+from src.app.services.tool_service import INTENT_TOOLS, STEP_TOOLS
 from src.app.tools.registry import tool_registry
 
 
@@ -156,14 +156,15 @@ def test_analyze_hotwords_is_a_line_not_a_tool():
     """两条线都是编排：编排本身不进 registry，编排调用的 IO 才是工具。
 
     2026-11-20 分层归位：analyze_hotwords 从 tools 移除，由独立的 `POST /hotwords`
-    触发 graph 的 run_hotwords；热词线的逐词 IO 与常规线一样经 tool_service 调 registry。
+    触发 graph 的 run_hotwords；热词线的逐词 IO 与常规线一样按名字表经 tool_service
+    分发到 registry（execute_for_intent / execute_for_step）。
     """
     assert "analyze_hotwords" not in tool_registry.names()
     assert "analyze_hotwords" not in INTENT_TOOLS
     assert "get_hotwords" in INTENT_TOOLS[Intent.SELECT_PAGES.value]
-    for name in ("next_candidate", "read_examples", "fetch_serp",
-                 "fetch_trend", "write_hotword_result"):
-        assert name in tool_registry.names()
+    assert set(STEP_TOOLS) == {s.value for s in HotwordStep}   # 步骤名口径唯一
+    for step, name in STEP_TOOLS.items():
+        assert name in tool_registry.names(), f"步骤 {step} 路由到不存在的工具 {name}"
 
 
 # ---------------------------------------------------------------------------
@@ -363,14 +364,20 @@ def test_resolve_steps_defaults_order_and_rejects_unknown():
         resolve_steps(None, ["fetch_serp"])
 
 
-def test_step_nodes_never_call_irreversible_tools():
-    """★/hotwords 无强鉴权：名单能指向的节点绝不能调 write 类工具（git_push / send_notice…）。
+def test_step_plan_can_never_reach_irreversible_tools():
+    """★/hotwords 无强鉴权：白名单能连到的工具绝不能是 write 类（git_push / send_notice…）。
 
-    白名单就是 hotword_graph 的两张表，所以这里查的是表里那些节点函数的源码——
-    往节点里塞一个不可逆动作，这个测试就红。
+    两层都查：名单 → 节点（graph 的两张表）里不许出现不可逆工具的名字面量，
+    名单 → 工具（tool_service.STEP_TOOLS）的取值也不许进 write 类。
+    往任何一个方向塞一个不可逆动作，这个测试就红。
     """
-    write_tools = tool_registry.by_kind(ToolKind.WRITE.value)
+    write_tools = set(tool_registry.by_kind(ToolKind.WRITE.value))
     steps = {**hotword_graph.EVIDENCE_STEPS, **hotword_graph.POST_STEPS}
+
+    for name in steps:
+        assert name in STEP_TOOLS, f"步骤 {name} 没有工具路由"
+        assert STEP_TOOLS[name] not in write_tools, f"步骤 {name} 路由到不可逆工具"
+
     for name, (_, fn) in steps.items():
         body = inspect.getsource(fn)
         for tool in write_tools:

@@ -10,8 +10,9 @@
 循环由**图的条件边驱动**（路由在 graph/edges.py），Python 层不写 while/for；
 取不到词（result 为 None）就置 has_more=False，由条件边收尾。
 
-IO 一律走工具，与常规线同一套契约：判例读 read_examples 每轮一次、取词
-next_candidate 每轮一次。tool span 由 registry 的统一 tracer 建，节点不自打点。
+IO 一律走工具，与常规线同一套契约：本节点只说步骤名（examples 读判例、fetch 取词），
+步骤 → 工具的路由表在 services/tool_service.py。tool span 由 registry 的统一 tracer
+建，节点不自打点。
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from src.app.enums import HotwordStep
 from src.app.graph.state import HotwordLoopState
 from src.app.services.tool_service import tool_service
 from src.app.tools.adapters.hotwords.hotword_contract import new_word
@@ -28,7 +30,7 @@ log = logging.getLogger(__name__)
 
 def _load_examples() -> dict[str, Any]:
     """首次进入时读一次人工判例；失败只降级掉判例，不让整轮因这张表挂掉。"""
-    res = tool_service.run("read_examples")
+    res = tool_service.execute_for_step(HotwordStep.EXAMPLES.value)
     if not res["ok"]:
         log.warning("判例读取失败，本轮不带判例继续：%s", res["error"][:120])
         return {"examples_loaded": True, "examples": []}
@@ -50,7 +52,7 @@ def fetch_one(state: HotwordLoopState) -> dict[str, Any]:
         updates.update(_load_examples())
 
     seen: set[str] = set(state.get("seen") or set())
-    res = tool_service.run("next_candidate", seen=sorted(seen))
+    res = tool_service.execute_for_step(HotwordStep.FETCH.value, seen=sorted(seen))
     if not res["ok"]:
         # KV 不可达 → 整轮失败，不写任何状态
         log.warning("候选查询失败：%s", res["error"])

@@ -54,6 +54,13 @@ def test_unknown_tool_is_reported():
     assert out["not_a_tool"]["ok"] is False
 
 
+def test_unknown_step_is_reported():
+    """步骤名不在路由表里就返回失败信封，而不是拿 KeyError 打断整轮。"""
+    from src.app.services.tool_service import tool_service
+    out = tool_service.execute_for_step("not_a_step", term="x")
+    assert out["ok"] is False and out["retryable"] is False and "not_a_step" in out["error"]
+
+
 def test_no_tool_overrides_run():
     """业务分支一律在 Ops 里：覆盖 run() 会绕过 tracer 与 retryable 分类。"""
     for name in tool_registry.names():

@@ -12,11 +12,11 @@
     read_examples               读人工判例（热词线每轮一次）
     fetch_serp / fetch_trend    补证据：读缓存 → 现抓 → 写回（ledger：会写缓存表）
     write_hotword_result        后置动作：正文 / 标签 / 状态回写（ledger：幂等 upsert）
-本域 5 个逐词工具 = 逐词子图里的 5 个步骤节点（一节点一工具，节点名与工具名成对）：
-gather_serp → fetch_serp，gather_trend → fetch_trend，write_result → write_hotword_result，
-fetch_one → next_candidate / read_examples。LLM 与纯判据不是工具，节点层直接复用。
+本域 5 个逐词工具与逐词子图的步骤节点一一对应，对应关系只写在
+services/tool_service.py 的 STEP_TOOLS（步骤名 → 工具名），节点里没有工具名字面量。
+LLM 与纯判据不是工具，节点层直接复用。
 「本轮走哪几步补证据、哪几个后置动作」由 graph/hotword_graph.py 的名单连线决定——
-加一个证据源 = 本文件加工具 + nodes/ 加节点 + 那里加一行，其余不动。
+加一个证据源 = 本文件加工具 + nodes/ 加节点 + enums 加步骤名 + 两张表各加一行。
 """
 
 from __future__ import annotations

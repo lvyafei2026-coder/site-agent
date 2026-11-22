@@ -25,7 +25,7 @@ run_hotwords() 与常规线 run_workflow() 是**同一套机制**：
 且 state 带本轮步骤名单与降级状态，所以对外返回终态的 `summary` 而非整份 state。
 
 节点逻辑在 nodes/hotword_*_node.py（一节点一文件）；取词 / 补证据 / 后置动作与常规线
-一样经 tool_service 调 registry 里的工具（实现在 tools/hotwords_tools.py +
+一样按名字表经 tool_service 分发（实现在 tools/hotwords_tools.py +
 tools/adapters/hotwords/ 叶子）。依赖全程单向向下，无环、无函数内 import。
 """
 
@@ -39,7 +39,7 @@ from typing import Any, Callable, Optional
 from langgraph.graph import END, START, StateGraph
 
 from src.app.config import settings
-from src.app.enums import GraphNode, RouteTag, TraceName
+from src.app.enums import GraphNode, HotwordStep, RouteTag, TraceName
 from src.app.graph.edges import (
     FETCH_EDGE_MAP, WORD_EDGE_MAP, route_after_fetch, route_after_llm, route_after_word,
 )
@@ -57,13 +57,14 @@ from src.app.observability.trace import hotword_snapshot, run_traced
 StepNode = tuple[GraphNode, Callable[[HotwordLoopState], dict[str, Any]]]
 
 # LLM 之前的补证据步骤：名单里出现这个名字 = 逐词子图里连了这个节点。
+# 名字取自 HotwordStep，同一个名字在 tool_service.STEP_TOOLS 里路由到具体工具。
 EVIDENCE_STEPS: dict[str, StepNode] = {
-    "serp": (GraphNode.GATHER_SERP, gather_serp),     # fetch_serp：结果摘要进提示词
-    "trend": (GraphNode.GATHER_TREND, gather_trend),  # fetch_trend：只落库，不进提示词
+    HotwordStep.SERP.value: (GraphNode.GATHER_SERP, gather_serp),
+    HotwordStep.TREND.value: (GraphNode.GATHER_TREND, gather_trend),
 }
 # LLM 之后的后置动作步骤。
 POST_STEPS: dict[str, StepNode] = {
-    "write_result": (GraphNode.WRITE_RESULT, write_result),  # write_hotword_result
+    HotwordStep.WRITE_RESULT.value: (GraphNode.WRITE_RESULT, write_result),
 }
 
 DEFAULT_EVIDENCE = tuple(EVIDENCE_STEPS)

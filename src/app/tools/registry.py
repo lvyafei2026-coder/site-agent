@@ -10,7 +10,8 @@
 不需要任何延迟导入；base 不反过来认识任何域，工具也不自己去取门面。
 
 两条线共用这一份注册表：常规线经 tool_service.execute_for_intent 按意图取一组工具，
-热词线经 tool_service.run 按名逐个调（取词 / 判例 / 补数据 / 回写），契约与打点一致。
+热词线经 tool_service.execute_for_step 按逐词步骤名取该步的工具（取词 / 判例 / 补数据 /
+回写），两边的名字表都在 tool_service 里，契约与打点一致。
 """
 
 from __future__ import annotations

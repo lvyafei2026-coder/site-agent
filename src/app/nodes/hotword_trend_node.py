@@ -14,13 +14,14 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from src.app.enums import HotwordStep
 from src.app.graph.state import HotwordLoopState
 from src.app.services.tool_service import tool_service
 from src.app.tools.adapters.hotwords.hotword_contract import add_notice, add_write_errors
 
 log = logging.getLogger(__name__)
 
-STEP = "trend"    # 步骤名：名单、降级集合与词结果 evidence 键都用它
+STEP = HotwordStep.TREND.value   # 步骤名：名单、降级集合、evidence 键与工具路由都用它
 
 
 def gather_trend(state: HotwordLoopState) -> dict[str, Any]:
@@ -33,7 +34,7 @@ def gather_trend(state: HotwordLoopState) -> dict[str, Any]:
         word["evidence"][STEP] = False
         return {"word": word}
 
-    res = tool_service.run("fetch_trend", term=word["term"])
+    res = tool_service.execute_for_step(STEP, term=word["term"])
     if not res["ok"]:
         add_notice(word, f"趋势未取到：{res['error']}")
         word["evidence"][STEP] = False

@@ -15,14 +15,15 @@ from src.app import enums
 from src.app.enums import (
     AnalysisPhase, BacklinkChannel, BacklinkStatus,
     CandidateStatus, CurationStatus, DevtoStatus, EventKind, EventStatus,
-    GraphNode, HintName, Intent, LedgerStrategy, LlmThinking, MemoryBackend,
+    GraphNode, HintName, HotwordStep, Intent, LedgerStrategy, LlmThinking, MemoryBackend,
     PageQueryMode, PageStatus, PlanStatus, PromptTask, RejectSource,
     ReportKind, RouteTag, SearchTimeframe, SerpEngine, SerpVerdict,
     ToolKind, TrackEvent, Verdict, WorkflowStatus, TraceName,
 )
 
 ALL_ENUMS = [
-    Intent, WorkflowStatus, GraphNode, TraceName, RouteTag, ToolKind, LlmThinking,
+    Intent, WorkflowStatus, GraphNode, HotwordStep, TraceName, RouteTag, ToolKind,
+    LlmThinking,
     MemoryBackend, CandidateStatus, CurationStatus, RejectSource, HintName,
     Verdict, AnalysisPhase, SearchTimeframe, EventStatus,
     EventKind, ReportKind, PlanStatus, PageStatus, BacklinkStatus,
@@ -61,6 +62,7 @@ def test_every_member_has_docstring_note():
 @pytest.mark.parametrize("cls,expected", [
     (Intent, {"select_pages", "plan_promo", "find_backlinks", "review_metrics",
               "analyze_hotwords", "general"}),
+    (HotwordStep, {"fetch", "examples", "serp", "trend", "write_result"}),
     (CandidateStatus, {"doing", "live"}),
     (CurationStatus, {"saved", "todo", "wip", "live", "parked"}),
     (Verdict, {"做", "观望", "不做", "未定"}),

@@ -6,7 +6,8 @@
 
 本轮走不走这一步由**图的连线**决定（graph/hotword_graph.py 的 evidence 名单），
 本节点只管这一步本身：调工具 → 填该词结果 → 源级降级判断。
-IO 全在 fetch_serp 工具里（tool:fetch_serp span），本层不碰网络也不打点。
+IO 全在 serp 步骤路由到的那个工具里（tool_service.STEP_TOOLS → tool:fetch_serp span），
+本层不碰网络也不打点。
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from src.app.enums import HotwordStep
 from src.app.graph.state import HotwordLoopState
 from src.app.services.tool_service import tool_service
 from src.app.tools.adapters.hotwords.hotword_contract import add_notice, add_write_errors
@@ -21,7 +23,7 @@ from src.app.tools.adapters.hotwords.hotword_criteria import serp_brief, work_si
 
 log = logging.getLogger(__name__)
 
-STEP = "serp"     # 步骤名：名单、降级集合与词结果 evidence 键都用它
+STEP = HotwordStep.SERP.value   # 步骤名：名单、降级集合、evidence 键与工具路由都用它
 
 
 def gather_serp(state: HotwordLoopState) -> dict[str, Any]:
@@ -39,7 +41,7 @@ def gather_serp(state: HotwordLoopState) -> dict[str, Any]:
         word["evidence"][STEP] = False
         return {"word": word}
 
-    res = tool_service.run("fetch_serp", term=word["term"])
+    res = tool_service.execute_for_step(STEP, term=word["term"])
     if not res["ok"]:
         add_notice(word, f"SERP 未取到：{res['error']}")
         word["evidence"][STEP] = False

@@ -38,9 +38,10 @@ kind（真源 enums.ToolKind）：read 15 / ledger 11 / write 4。
             publish_devto_article / send_notice
 生产没有按 kind 的闸门：默认集 INTENT_TOOLS 只含 read，write 只有请求显式传 tools 才跑。
 
-唯一入口 = services/tool_service.py，两条线共用同一 registry：
-    常规线 execute_for_intent(intent) 按意图分发工具集；
-    热词线 run(name, **kwargs) 逐词按节点调补证据 / 后置动作工具——「哪几步、调哪个工具」
-    就是 graph/hotword_graph.py 里的连线（步骤名 → 节点 → 工具）。
+唯一入口 = services/tool_service.py，两条线共用同一 registry，也共用同一套「表驱动」：
+    常规线 execute_for_intent(intent)  意图 → 工具集（INTENT_TOOLS + TOOL_ARGS）；
+    热词线 execute_for_step(step, ...)  逐词步骤 → 该步的工具（STEP_TOOLS），参数由节点给。
+「本轮走哪几步」是 graph/hotword_graph.py 里的连线，「每一步调哪个工具」是 tool_service
+里的路由表——节点与图都不写 registry 的工具名。
 两条线都是**编排**，编排本身不进 registry；LLM 与纯判据也不是工具（横切能力）。
 """
