@@ -60,10 +60,18 @@ _EXAMPLE_SKIP_RX = re.compile(
 
 def _read(kv: CloudflareKV, status: str, limit: int, light: bool) -> dict[str, Any]:
     # ★这三张表由 radar / console 写，形状漂移时按空处理，不能让整次工具调用失败
-    candidates = kv_list(kv, CANDIDATES_KEY)
     meta = kv_dict(kv, "meta")
     interests = {} if light else kv_dict(kv, INTERESTS_KEY)
 
+    # 跟进状态（todo / wip / live / parked）只存在 saved 表，candidates 条目本身
+    # 不带 status。select_pages 取「待开发」时直接回 saved 过滤，查不到就给空——
+    # 绝不能回落成全量候选，否则没分析过的词会混进排产视野。
+    if status != CandidateStatus.DOING.value:
+        rows = [r for r in kv_list(kv, SAVED_KEY)
+                if isinstance(r, dict) and r.get("status") == status]
+        return {"items": rows[:limit or None], "meta": meta, "interests": interests}
+
+    candidates = kv_list(kv, CANDIDATES_KEY)
     items = candidates if not limit else candidates[:limit]
     # 候选条目一般不带 status 字段（status 在 saved/rejected/tags 里），按原 radar.py 语义
     # 默认都算 doing；老条目没有 status 时不能全丢。
@@ -77,7 +85,9 @@ def _read(kv: CloudflareKV, status: str, limit: int, light: bool) -> dict[str, A
 
 def snapshot(status: str = CandidateStatus.DOING.value, limit: int = 40,
              light: bool = False) -> dict[str, Any]:
-    """给 Agent 的完整快照：候选 + meta + interests。status 由调用方按需过滤（radar 不解析该参数）。"""
+    """给 Agent 的完整快照：候选 + meta + interests。
+    status=doing（默认）读 candidates 未跟进词；其他状态（todo 等）读 saved 表过滤——
+    跟进状态只存在 saved，candidates 条目不带 status。"""
     kv = get_kv()
     try:
         return _read(kv, status, limit, light)

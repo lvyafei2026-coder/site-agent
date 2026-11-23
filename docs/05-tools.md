@@ -13,7 +13,7 @@
 
 | name | kind | method | 参数 | 用途 |
 |---|---|---|---|---|
-| `get_hotwords` | read | `hotwords` | `status=doing`、`limit=40` | 读共享 KV 的候选词（radar 抓取写入），返回 `items` + `meta`（`updatedMs` / `geosOk` / `raw`）。**判断有没有新数据要看 meta** |
+| `get_hotwords` | read | `hotwords` | `status=doing|todo`、`limit=40` | 读共享 KV 的候选词（radar 抓取写入），返回 `items` + `meta`（`updatedMs` / `geosOk` / `raw`）。**判断有没有新数据要看 meta**。`doing`=未跟进（读 candidates）；`todo`=待开发（读 saved 表过滤，即热词分析判「做」的产出，select_pages 排产用），查不到给空、不回落全量 |
 
 > 热词分析**不是工具**，走独立入口 `POST /hotwords`。它是编排：读三方共用的共享 KV
 > （radar 候选池 + console 整理的 `saved`/`rejected`/`tags`）→ 补 SERP 竞争度与
@@ -83,7 +83,7 @@
 
 默认集只含 read 工具。热词分析是编排而非工具，走独立入口 `POST /hotwords`，不占工具注册表；
 因此 `services/tool_service.py` 的意图映射里没有 `analyze_hotwords`。
-`TOOL_ARGS`（`services/tool_service.py`）给几个工具预置参数：热词取 20 条、页面台账取 `mode=new` 10 条、Reddit 搜索词取请求文本前 80 字等。
+`TOOL_ARGS`（`services/tool_service.py`）给几个工具预置参数：热词取 20 条（`status=todo` 待开发池，承接热词分析的产出）、页面台账取 `mode=new` 10 条、Reddit 搜索词取请求文本前 80 字等。
 
 请求里传 `tools` 会完全覆盖默认集，包含写工具也一样——这是触发不可逆动作的
 唯一开关：

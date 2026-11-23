@@ -53,13 +53,14 @@ class HotwordsOps:
 
 
 class GetHotwordsTool(RuntimeTool):
-    """读取选题雷达候选关键词，并返回 meta（updatedMs 抓取时间、geosOk 成功区域数、raw 原始条数）。判断有无新数据必须看 meta。"""
+    """读取选题雷达候选关键词，并返回 meta（updatedMs 抓取时间、geosOk 成功区域数、raw 原始条数）。判断有无新数据必须看 meta。doing=未跟进（candidates）；todo=待开发（saved 表，热词分析判「做」的产出，select_pages 排产用）。"""
 
     tool_name = "get_hotwords"
     method = "hotwords"
 
     class Input(BaseModel):
-        status: str = Field(CandidateStatus.DOING.value, description="候选状态，默认 doing")
+        status: str = Field(CandidateStatus.DOING.value,
+                            description="doing=未跟进（candidates 投影）；todo=待开发（saved 表过滤）")
         limit: int = Field(40, description="最多返回几条，默认 40")
 
 

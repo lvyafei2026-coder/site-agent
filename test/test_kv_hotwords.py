@@ -443,6 +443,27 @@ def test_snapshot_status_filter_keeps_default_doing(fake_kv):
     assert terms == {"a", "c"}  # 默认 doing；b(live) 被过滤，但 c 无字段不丢
 
 
+def test_snapshot_status_todo_reads_saved(fake_kv):
+    """select_pages 取「待开发」：跟进状态只存在 saved 表，candidates 条目不带 status。"""
+    fake_kv.put_json("candidates", [{"term": "raw1"}, {"term": "raw2"}])
+    fake_kv.put_json("saved", [
+        {"term": "done1", "status": "todo", "score": 9},
+        {"term": "wip1", "status": "wip"},
+    ])
+    snap = wordlib.snapshot(status="todo", limit=20)
+    terms = {i["term"] for i in snap["items"]}
+    assert terms == {"done1"}  # 只回 saved 里 status=todo 的词，candidates 原始词不混入
+    assert snap["items"][0]["score"] == 9
+
+
+def test_snapshot_status_todo_empty_no_fallback(fake_kv):
+    """没有待开发词就给空——绝不能回落成全量候选，否则没分析过的词混进排产视野。"""
+    fake_kv.put_json("candidates", [{"term": "raw1"}])
+    fake_kv.put_json("saved", [{"term": "x", "status": "wip"}])
+    snap = wordlib.snapshot(status="todo")
+    assert snap["items"] == []
+
+
 # ---------------------------------------------------------------------------
 # 源级不可用：连不上 / 被挑战页占满 → 抛 SourceUnavailable，上层才能中止整批
 # ---------------------------------------------------------------------------

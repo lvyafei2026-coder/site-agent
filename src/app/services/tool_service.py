@@ -15,7 +15,7 @@
 
 from __future__ import annotations
 
-from src.app.enums import HotwordStep, Intent, PageQueryMode
+from src.app.enums import CurationStatus, HotwordStep, Intent, PageQueryMode
 from src.app.tools.registry import tool_registry
 
 INTENT_TOOLS: dict[str, tuple[str, ...]] = {
@@ -37,7 +37,9 @@ STEP_TOOLS: dict[str, str] = {
 }
 
 TOOL_ARGS = {
-    "get_hotwords": lambda t, e: {"limit": 20},
+    # ★select_pages 读「待开发」池：承接热词分析的产出（分析判「做」→ saved/todo），
+    #   不再看原始未跟进词——漏斗顺序 = 分析筛选 → 排产 → 建页。
+    "get_hotwords": lambda t, e: {"limit": 20, "status": CurationStatus.TODO.value},
     "get_page_inventory": lambda t, e: {"mode": PageQueryMode.NEW.value, "limit": 10},
     "get_reflections": lambda t, e: {"limit": 5},
     "get_pending_events": lambda t, e: {"limit": 20},
