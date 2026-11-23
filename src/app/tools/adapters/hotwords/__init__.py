@@ -17,8 +17,8 @@
                     add_write_errors / finish_word）+ 整轮成功阈值。
     wordlib.py      词库：候选池快照 / 取下一个未跟进的词 / 读判例，外加 saved /
                     rejected / aihints 三张表的写侧口径（与 console store.js 对齐）。
-    write_log.py    KV 写入账本（WriteLog）：一个词的每次写入成败与阶段名。
-    writeback.py    回写层：一个词的正文 / 标签 / 状态落库（正文先写，失败即收手）。
+    writeback.py    KV 写入层：写入账本 WriteLog（每次写入的成败与阶段名）+
+                    结论落库（正文 / 标签 / 状态，正文先写、失败即收手）。
 
 外部取数：
     scrape_serp.py / scrape_trend.py   单个源怎么抓、怎么解析

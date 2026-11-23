@@ -4,7 +4,7 @@
 
 """热词分析的外部取数层：SERP / Trends 读缓存 → 缺失则现抓 → 写回共享 KV。
 
-只负责「补数据」，不碰判据 / LLM / 结论回写（判据在 criteria，回写在
+只负责「补数据」，不碰判据 / LLM / 结论回写（判据在 criteria，回写与写入账本 WriteLog 在
 writeback，谁来调这一步是 graph/hotword_graph.py 的连线）。
 
 ★源级不可用（连不上 / 被挑战页占满）原样抛 SourceUnavailable：工具契约把它判成
@@ -31,7 +31,7 @@ from src.app.tools.adapters.cloudflare.kv import (
 )
 from src.app.utils.kv_shape import kv_dict
 from src.app.utils.source_errors import SourceUnavailable
-from .write_log import WriteLog
+from .writeback import WriteLog
 
 # 模块引用（不是 from ... import fetch_*）：测试 monkeypatch.setattr(scrape_serp, ...)
 # patch 的是模块对象属性，所有共享该对象的地方都会生效。

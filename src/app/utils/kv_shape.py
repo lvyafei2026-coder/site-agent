@@ -9,7 +9,7 @@ radar / console / agent 三方共写同一个 KV 命名空间，任何一方改�
 「有 get_json 的对象」，不 import 任何 KV 实现，因此不依赖 adapters 分层。
 
 热词线的写入账本（带阶段名的成败记录）是业务口径，留在
-src/app/tools/adapters/hotwords/write_log.py。
+src/app/tools/adapters/hotwords/writeback.py。
 """
 
 from __future__ import annotations
