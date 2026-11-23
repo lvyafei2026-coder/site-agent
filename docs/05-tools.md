@@ -69,7 +69,7 @@
 | `render_files` | ledger | `render_files` | `site_name`、`page` | 渲染 HTML 写进本地副本 + 更新 sitemap + `git add` |
 | `wait_build` | ledger | `wait_build` | `repo`、`sha`、`work?`、`branch=main` | 轮询构建（360s），失败且给了 `work` 时空提交重推一次 |
 | `queue_indexing` | ledger | `queue_indexing` | `url` | 往事件表记一条待收录 |
-| `git_push` | **write** | `git_push` | `site_name`、`page`、`work` | commit + push，触发 CF 构建；无变更则 `skipped` |
+| `git_push` | **write** | `git_push` | `site_name`、`page`、`work` | commit + push 触发 CF 构建；无变更则 `skipped`。**推送成功即 UPSERT `agent_pages`（`status=deployed`）**，页面清单不再依赖 LLM 自觉补登 |
 
 ## 2. 意图 → 默认工具
 

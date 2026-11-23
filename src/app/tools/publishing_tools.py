@@ -13,7 +13,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from src.app.config import SITES
-from src.app.enums import EventKind, EventStatus, PageQueryMode, ToolKind
+from src.app.enums import EventKind, EventStatus, PageQueryMode, PageStatus, ToolKind
 from src.app.tools.adapters import publishing
 from src.app.tools.adapters.cloudflare import database
 from src.app.tools.adapters.cloudflare.sql import PAGE_QUERIES
@@ -48,7 +48,20 @@ class PublishingOps:
         return publishing.render_files(SITES[site_name], page)
 
     def git_push(self, site_name, page, work):
-        return publishing.push_files(SITES[site_name], page, work)
+        out = publishing.push_files(SITES[site_name], page, work)
+        # ★推送成功就地落台账：页面清单（get_page_inventory）是排产/推广/复盘三条线的唯一依据，
+        #   不能指望 LLM 建完页自己再想起来调 write_ledger——漏一次这张表就永远缺这一页。
+        #   keyword 由 LLM 的页面结构带下来，缺省用 slug 兜底（两者都不为空才算一条有效台账）。
+        slug = str(page.get("slug") or "")
+        if out.get("ok") and slug:
+            self.ledger_upsert("agent_pages", {
+                "site": site_name,
+                "keyword": str(page.get("keyword") or slug),
+                "slug": slug,
+                "status": PageStatus.DEPLOYED.value,
+                "created_at": int(time.time()),
+            })
+        return out
 
     def wait_build(self, repo, sha, work="", branch="main"):
         return publishing.wait_build(repo, sha, work=work, branch=branch)

@@ -133,6 +133,26 @@ def test_events_with_kinds_uses_placeholder_list(db):
     assert params == ["click", "indexing", 7]
 
 
+def test_git_push_writes_page_ledger(db, monkeypatch):
+    """推送成功即落 agent_pages：页面清单不能再依赖 LLM「自己记得写台账」。"""
+    monkeypatch.setattr(publishing_tools.publishing, "push_files",
+                        lambda site, page, work: {"ok": True, "sha": "abc123"})
+    out = RuntimeService().git_push(
+        "deck", {"slug": "deck-cost", "keyword": "deck cost", "title": "Deck Cost"}, "/tmp/work")
+
+    assert out == {"ok": True, "sha": "abc123"}
+    _, sql, params = db.calls[-1]
+    assert "INSERT INTO agent_pages" in sql and "ON CONFLICT(site, slug)" in sql
+    assert params[0:4] == ["deck", "deck cost", "deck-cost", "deployed"]
+
+
+def test_git_push_skips_ledger_when_push_fails(db, monkeypatch):
+    monkeypatch.setattr(publishing_tools.publishing, "push_files",
+                        lambda site, page, work: {"ok": False, "error": "rejected"})
+    RuntimeService().git_push("deck", {"slug": "deck-cost"}, "/tmp/work")
+    assert db.calls == []
+
+
 def test_page_inventory_window_only_for_windowing_modes(db):
     service = RuntimeService()
 
