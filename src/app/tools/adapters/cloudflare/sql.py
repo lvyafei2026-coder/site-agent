@@ -23,27 +23,6 @@ from src.app.enums import LedgerStrategy, PageQueryMode
 class Sql:
     """固定语句。events 表真实 schema：ts(ms) / site / event(page_view|...) / path / sid。"""
 
-    DAILY_STATS = """
-SELECT site,
-       CAST(ts / 86400000 AS INTEGER) * 86400000 AS day,
-       COUNT(*) AS pv,
-       COUNT(DISTINCT sid) AS uv
-FROM events
-WHERE ts >= ? AND event = 'page_view'
-GROUP BY site, day
-ORDER BY day DESC, pv DESC
-LIMIT 500
-"""
-
-    TOP_PAGES = """
-SELECT site, path, COUNT(*) AS pv, COUNT(DISTINCT sid) AS uv
-FROM events
-WHERE ts >= ? AND event = 'page_view'
-GROUP BY site, path
-ORDER BY pv DESC
-LIMIT 50
-"""
-
     # 按「站点 × 事件类型」统计指定时间窗内的事件数量：浏览 / 点击 / 外链 / 提交等全事件。
     # 透视成 by_site: {site: {event: count}}，供 review_metrics 的 LLM 比对各站表现。
     # idx_events_site_ev(site, event, ts) 可加速 WHERE ts >= ? GROUP BY site, event。

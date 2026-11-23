@@ -155,7 +155,7 @@ def test_unknown_page_mode_falls_back_to_all(db):
 
 
 def test_fixed_statements_have_no_unformatted_placeholders():
-    for name in ("DAILY_STATS", "TOP_PAGES", "SITE_EVENT_COUNTS", "LATEST_PLAN",
+    for name in ("SITE_EVENT_COUNTS", "LATEST_PLAN",
                  "BACKLINK_LEDGER", "REFLECTIONS", "PENDING_EVENTS", "CONSUME_EVENT"):
         sql = getattr(Sql, name)
         assert sql.strip(), name
