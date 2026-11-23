@@ -15,7 +15,8 @@ from types import SimpleNamespace
 import pytest
 
 import src.app.llm.completion as llm_mod
-from src.app.llm.completion import complete_json, parse_json, strip_fences
+from src.app.llm.completion import complete_json
+from src.app.utils.json_text import parse_json, strip_fences
 from src.app.llm.provider import content_from_response
 
 

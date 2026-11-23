@@ -7,10 +7,13 @@
 判定口径一句话：**换个项目也照抄得走的，才放这里**。带业务语义的（表名、结论枚举、
 提示词拼装、步骤名）留在自己的域里，哪怕它读起来很像工具函数。
 
-    logger.py         进程内单行 JSON 日志（Render / Cloudflare 按字段检索）
-    llm_io.py         一次非流式补全调用：思考开关 + 空正文现场诊断
+    hashing.py        跨进程稳定的幂等短哈希（abs(hash(...)) 重启就变，不能当幂等键）
+    json_text.py      从自由文本里捞 JSON：剥 ```json 围栏、抽散文中的第一个对象
     kv_shape.py       KV 键形状兜底读取（期望数组/对象，读歪了当空并 warn）
+    llm_io.py         一次非流式补全调用：思考开关 + 空正文现场诊断
+    logger.py         进程内单行 JSON 日志（Render / Cloudflare 按字段检索）
     source_errors.py  外部数据源整体不可用的异常契约
+    text.py           文本截断两种尾巴：固定省略号（trace 展示）/ 被砍字符数（喂 LLM 的预览）
 
 与 src/app/llm/ 的分工：那包是 LLM 底座（provider 建连接、completion 补全与降级、
 quota 额度用量），本包的 llm_io 只做「一次调用怎么发出去、正文为空到底为什么」。

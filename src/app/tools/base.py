@@ -16,8 +16,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import socket
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -63,12 +61,6 @@ def is_retryable_error(exc: BaseException) -> bool:
     等调用方下次请求再试。
     """
     return isinstance(exc, _RETRYABLE_EXC_TYPES)
-
-
-def stable_key(*parts: Any) -> str:
-    """跨进程稳定的幂等键（替代每次启动都变的 abs(hash(...))）。"""
-    raw = json.dumps(parts, ensure_ascii=False, sort_keys=True, default=str)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
 @dataclass(slots=True)

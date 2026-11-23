@@ -17,7 +17,8 @@ from src.app.enums import EventKind, EventStatus, PageQueryMode, ToolKind
 from src.app.tools.adapters import publishing
 from src.app.tools.adapters.cloudflare import database
 from src.app.tools.adapters.cloudflare.sql import PAGE_QUERIES
-from src.app.tools.base import RuntimeTool, stable_key
+from src.app.tools.base import RuntimeTool
+from src.app.utils.hashing import stable_key
 
 
 class PublishingOps:

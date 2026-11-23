@@ -9,63 +9,24 @@
 
 无 LLM_API_KEY 时走确定性回退，图与测试不依赖任何外部凭据或网络。
 
-思考开关只有一份实现：复用 src/app/utils/llm_io.thinking_kwargs，不在这里重复判
-base_url 是不是 DeepSeek。
+与业务无关的三件事都复用 src/app/utils，不在这里重复实现：思考开关
+（llm_io.thinking_kwargs，含「base_url 是不是 DeepSeek」的判断）、从文本里捞 JSON
+（json_text.parse_json / strip_fences）、日志用的截断（text.clip_with_count）。
 """
 
 from __future__ import annotations
-
-import json
-import re
 
 from src.app.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 from src.app.llm.provider import content_from_response, get_llm
 from src.app.observability.langsmith import tracing_enabled
 # base.py 是纯叶子（只依赖标准库 / pydantic / enums），这里取异常分类不会引回环
 from src.app.tools.base import is_retryable_error
+from src.app.utils.json_text import parse_json, strip_fences
 from src.app.utils.llm_io import thinking_kwargs
 from src.app.utils.logger import get_logger
+from src.app.utils.text import clip_with_count
 
 logger = get_logger(__name__)
-
-
-def strip_fences(text: str) -> str:
-    """剥掉模型偶尔包在 JSON 外的 ```json ... ``` 围栏。"""
-    s = text.strip()
-    if s.startswith("```"):
-        s = s.split("```", 2)[1]
-        if s.lstrip().startswith("json"):
-            s = s.lstrip()[4:]
-        s = s.strip()
-    return s
-
-
-def parse_json(text: str) -> dict | None:
-    """把模型返回的文本解析成 dict；容忍两种情况：
-    1) 被 ```json 围栏包裹；2) 散文里夹着一段 JSON（抽第一个 {…} 对象）。
-
-    OpenAI 兼容服务偶尔忽略 response_format，返回散文/带说明文字而非纯 JSON；
-    这里尽量「捞」出 JSON 对象，捞不到返回 None（上层走确定性回退）。
-    """
-    s = strip_fences(text or "").strip()
-    try:
-        data = json.loads(s)
-    except json.JSONDecodeError:
-        mobj = re.search(r"\{.*\}", s, re.DOTALL)
-        if not mobj:
-            return None
-        try:
-            data = json.loads(mobj.group(0))
-        except json.JSONDecodeError:
-            return None
-    return data if isinstance(data, dict) else None
-
-
-def _cap(s: str | None, n: int = 2000) -> str:
-    if s is None:
-        return ""
-    s = s if isinstance(s, str) else str(s)
-    return s if len(s) <= n else s[:n] + f"...<truncated {len(s) - n} chars>"
 
 
 def complete_json(prompt: str, text: str, warn_event: str) -> tuple[dict | None, bool, bool]:
@@ -95,8 +56,8 @@ def complete_json(prompt: str, text: str, warn_event: str) -> tuple[dict | None,
         "resolved_url": resolved_url,
         "traced": tracing_enabled(),
         "response_format": "json_object",
-        "system_prompt": _cap(prompt, 2000),
-        "user_text": _cap(text, 2000),
+        "system_prompt": clip_with_count(prompt, 2000),
+        "user_text": clip_with_count(text, 2000),
     })
     try:
         resp = get_llm().chat.completions.create(
@@ -134,22 +95,22 @@ def complete_json(prompt: str, text: str, warn_event: str) -> tuple[dict | None,
         content = content_from_response(resp)
         logger.info("llm_content_extracted", extra={
             "content_type": type(content).__name__,
-            "content_head": _cap(content, 400),
+            "content_head": clip_with_count(content, 400),
         })
         if content is None:
             logger.debug("llm_empty_content", extra={"warn_event": warn_event})
             return None, False, False
         after_strip = strip_fences(content)
-        logger.info("llm_after_strip_fences", extra={"text_head": _cap(after_strip, 400)})
+        logger.info("llm_after_strip_fences", extra={"text_head": clip_with_count(after_strip, 400)})
         data = parse_json(content)
         logger.info("llm_parse_result", extra={
             "ok": data is not None,
             "keys": list(data.keys()) if data else None,
-            "head": _cap(content, 200),
+            "head": clip_with_count(content, 200),
         })
         if data is None:
             logger.warning("llm_nonjson_response",
-                           extra={"warn_event": warn_event, "head": _cap(content, 400)})
+                           extra={"warn_event": warn_event, "head": clip_with_count(content, 400)})
             return None, False, False
         return data, False, False
     except Exception as exc:  # noqa: BLE001 - LLM 不可用不影响整轮

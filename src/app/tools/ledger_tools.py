@@ -19,7 +19,8 @@ from pydantic import BaseModel, Field
 from src.app.enums import EventKind, EventStatus, LedgerStrategy, ToolKind
 from src.app.tools.adapters.cloudflare import database, keyvalue
 from src.app.tools.adapters.cloudflare.sql import LEDGER_TABLES, Sql, SqlBuilder
-from src.app.tools.base import RuntimeTool, stable_key
+from src.app.tools.base import RuntimeTool
+from src.app.utils.hashing import stable_key
 
 
 class LedgerOps:

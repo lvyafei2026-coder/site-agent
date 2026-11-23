@@ -35,14 +35,11 @@ from collections import Counter
 from typing import Any, Callable
 
 from src.app.enums import GraphNode, RouteTag
+from src.app.utils.text import clip
 
 # 每步只抽这些「有语义」的字段做 diff；大对象（tool_results / extracted_data / results）
-# 一律降维成计数，避免把几 MB 数据塞进 trace。
+# 一律降维成计数、长文本截到 120 字符，避免把几 MB 数据塞进 trace。
 _MAX_TEXT = 120
-
-
-def _clip(value: str) -> str:
-    return value if len(value) <= _MAX_TEXT else value[:_MAX_TEXT] + "…"
 
 
 def workflow_snapshot(state: dict) -> dict[str, Any]:
@@ -57,11 +54,11 @@ def workflow_snapshot(state: dict) -> dict[str, Any]:
         "retry": state.get("retry_count"),
         "tools": f"{ok}/{len(results)} ok" if results else "",
         "valid": validation.get("is_valid"),
-        "reason": _clip(str(validation.get("reason") or "")),
+        "reason": clip(str(validation.get("reason") or ""), _MAX_TEXT),
         "fields": len(extracted) or "",
         "messages": len(state.get("messages") or []) or "",
-        "output": _clip(str(state.get("output") or "")),
-        "error": _clip(str(state.get("error") or "")),
+        "output": clip(str(state.get("output") or ""), _MAX_TEXT),
+        "error": clip(str(state.get("error") or ""), _MAX_TEXT),
     }
 
 
@@ -77,7 +74,7 @@ def hotword_snapshot(state: dict) -> dict[str, Any]:
         "words": f"{ok}/{len(results)} ok" if results else "",
         "verdict": (results[-1].get("verdict") if results else "") or "",
         "has_more": state.get("has_more"),
-        "error": _clip(str(summary.get("error") or state.get("load_error") or "")),
+        "error": clip(str(summary.get("error") or state.get("load_error") or ""), _MAX_TEXT),
     }
 
 

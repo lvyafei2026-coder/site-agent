@@ -17,6 +17,7 @@ from src.app.enums import PromptTask
 from src.app.llm.completion import complete_text
 from src.app.observability.langsmith import traceable
 from src.app.services.prompt_service import prompt_service
+from src.app.utils.text import clip_with_count
 
 MAX_PAYLOAD_CHARS = 6000
 
@@ -36,9 +37,7 @@ def _compact_payload(results: dict) -> str:
         text = json.dumps(slim, ensure_ascii=False, default=str)
     except TypeError:
         text = str(slim)
-    if len(text) > MAX_PAYLOAD_CHARS:
-        text = text[:MAX_PAYLOAD_CHARS] + f"...<truncated {len(text) - MAX_PAYLOAD_CHARS} chars>"
-    return text
+    return clip_with_count(text, MAX_PAYLOAD_CHARS)
 
 
 class MetricsService:
