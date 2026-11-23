@@ -23,9 +23,9 @@ from src.app.graph.hotword_graph import DEFAULT_EVIDENCE, DEFAULT_POST, build_wo
 from src.app.graph.state import initial_hotword_state
 from src.app.nodes.hotword_fetch_node import fetch_one
 from src.app.tools.adapters.cloudflare import kv as kvk
-from src.app.tools.adapters.hotwords import llm_io
 from src.app.tools.adapters.hotwords import scrape_serp, scrape_trend
 from src.app.tools.adapters.hotwords import wordlib
+from src.app.utils import llm_io
 
 
 def _nodes(word_graph):
@@ -81,7 +81,7 @@ def test_fetch_one_asks_tool_each_round(fake_kv, monkeypatch):
     fake_kv.put_json("candidates", [{"term": f"t{i}"} for i in range(4)])
     monkeypatch.setattr(scrape_serp, "fetch_serp", lambda *a, **k: {"engine": "duckduckgo", "items": [], "attempts": []})
     monkeypatch.setattr(scrape_trend, "fetch_interest", lambda *a, **k: {"points": [], "summary": {}, "attempts": []})
-    monkeypatch.setattr(llm_io, "_llm", lambda m: ("7) 结论：观望\n8) 信号标签：无", "fake"))
+    monkeypatch.setattr(llm_io, "complete", lambda m, **_: ("7) 结论：观望\n8) 信号标签：无", "fake"))
 
     s = initial_hotword_state(limit=10)
     s1 = {**s, **fetch_one(s)}
@@ -104,7 +104,7 @@ def test_loop_stops_at_limit(fake_kv, monkeypatch):
     fake_kv.put_json("candidates", [{"term": f"term {i}"} for i in range(8)])
     monkeypatch.setattr(scrape_serp, "fetch_serp", lambda *a, **k: {"engine": "duckduckgo", "items": [], "attempts": []})
     monkeypatch.setattr(scrape_trend, "fetch_interest", lambda *a, **k: {"points": [], "summary": {}, "attempts": []})
-    monkeypatch.setattr(llm_io, "_llm", lambda m: ("7) 结论：观望\n8) 信号标签：无", "fake"))
+    monkeypatch.setattr(llm_io, "complete", lambda m, **_: ("7) 结论：观望\n8) 信号标签：无", "fake"))
 
     out = hotword_graph.run_hotwords(limit=3)
     assert out["fetched"] == 3 and len(out["items"]) == 3

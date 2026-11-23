@@ -16,6 +16,12 @@ APP = Path(__file__).resolve().parents[1] / "src" / "app"
 # 这不破坏「叶子」的实质（无副作用、无反向依赖）。
 ENUMS = "src.app.enums"
 ADAPTERS = "src.app.tools.adapters"
+# utils.source_errors 是纯异常类型（只 import 标准库），与 enums 同性质：叶子模块
+# 允许引它，is_retryable_error 因此能按 isinstance 判源级失败，不再靠类名字符串。
+UTILS_SOURCE_ERRORS = "src.app.utils.source_errors"
+# utils 的判定口径：换个项目也照抄得走。反向认识任何一层业务，这个口径就废了。
+BUSINESS_LAYERS = ("src.app.graph", "src.app.nodes", "src.app.services",
+                   "src.app.tools", "src.app.api")
 
 
 def imports_of(package: str) -> set[str]:
@@ -133,7 +139,7 @@ def test_entry_depends_only_on_graph():
 
 
 def test_base_is_a_pure_leaf():
-    """base.py 只依赖标准库与 pydantic：门面靠注入，不 import 任何包内模块。"""
+    """base.py 只依赖标准库、pydantic 与两个横切常量模块：门面靠注入，不 import 分层。"""
     tree = ast.parse((APP / "tools" / "base.py").read_text(encoding="utf-8"))
     top_level: set[str] = set()
     for node in tree.body:
@@ -141,8 +147,22 @@ def test_base_is_a_pure_leaf():
             top_level.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             top_level.add(node.module)
-    offenders = {m for m in top_level if m.startswith("src.app") and m != ENUMS}
+    allowed = (ENUMS, UTILS_SOURCE_ERRORS)
+    offenders = {m for m in top_level
+                 if m.startswith("src.app") and not m.startswith(allowed)}
     assert not offenders, f"base.py 顶层 import 了包内模块：{sorted(offenders)}"
+
+
+def test_utils_do_not_depend_on_business_layers():
+    """utils 只放与业务无关的横切件：logger / llm_io / kv_shape / source_errors。
+
+    utils 一旦 import tools、services、adapters 或编排层，它就成了「藏业务」的地方：
+    域守卫（test_tools_import_only_own_adapters、test_adapters_are_leaves）会被绕开，
+    「换个项目也照抄得走」也不再成立。src.app.llm 与 src.app.config / enums 允许——
+    它们同为横切层，且不成环：llm/completion 反过来复用 utils.llm_io.thinking_kwargs。
+    """
+    offenders = {m for m in imports_of("utils") if m.startswith(BUSINESS_LAYERS)}
+    assert not offenders, f"utils 反向依赖业务分层：{sorted(offenders)}"
 
 
 def test_tools_layer_does_no_direct_io():

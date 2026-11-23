@@ -263,7 +263,7 @@ def atomic_update(
       ok=False 表示读/改/写任一步抛异常，或 put_json 返回了假值（凭据失效 / 5xx /
       序列化失败）。调用方必须据此把该词记为 error，不能默认写入成功。
 
-    `reader` 允许调用方注入形状兜底（期望 list 就是 _kv_list、dict 就是 _kv_dict），
+    `reader` 允许调用方注入形状兜底（期望 list 就是 kv_list、dict 就是 kv_dict），
     避免形状漂移时把脏数据当成空表再写回去。`mutator` 应当是纯函数：不要在锁内
     做网络请求，否则整批 worker 会被一次外部超时全部卡住。
     """

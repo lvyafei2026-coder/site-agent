@@ -4,8 +4,8 @@
 
 """AI 判定节点：素材拼提示词 → 调 LLM → 结论解析，硬证据与红线把结论压回「不做」。
 
-LLM 不是工具（横切能力，与常规线一样走 llm/completion 而不经 registry）：
-传输在 llm_io、纯判据在 criteria，本节点只做调用与收口。
+LLM 不是工具（横切能力，与常规线一样不经 registry）：传输在 src/app/utils/llm_io，
+本线口径（提示词拼装、max_tokens）在 criteria，本节点只做调用与收口。
 
 ★失败不抛给上层，只写进该词 error：LLM 挂掉的这个词不进步后置动作
   （route_after_llm 直接送它去落账），其它词照常跑完。
@@ -17,12 +17,11 @@ import logging
 from typing import Any
 
 from src.app.graph.state import HotwordLoopState
-from src.app.tools.adapters.hotwords import llm_io
 from src.app.tools.adapters.hotwords.criteria import (
-    build_messages, decide, signals_of,
+    MAX_TOKENS, build_messages, decide, signals_of,
 )
-from src.app.tools.adapters.hotwords.llm_io import LLMEmptyContent
 from src.app.tools.adapters.hotwords.word_result import add_error
+from src.app.utils import llm_io
 
 log = logging.getLogger(__name__)
 
@@ -32,10 +31,10 @@ def llm_analyze(state: HotwordLoopState) -> dict[str, Any]:
     word = state["word"]
     degrade = state["degrade"]
     try:
-        text, model = llm_io._llm(build_messages(
+        text, model = llm_io.complete(build_messages(
             state["body"], prompt_version=state.get("prompt_version"),
-            examples=state.get("examples") or []))
-    except LLMEmptyContent as exc:
+            examples=state.get("examples") or []), max_tokens=MAX_TOKENS)
+    except llm_io.LLMEmptyContent as exc:
         add_error(word, str(exc))
         word["llm_diag"] = exc.diag
         return {"word": word}
@@ -45,7 +44,7 @@ def llm_analyze(state: HotwordLoopState) -> dict[str, Any]:
                     degrade.note_llm_failure(), str(exc)[:120])
         return {"word": word}
     if not text:
-        add_error(word, "LLM 返回空正文（未携带诊断信息，请查 hotwords_llm_empty_content 日志）")
+        add_error(word, "LLM 返回空正文（未携带诊断信息，请查 llm_empty_content 日志）")
         return {"word": word}
 
     verdict, reason = decide(text, "；".join(state.get("signals") or []))

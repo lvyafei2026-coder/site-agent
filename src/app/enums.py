@@ -193,7 +193,7 @@ class Verdict(StrEnum):
 
 
 class AnalysisPhase(StrEnum):
-    """单词分析写入账本（_WriteLog.phase）的阶段，用于定位写到哪一步失败。"""
+    """单词分析写入账本（WriteLog.phase）的阶段，用于定位写到哪一步失败。"""
 
     SERP = "serp"        # 抓 SERP 竞争度
     TREND = "trend"      # 抓 30 天趋势

@@ -33,10 +33,11 @@ from langsmith.run_trees import RunTree
 from src.app.config import settings
 from src.app.enums import TraceName
 from src.app.tools.adapters.cloudflare import kv as kvk
-from src.app.tools.adapters.hotwords import fetch, llm_io
+from src.app.tools.adapters.hotwords import fetch
 from src.app.tools.adapters.hotwords import scrape_serp, scrape_trend
 from src.app.tools.adapters.hotwords import wordlib
-from src.app.tools.adapters.hotwords.source_errors import SourceUnavailable
+from src.app.utils import llm_io
+from src.app.utils.source_errors import SourceUnavailable
 from src.app.graph import hotword_graph
 from src.app.tools.registry import tool_registry
 
@@ -71,7 +72,7 @@ def _seed(fake_kv, monkeypatch, count=6, llm=None):
                         lambda term, session=None, geo="": {
                             "points": [{"d": "2026-01-01", "v": 50}],
                             "summary": {"avg": 50}, "attempts": []})
-    monkeypatch.setattr(llm_io, "_llm", llm or (lambda messages: (
+    monkeypatch.setattr(llm_io, "complete", llm or (lambda messages, **_: (
         "7) 结论：观望，等长尾\n8) 信号标签：工具查询", "fake")))
 
 
@@ -110,7 +111,7 @@ def test_batch_tree_is_nested_under_graph_root(fake_kv, monkeypatch, traced_runs
     """一条根展开看完 6 个词：run 挂外层根、每词一条 collect_word 在 run 下、LLM 在对应词的 llm_analyze 下。"""
     seen_in_llm: list[tuple[str, str]] = []
 
-    def llm(messages):
+    def llm(messages, **_):
         current = run_helpers.get_current_run_tree()
         seen_in_llm.append((current.name, str(current.id)) if current else ("", ""))
         term = messages[-1]["content"].split("关键词：")[1].split("\n")[0]
@@ -148,7 +149,7 @@ def test_batch_tree_is_nested_under_graph_root(fake_kv, monkeypatch, traced_runs
 def test_word_failure_is_recorded_without_breaking_others(fake_kv, monkeypatch,
                                                           traced_runs):
     """某词 LLM 抛异常：该词的 llm_analyze run 里带真因，其余词照常完成且在同一棵树下。"""
-    def llm(messages):
+    def llm(messages, **_):
         term = messages[-1]["content"].split("关键词：")[1].split("\n")[0]
         if term.endswith("2"):
             raise RuntimeError("LLM 连接超时")
@@ -246,9 +247,9 @@ def test_tracing_off_has_no_spans_and_plain_result(fake_kv, monkeypatch):
 # ---------------------------------------------------------------------------
 # 工具可见性：热词线与常规线共用 registry 的 30 个 RuntimeTool，都要看得到出入参
 # ---------------------------------------------------------------------------
-def test_run_tool_spans_capture_serp_trend_kv_io(fake_kv, monkeypatch, traced_runs):
+def test_run_tool_spans_capture_serp_trend_writes(fake_kv, monkeypatch, traced_runs):
     """每词三条 tool span + 每轮一次取词 + 判例读一次，各自嵌在调用它的步骤节点下。"""
-    def llm(messages):
+    def llm(messages, **_):
         _fake_openai_call("x")
         return "7) 结论：不做，影视作品\n8) 信号标签：工具查询", "fake"
 

@@ -2,15 +2,17 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""热词分析的 KV 写账本层：单词级写入成败记录 + 共享表形状兜底读取。
+"""热词线的 KV 写入账本：记录一个词的每一次写入成败（业务口径，带阶段名）。
 
-拆分自 hotwords.py（2026-11-17）。只放「怎么安全地写 / 怎么容错地读」这一层；
-取数（serp / trend）在 fetch.py，结论回写在 writeback.py；把这几步串起来的
-是 graph/hotword_graph.py 编译出的逐词子图（节点在 nodes/hotword_*_node.py）。
+谁用它：fetch.py（serp / trend 的缓存与摘要表回写）与 writeback.py（正文 / 标签 /
+状态落库）。一个工具一本账，失败清单随工具结果返回，由逐词节点跨工具汇总进该词的 error。
 
-★_WriteLog 存在的理由：以前 `kv.put_json(...)` 的返回值被丢掉，Cloudflare 返回
-  401/5xx 时进程内仍以为写成功了，于是「正文有了、状态表没有」，而 select_pending
-  又会因为正文存在把这个词永久剔除。现在每次写都检查，失败清单会进 items[].error。
+★存在的理由：以前 `kv.put_json(...)` 的返回值被丢掉，Cloudflare 返回 401/5xx 时进程内
+  仍以为写成功了，于是「正文有了、状态表没有」，而 select_pending 又会因为正文存在把
+  这个词永久剔除。现在每次写都检查，失败清单会进 items[].error。
+
+形状兜底读取（kv_list / kv_dict）不在这一层——那是与业务无关的读侧容错，在
+src/app/utils/kv_shape.py。
 """
 
 from __future__ import annotations
@@ -20,12 +22,12 @@ from typing import Any, Optional
 
 from src.app.enums import AnalysisPhase
 
-from src.app.tools.adapters.cloudflare.kv import CloudflareKV, atomic_update
+from src.app.tools.adapters.cloudflare.kv import atomic_update
 
 log = logging.getLogger(__name__)
 
 
-class _WriteLog:
+class WriteLog:
     """单词级写入账本：这个词的每一次 put_* 都记结果，失败则汇总成 error。
 
     records 里的明细（key/kind/phase/ok）随工具结果返回，汇入 tool:fetch_serp /
@@ -70,23 +72,3 @@ class _WriteLog:
 
     def error(self) -> str:
         return "KV 写入失败：" + "、".join(self.failed) if self.failed else ""
-
-
-def _kv_list(kv: CloudflareKV, key: str) -> list:
-    """读一个「应该是数组」的 KV 键；形状不对当空并 warn，不抛。"""
-    val = kv.get_json(key, [])
-    if isinstance(val, list):
-        return val
-    if val is not None and val != []:
-        log.warning("KV 键 %s 期望数组，实际 %s，按空处理", key, type(val).__name__)
-    return []
-
-
-def _kv_dict(kv: CloudflareKV, key: str) -> dict:
-    """读一个「应该是对象」的 KV 键；形状不对当空并 warn，不抛。"""
-    val = kv.get_json(key, {})
-    if isinstance(val, dict):
-        return val
-    if val is not None and val != {}:
-        log.warning("KV 键 %s 期望对象，实际 %s，按空处理", key, type(val).__name__)
-    return {}

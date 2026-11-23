@@ -22,7 +22,8 @@
     nodes/hotword_trend_node.py      → execute_for_step(trend)
     nodes/hotword_write_node.py      → execute_for_step(write_result)
     nodes/hotword_llm_node.py        → 不经本层：提示词组装与判定契约在
-                                        tools/adapters/hotwords/（criteria、llm_io）
+                                        criteria + max_tokens 口径在 tools/adapters/hotwords/，
+                                        传输在 src/app/utils/llm_io
     nodes/hotword_collect_node.py    → 无 service：纯落账
     nodes/hotword_summary_node.py    → 无 service：纯聚合与成功率
 

@@ -6,7 +6,8 @@
 
 与 fetch（补数据）对称，这里只管「分析完了怎么落库」。表形状与去重口径在
 wordlib（upsert_saved / upsert_rejected / set_hint_override），键名契约在
-../cloudflare/kv.py，写入成败记录在 kv_io 的 _WriteLog。
+../cloudflare/kv.py，写入成败记录在同包的 write_log.WriteLog，形状兜底读取在
+src/app/utils/kv_shape.py。
 
 ★正文先写：正文写失败就收手，绝不写状态——否则留下「有状态、没正文」的悬空词，
   select_pending 既不会重跑它，前端也看不到方案。
@@ -23,8 +24,9 @@ from src.app.enums import CurationStatus, RejectSource, Verdict
 from src.app.tools.adapters.cloudflare.kv import (
     get_kv, term_key, AI_CACHE_PREFIX, SAVED_KEY, REJECTED_KEY, HINTS_KEY,
 )
+from src.app.utils.kv_shape import kv_dict, kv_list
 from .wordlib import set_hint_override, upsert_rejected, upsert_saved
-from .kv_io import _WriteLog, _kv_dict, _kv_list
+from .write_log import WriteLog
 
 # 判定「做」时从候选条目带进 saved 表的字段（与 console 人工收藏同一套形状）
 _SAVED_CANDIDATE_FIELDS = ("term", "related", "hints", "geos", "geoCount",
@@ -42,7 +44,7 @@ def write_result(item: dict[str, Any], text: str, hints: Optional[list[str]],
     kv = get_kv()
     term = str(item.get("term") or "").strip()
     key = term_key(item.get("key") or item.get("term") or "")
-    writes = _WriteLog(term)
+    writes = WriteLog(term)
     out: dict[str, Any] = {"status": "", "stoppedAfterTextFailure": False,
                            "textChars": len(text), "textPreview": text[:200],
                            "writes": [], "writeErrors": []}
@@ -52,19 +54,19 @@ def write_result(item: dict[str, Any], text: str, hints: Optional[list[str]],
     else:
         if hints is not None:
             writes.table(kv, HINTS_KEY,
-                         lambda m: set_hint_override(m, term, hints), reader=_kv_dict)
+                         lambda m: set_hint_override(m, term, hints), reader=kv_dict)
         if verdict == Verdict.SKIP.value:
             payload = {"term": term, "reason": reason or "AI 判定不做",
                        "source": RejectSource.AI.value}
             if writes.table(kv, REJECTED_KEY,
-                            lambda arr: upsert_rejected(arr, payload), reader=_kv_list):
+                            lambda arr: upsert_rejected(arr, payload), reader=kv_list):
                 out["status"] = "rejected"
         elif verdict == Verdict.DO.value:
             cand = {k: item.get(k) for k in _SAVED_CANDIDATE_FIELDS}
             payload = {**cand, "term": term, "status": CurationStatus.TODO.value,
                        "verdict": Verdict.DO.value}
             if writes.table(kv, SAVED_KEY,
-                            lambda arr: upsert_saved(arr, payload), reader=_kv_list):
+                            lambda arr: upsert_saved(arr, payload), reader=kv_list):
                 out["status"] = CurationStatus.TODO.value
 
     out["writes"] = writes.records

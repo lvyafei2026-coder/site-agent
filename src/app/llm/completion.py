@@ -8,6 +8,9 @@
 意图识别 / 字段抽取 / 流量分析各自在 services 的对应实现类里。
 
 无 LLM_API_KEY 时走确定性回退，图与测试不依赖任何外部凭据或网络。
+
+思考开关只有一份实现：复用 src/app/utils/llm_io.thinking_kwargs，不在这里重复判
+base_url 是不是 DeepSeek。
 """
 
 from __future__ import annotations
@@ -15,31 +18,15 @@ from __future__ import annotations
 import json
 import re
 
-from src.app.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, LLM_THINKING
-from src.app.enums import LlmThinking
+from src.app.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 from src.app.llm.provider import content_from_response, get_llm
 from src.app.observability.langsmith import tracing_enabled
 # base.py 是纯叶子（只依赖标准库 / pydantic / enums），这里取异常分类不会引回环
 from src.app.tools.base import is_retryable_error
+from src.app.utils.llm_io import thinking_kwargs
 from src.app.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-
-def thinking_kwargs() -> dict:
-    """DeepSeek 思考模式默认开启，分析类文案任务需要关掉。
-
-    auto（默认）：仅当 LLM_BASE_URL 指向 DeepSeek 时注入 extra_body；换用别的
-      OpenAI 兼容服务不会误传这个 DeepSeek 专属参数；
-    off：强制注入；on：保留思考（此时要自行调大 max_tokens）。
-    """
-    mode = (LLM_THINKING or LlmThinking.AUTO.value).strip().lower()
-    if mode == LlmThinking.ON.value:
-        return {}
-    if mode == LlmThinking.OFF.value or (
-            mode == LlmThinking.AUTO.value and "deepseek" in (LLM_BASE_URL or "").lower()):
-        return {"extra_body": {"thinking": {"type": "disabled"}}}
-    return {}
 
 
 def strip_fences(text: str) -> str:

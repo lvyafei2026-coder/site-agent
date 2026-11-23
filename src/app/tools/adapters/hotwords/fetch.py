@@ -29,12 +29,13 @@ from src.app.tools.adapters.cloudflare.kv import (
     term_key, get_kv,
     SERP_PREFIX, TREND_PREFIX, COMPETITION_KEY, INTERESTS_KEY,
 )
-from .kv_io import _WriteLog, _kv_dict
+from src.app.utils.kv_shape import kv_dict
+from src.app.utils.source_errors import SourceUnavailable
+from .write_log import WriteLog
 
 # 模块引用（不是 from ... import fetch_*）：测试 monkeypatch.setattr(scrape_serp, ...)
 # patch 的是模块对象属性，所有共享该对象的地方都会生效。
 from . import scrape_serp, scrape_trend
-from .source_errors import SourceUnavailable
 
 log = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ def serp(term: str) -> dict[str, Any]:
     """
     kv = get_kv()
     key = term_key(term)
-    writes = _WriteLog(term)
+    writes = WriteLog(term)
     writes.phase = AnalysisPhase.SERP.value
     out: dict[str, Any] = {"ok": False, "data": None, "error": "", "fromCache": False,
                            "engine": "", "itemCount": 0, "competition": {},
@@ -89,7 +90,7 @@ def serp(term: str) -> dict[str, Any]:
     writes.json(kv, SERP_PREFIX + key, payload, ttl=SERP_TTL)
     # competition 是整表：读-改-写必须走原子更新
     entry = {"score": comp["score"], "level": comp["level"], "at": payload["at"]}
-    writes.table(kv, COMPETITION_KEY, lambda m: {**m, key: entry}, reader=_kv_dict)
+    writes.table(kv, COMPETITION_KEY, lambda m: {**m, key: entry}, reader=kv_dict)
     out.update(ok=True, data=payload, engine=payload["engine"], itemCount=len(payload["items"]),
                competition=comp, writes=writes.records, writeErrors=writes.failed)
     return out
@@ -104,7 +105,7 @@ def trend(term: str) -> dict[str, Any]:
     """
     kv = get_kv()
     key = term_key(term)
-    writes = _WriteLog(term)
+    writes = WriteLog(term)
     writes.phase = AnalysisPhase.TREND.value
     out: dict[str, Any] = {"ok": False, "data": None, "error": "", "fromCache": False,
                            "pointCount": 0, "writes": [], "writeErrors": []}
@@ -132,7 +133,7 @@ def trend(term: str) -> dict[str, Any]:
         "term": term, "summary": t["summary"], "at": payload["at"],
         "points": [p["v"] for p in t["points"]],
     }
-    writes.table(kv, INTERESTS_KEY, lambda m: {**m, key: entry}, reader=_kv_dict)
+    writes.table(kv, INTERESTS_KEY, lambda m: {**m, key: entry}, reader=kv_dict)
     out.update(ok=True, data=payload, pointCount=len(t["points"]),
                writes=writes.records, writeErrors=writes.failed)
     return out

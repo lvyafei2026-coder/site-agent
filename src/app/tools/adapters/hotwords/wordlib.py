@@ -35,8 +35,8 @@ from src.app.tools.adapters.cloudflare.kv import (
     AI_CACHE_PREFIX, CANDIDATES_KEY, INTERESTS_KEY, REJECTED_KEY, SAVED_KEY,
     TAGS_KEY, CloudflareKV, get_kv, term_key,
 )
+from src.app.utils.kv_shape import kv_dict, kv_list
 from .criteria import pick_examples
-from .kv_io import _kv_dict, _kv_list
 
 log = logging.getLogger(__name__)
 
@@ -51,9 +51,9 @@ HINT_NAMES = [h.value for h in HintName]
 
 def _read(kv: CloudflareKV, status: str, limit: int, light: bool) -> dict[str, Any]:
     # ★这三张表由 radar / console 写，形状漂移时按空处理，不能让整次工具调用失败
-    candidates = _kv_list(kv, CANDIDATES_KEY)
-    meta = _kv_dict(kv, "meta")
-    interests = {} if light else _kv_dict(kv, INTERESTS_KEY)
+    candidates = kv_list(kv, CANDIDATES_KEY)
+    meta = kv_dict(kv, "meta")
+    interests = {} if light else kv_dict(kv, INTERESTS_KEY)
 
     items = candidates if not limit else candidates[:limit]
     # 候选条目一般不带 status 字段（status 在 saved/rejected/tags 里），按原 radar.py 语义
@@ -81,7 +81,7 @@ def snapshot(status: str = CandidateStatus.DOING.value, limit: int = 40,
 
 def read_examples() -> list[dict[str, str]]:
     """读人工「不做」标记并挑出可喂回 AI 的判例（挑选规则在纯判据层）。"""
-    return pick_examples(_kv_list(get_kv(), REJECTED_KEY))
+    return pick_examples(kv_list(get_kv(), REJECTED_KEY))
 
 
 def select_pending(seen: set[str]) -> dict[str, Any] | None:
@@ -93,14 +93,15 @@ def select_pending(seen: set[str]) -> dict[str, Any] | None:
       防止同一个词被重复取出。跨轮的幂等仍由 curated / analyzed 两张 KV 表兜底。
 
     ★形状兜底：这几张表由 console / radar 写，一旦漂移（比如 tags 变成数组、
-      candidates 变成对象）按原样迭代会整轮失败；_kv_list / _kv_dict 统一当成空处理
+      candidates 变成对象）按原样迭代会整轮失败；kv_shape 的 kv_list / kv_dict
+      统一当成空处理
       并 warn，让漂移可见但不阻断分析。
     """
     kv = get_kv()
-    candidates = _kv_list(kv, CANDIDATES_KEY)
-    saved = _kv_list(kv, SAVED_KEY)
-    rejected = _kv_list(kv, REJECTED_KEY)
-    tags = _kv_dict(kv, TAGS_KEY)
+    candidates = kv_list(kv, CANDIDATES_KEY)
+    saved = kv_list(kv, SAVED_KEY)
+    rejected = kv_list(kv, REJECTED_KEY)
+    tags = kv_dict(kv, TAGS_KEY)
 
     curated = set()
     for x in (saved + rejected):

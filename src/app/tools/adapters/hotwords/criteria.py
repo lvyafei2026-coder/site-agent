@@ -10,7 +10,8 @@
 拆分自 hotwords.py（2026-11-17）：该文件当时 1200+ 行，判据、LLM 调用、KV 写入、
 编排逻辑混在一起；本模块承载其中「判读」这一层。编排已于 2026-11-20 分层归位成
 graph（热词图装配 + 运行入口）、nodes（循环节点）、services（单词编排）三层，
-IO 落在同包的 fetch / writeback / kv_io，经 tools 层的工具调用。
+IO 落在同包的 fetch / writeback / write_log，经 tools 层的工具调用；
+LLM 传输本身是与业务无关的横切件，在 src/app/utils/llm_io。
 """
 
 from __future__ import annotations
@@ -98,6 +99,11 @@ WORK_TITLE_RX = re.compile(
     r"|\b(film|movie|web series|tv series|box office|trailer|soundtrack|full movie)\b)",
     re.I,
 )
+
+
+# 逐词分析要输出 8 小节、450 字以内的中文正文（约 600-900 token）；这是本线的输出
+# 口径，所以留在这里而不是传输层（utils/llm_io.complete 只收 max_tokens 参数）。
+MAX_TOKENS = 2000
 
 
 def build_messages(body: dict[str, Any], *, prompt_version: Optional[str] = None,

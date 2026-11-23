@@ -22,7 +22,7 @@ from src.app.tools.adapters.cloudflare import kv as kvmod
 from src.app.tools.adapters.hotwords import scrape_serp as ss
 from src.app.tools.adapters.hotwords import scrape_trend as st
 from src.app.tools.adapters.hotwords import wordlib
-from src.app.tools.adapters.hotwords.source_errors import SourceUnavailable
+from src.app.utils.source_errors import SourceUnavailable
 
 
 @pytest.fixture(autouse=True)

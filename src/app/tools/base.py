@@ -8,9 +8,10 @@
 作用说明写在类 docstring 里（description 直接取 docstring），实现在同一个
 *_tools.py 的 <Domain>Ops 类里，外部 IO 只发生在 tools/adapters/ 内。
 
-本模块是 tools 包的叶子：不 import 任何包内模块，也不持有全局状态。工具要用的
-外部 IO 门面（RuntimeService）由装配方 registry.py 构造后作为参数注入，
-所以 base → 任何域、域 → base 都成立，没有循环。
+本模块是 tools 包的叶子：除横切层的失败契约（utils.source_errors，它自己不许依赖
+任何业务分层）外，不 import 包内模块，也不持有全局状态。工具要用的外部 IO 门面
+（RuntimeService）由装配方 registry.py 构造后作为参数注入，所以 base → 任何域、
+域 → base 都成立，没有循环。
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from typing import Any, ClassVar
 from pydantic import BaseModel
 
 from src.app.enums import ToolKind
+from src.app.utils.source_errors import SourceUnavailable
 
 # requests 是硬依赖，但 base 作为叶子模块不宜在顶层强绑。包一层 try，缺失时
 # 网络型异常判定退化为只用标准库集合（极罕见，仅防导入崩溃）。
@@ -45,6 +47,7 @@ _RETRYABLE_EXC_TYPES = _REQ_NETWORK_EXC + (
     socket.gaierror,       # DNS 解析失败，网络级
     TimeoutError,          # 内置超时（requests 之外路径）
     ConnectionError,       # 内置，覆盖 ConnectionResetError 等
+    SourceUnavailable,     # 数据源整体不可用，与网络超时同类（见 utils/source_errors.py）
 )
 
 
@@ -59,12 +62,7 @@ def is_retryable_error(exc: BaseException) -> bool:
     ValueError、业务异常等——这些是「明确的非网络失败」，重试没用，应直接结束、
     等调用方下次请求再试。
     """
-    if isinstance(exc, _RETRYABLE_EXC_TYPES):
-        return True
-    # SourceUnavailable 语义是「源挂了」，按名判等避免跨层 import
-    if type(exc).__name__ == "SourceUnavailable":
-        return True
-    return False
+    return isinstance(exc, _RETRYABLE_EXC_TYPES)
 
 
 def stable_key(*parts: Any) -> str:
