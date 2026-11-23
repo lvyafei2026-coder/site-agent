@@ -5,7 +5,8 @@
 """逐词分析的提示词拼装：按版本从 D1 取模板 → 填本词数据 → 出 system / user 两条消息。
 
 措辞全部在 radar-rules D1 的 hotwords / hotwords_user 两 task 里（见本包 __init__.py），
-本模块只做「加载 + 缓存 + 填占位符」，不判定结论——判定口径在 services/hotword_criteria.py。
+本模块只做「加载 + 缓存 + 填占位符」，不判定结论——结论与信号标签的解析在
+nodes/hotword_llm_node.py。
 
 谁用它：nodes/hotword_llm_node.py（拼完直接交给 utils/llm_io.complete）。
 

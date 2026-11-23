@@ -4,8 +4,8 @@
 
 """LLM 传输层：非流式补全调用、思考开关、空正文现场诊断（无任何业务语义）。
 
-只管「把 messages 发出去、把正文拿回来」，不解析内容——解析在各自业务的判据层
-（热词线在 services/hotword_criteria.py，messages 由 prompts/hotword_messages.py 拼好传入）。
+只管「把 messages 发出去、把正文拿回来」，不解析内容——解析在各自业务的判据里
+（热词线在 nodes/hotword_llm_node.py，messages 由 prompts/hotword_messages.py 拼好传入）。
 
 与同层其它模块的分工：
     src/app/llm/provider.py     建连接与客户端复用（get_llm / content_from_response）

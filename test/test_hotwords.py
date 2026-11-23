@@ -22,7 +22,8 @@ from src.app.tools.adapters.hotwords import wordlib
 from src.app.utils import llm_io
 from src.app.graph import hotword_graph
 from src.app.graph.hotword_graph import resolve_steps
-from src.app.services import hotword_criteria as hwc
+from src.app.nodes.hotword_llm_node import decide, redline_of, signals_of, verdict_of
+from src.app.nodes.hotword_serp_node import serp_brief, work_signal
 from src.app.services.tool_service import INTENT_TOOLS, STEP_TOOLS
 from src.app.tools.registry import tool_registry
 
@@ -105,52 +106,52 @@ def test_examples_line_format():
 
 
 def test_verdict_of():
-    assert hwc.verdict_of("1) 词义…\n7) 结论：做，理由") == "做"
-    assert hwc.verdict_of("7) 结论: 观望，等长尾") == "观望"
-    assert hwc.verdict_of("8) 结论：不做，人名") == "不做"
-    assert hwc.verdict_of("结论：观望但明显不做") == "不做"   # 小节号变了也能兜住
-    assert hwc.verdict_of("没有结论小节") == ""
+    assert verdict_of("1) 词义…\n7) 结论：做，理由") == "做"
+    assert verdict_of("7) 结论: 观望，等长尾") == "观望"
+    assert verdict_of("8) 结论：不做，人名") == "不做"
+    assert verdict_of("结论：观望但明显不做") == "不做"   # 小节号变了也能兜住
+    assert verdict_of("没有结论小节") == ""
 
 
 def test_redline_of():
-    assert "姓名权" in hwc.redline_of("这是真人姓名，有侵权风险")
-    assert "版权" in hwc.redline_of("这是一部电影，涉版权")
-    assert hwc.redline_of("看着像电影但其实不是") == ""       # 不能误杀
+    assert "姓名权" in redline_of("这是真人姓名，有侵权风险")
+    assert "版权" in redline_of("这是一部电影，涉版权")
+    assert redline_of("看着像电影但其实不是") == ""       # 不能误杀
 
 
 def test_work_signal_needs_two_hits():
     two = [{"title": "Foo (2026 film)", "domain": "imdb.com"},
            {"title": "Foo box office", "domain": " variety.com"}]
-    assert "具体作品" in hwc.work_signal(two)
-    assert hwc.work_signal(two[:1]) == ""
-    assert hwc.work_signal([]) == ""
+    assert "具体作品" in work_signal(two)
+    assert work_signal(two[:1]) == ""
+    assert work_signal([]) == ""
 
 
 def test_signals_of():
-    assert hwc.signals_of("8) 信号标签：工具查询、日程日期") == ["工具查询", "日程日期"]
-    assert hwc.signals_of("8) 信号标签：无") == []
-    assert hwc.signals_of("没有第 8 节") is None
-    assert len(hwc.signals_of("8) 信号标签：工具查询、价格规格、日程日期、资格政策")) == 3
+    assert signals_of("8) 信号标签：工具查询、日程日期") == ["工具查询", "日程日期"]
+    assert signals_of("8) 信号标签：无") == []
+    assert signals_of("没有第 8 节") is None
+    assert len(signals_of("8) 信号标签：工具查询、价格规格、日程日期、资格政策")) == 3
 
 
 def test_decide_priority():
-    assert hwc.decide("7) 结论：做，工具站") == ("做", "")
-    assert hwc.decide("7) 结论：观望") == ("观望", "")
-    assert hwc.decide("7) 结论：不做") == ("不做", "")
-    verdict, reason = hwc.decide("7) 结论：观望，但是真人姓名有侵权风险")
+    assert decide("7) 结论：做，工具站") == ("做", "")
+    assert decide("7) 结论：观望") == ("观望", "")
+    assert decide("7) 结论：不做") == ("不做", "")
+    verdict, reason = decide("7) 结论：观望，但是真人姓名有侵权风险")
     assert verdict == "不做" and "姓名权" in reason
-    verdict, reason = hwc.decide(
+    verdict, reason = decide(
         "7) 结论：做",
         "SERP 标题显示这是具体作品（Foo (2026 film)）")
     assert verdict == "不做" and "具体作品" in reason
 
 
 def test_serp_brief_fallback_to_domains():
-    assert hwc.serp_brief({"items": [{"domain": "a.com", "title": "A"}]}) == [
+    assert serp_brief({"items": [{"domain": "a.com", "title": "A"}]}) == [
         {"domain": "a.com", "title": "A"}]
-    assert hwc.serp_brief({"competition": {"domains": ["b.com"]}}) == [
+    assert serp_brief({"competition": {"domains": ["b.com"]}}) == [
         {"domain": "b.com", "title": ""}]
-    assert hwc.serp_brief(None) == []
+    assert serp_brief(None) == []
 
 
 def test_analyze_hotwords_is_a_line_not_a_tool():

@@ -18,14 +18,13 @@
 同样是表驱动：节点传 HotwordStep 步骤名，步骤 → 工具的路由表是 tool_service.STEP_TOOLS。
 
     nodes/hotword_fetch_node.py      → execute_for_step(fetch / examples)
-    nodes/hotword_serp_node.py       → execute_for_step(serp) + hotword_criteria
-                                       （serp_brief 降维、work_signal 作品硬证据）
+    nodes/hotword_serp_node.py       → execute_for_step(serp)；SERP 降维与作品硬证据写在节点里
     nodes/hotword_trend_node.py      → execute_for_step(trend)
     nodes/hotword_write_node.py      → execute_for_step(write_result)
-    nodes/hotword_llm_node.py        → hotword_criteria（decide / signals_of）+
-                                       src/app/prompts/hotword_messages（build_messages、
-                                       max_tokens）；LLM 传输在 src/app/utils/llm_io，
-                                       与常规线一样「不经工具 registry」
+    nodes/hotword_llm_node.py        → execute 之外只借 src/app/prompts/hotword_messages
+                                       （build_messages、max_tokens）与 src/app/utils/llm_io
+                                       （传输）；结论 / 红线 / 信号标签的解析写在节点里。
+                                       与常规线一样「LLM 不经工具 registry」
     nodes/hotword_collect_node.py    → 无 service：纯落账
     nodes/hotword_summary_node.py    → 无 service：纯聚合与成功率
 
@@ -39,11 +38,8 @@
                         逐词提示词不走这里：本层没有热词编排，且 prompts 包不许反向
                         依赖 services，见 src/app/prompts/hotword_messages.py）
 
-热词线的口径模块（纯函数，不是实现类）：
-
-    hotword_criteria    结论 / 红线 / 信号标签解析 + SERP 证据降维（serp / llm 两节点用）；
-                        一条词的输入怎么拼在 prompts/hotword_messages，成败怎么落库在
-                        tools/adapters/hotwords/writeback。
+热词线在本层没有口径模块：一条词的输入怎么拼在 src/app/prompts/hotword_messages，
+判定与解析在两个节点里，成败怎么落库在 tools/adapters/hotwords/writeback。
 
 LLM 传输与解析降级不在本层：见 llm/completion.py（complete_json / complete_text）。
 """

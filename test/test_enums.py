@@ -97,14 +97,14 @@ def test_intents_match_config():
 def test_no_module_defines_its_own_status_list():
     """防止有人再把 STATUSES / HINT_NAMES 等以字面量数组抄回业务模块。
 
-    允许的定义点只有 enums.py 与「从枚举派生的兼容别名」（wordlib.py / hotword_criteria.py）。
+    允许的定义点只有 enums.py 与「从枚举派生的兼容别名」（wordlib.py / hotword_llm_node.py）。
     """
-    from src.app.services import hotword_criteria
+    # wordlib.py 的 STATUSES/HINT_NAMES 与 hotword_llm_node.py 的 HINT_NAMES 均为枚举派生
+    from src.app.nodes import hotword_llm_node
     from src.app.tools.adapters.hotwords import wordlib
     assert wordlib.STATUSES == [s.value for s in CurationStatus]
-    # wordlib.py 的 STATUSES/HINT_NAMES 与 hotword_criteria.py 的 HINT_NAMES 均为枚举派生
     assert wordlib.HINT_NAMES == [h.value for h in HintName]
-    assert hotword_criteria.HINT_NAMES == tuple(h.value for h in HintName)
+    assert hotword_llm_node.HINT_NAMES == tuple(h.value for h in HintName)
 
 
 def test_enums_has_no_project_dependency():

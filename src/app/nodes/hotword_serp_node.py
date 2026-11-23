@@ -8,21 +8,50 @@
 本节点只管这一步本身：调工具 → 填该词结果 → 源级降级判断。
 IO 全在 serp 步骤路由到的那个工具里（tool_service.STEP_TOOLS → tool:fetch_serp span），
 本层不碰网络也不打点。
+两个证据函数只有这里用，写在同一个文件：serp_brief 决定 AI 能看到前几名的什么信息，
+work_signal 是不依赖 AI 认不认得的兜底硬证据。
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from src.app.enums import HotwordStep
 from src.app.graph.state import HotwordLoopState
 from src.app.services.tool_service import tool_service
-from src.app.services.hotword_criteria import serp_brief, work_signal
 
 log = logging.getLogger(__name__)
 
 STEP = HotwordStep.SERP.value   # 步骤名：名单、降级集合、evidence 键与工具路由都用它
+
+WORK_TITLE_RX = re.compile(
+    r"(\(\s*(19|20)\d{2}\s*(film|movie|tv series|web series|series|album|song|novel|book|game)\s*\)"
+    r"|\b(imdb|letterboxd|rottentomatoes|rotten tomatoes|fandom)\b"
+    r"|\b(film|movie|web series|tv series|box office|trailer|soundtrack|full movie)\b)",
+    re.I,
+)
+
+
+def serp_brief(data: dict[str, Any] | None) -> list[dict[str, str]]:
+    """只把前 6 名的域名 + 标题交给 AI；完整前 10 与竞争度由 KV 的 serp:v1: 提供。"""
+    items = (data or {}).get("items") or []
+    if not items:
+        comp = (data or {}).get("competition") or {}
+        return [{"domain": str(d), "title": ""} for d in (comp.get("domains") or [])][:6]
+    return [{"domain": str(x.get("domain") or ""),
+             "title": str(x.get("title") or "")}
+            for x in items if isinstance(x, dict)][:6]
+
+
+def work_signal(items: list[dict[str, str]]) -> str:
+    """SERP 标题里的作品信号：前 6 名至少 2 条命中才算硬证据（不依赖 AI 认不认得）。"""
+    hits = [x for x in items[:6] if x.get("title") and WORK_TITLE_RX.search(str(x["title"]))]
+    if len(hits) < 2:
+        return ""
+    title = re.sub(r"\s+", " ", hits[0]["title"])[:46]
+    return "SERP 标题显示这是具体作品（" + title + "）"
 
 
 def gather_serp(state: HotwordLoopState) -> dict[str, Any]:
