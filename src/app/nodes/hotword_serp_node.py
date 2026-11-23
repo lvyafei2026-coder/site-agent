@@ -18,7 +18,7 @@ from typing import Any
 from src.app.enums import HotwordStep
 from src.app.graph.state import HotwordLoopState
 from src.app.services.tool_service import tool_service
-from src.app.tools.adapters.hotwords.criteria import serp_brief, work_signal
+from src.app.services.hotword_criteria import serp_brief, work_signal
 
 log = logging.getLogger(__name__)
 

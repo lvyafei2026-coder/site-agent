@@ -14,20 +14,21 @@ import inspect
 import pytest
 
 from src.app.enums import HotwordStep, Intent, ToolKind
+from src.app.prompts import hotword_messages as hm
 from src.app.tools.adapters.cloudflare import kv as kvk
-from src.app.tools.adapters.hotwords import criteria as hwc
 from src.app.tools.adapters.hotwords import fetch
 from src.app.tools.adapters.hotwords import scrape_serp, scrape_trend
 from src.app.tools.adapters.hotwords import wordlib
 from src.app.utils import llm_io
 from src.app.graph import hotword_graph
 from src.app.graph.hotword_graph import resolve_steps
+from src.app.services import hotword_criteria as hwc
 from src.app.services.tool_service import INTENT_TOOLS, STEP_TOOLS
 from src.app.tools.registry import tool_registry
 
 
 def test_build_messages_keeps_serp_titles():
-    msgs = hwc.build_messages({
+    msgs = hm.build_messages({
         "term": "nayyi naveli",
         "related": ["a", "b", "c", "d", "e", "f", "g"],
         "hints": ["工具查询"],
@@ -46,7 +47,7 @@ def test_build_messages_keeps_serp_titles():
 
 
 def test_build_messages_without_serp():
-    user = hwc.build_messages({"term": "x", "related": [], "hints": []})[1]["content"]
+    user = hm.build_messages({"term": "x", "related": [], "hints": []})[1]["content"]
     assert "关联查询：（无）" in user
     assert "现有搜索结果" not in user
     assert "未命中明显常青信号" in user
@@ -64,7 +65,7 @@ def test_pick_examples_only_manual_with_generic_reason():
         {"term": "baz", "reason": "", "source": "manual", "updatedAt": 450},
         {"term": "欧盟新规什么时候生效", "reason": "查的是当期政策资讯，内容很快过时", "source": "manual", "updatedAt": 440},
     ]
-    ex = hwc.pick_examples(rows)
+    ex = wordlib.pick_examples(rows)
     terms = [e["term"] for e in ex]
     assert "how to sound better" in terms
     assert "欧盟新规什么时候生效" in terms
@@ -83,23 +84,23 @@ def test_pick_examples_dedup_by_reason_and_limit():
         for i in range(10)
     ]
     # 取足够多时验证「同理由只留一条」：5 条 old 同理由 → 只剩 1 条
-    all_ex = hwc.pick_examples(rows, limit=99)
+    all_ex = wordlib.pick_examples(rows, limit=99)
     assert sum(1 for e in all_ex if e["term"].startswith("old-")) == 1
     assert sum(1 for e in all_ex if e["term"].startswith("uniq-")) == 10
     # limit 生效
-    assert len(hwc.pick_examples(rows, limit=3)) == 3
+    assert len(wordlib.pick_examples(rows, limit=3)) == 3
     assert len(all_ex) <= 20
 
 
 def test_pick_examples_handles_bad_input():
-    assert hwc.pick_examples(None) == []
-    assert hwc.pick_examples("not a list") == []
-    assert hwc.pick_examples([None, 3, "x"]) == []
+    assert wordlib.pick_examples(None) == []
+    assert wordlib.pick_examples("not a list") == []
+    assert wordlib.pick_examples([None, 3, "x"]) == []
 
 
 def test_examples_line_format():
-    assert hwc.examples_line([]) == ""
-    line = hwc.examples_line([{"term": "abc", "reason": "理由一"}])
+    assert hm.examples_line([]) == ""
+    line = hm.examples_line([{"term": "abc", "reason": "理由一"}])
     assert "过去判定「不做」" in line and "abc — 理由一" in line
 
 
@@ -490,11 +491,11 @@ def test_llm_uses_shared_client_and_normalizes_dict(monkeypatch, caplog):
     monkeypatch.setattr("src.app.config.LLM_THINKING", "auto")
 
     with caplog.at_level(logging.WARNING):
-        text, model = llm_io.complete([{"role": "user", "content": "x"}], max_tokens=hwc.MAX_TOKENS)
+        text, model = llm_io.complete([{"role": "user", "content": "x"}], max_tokens=hm.MAX_TOKENS)
 
     assert text == "7) 结论：观望"
     assert model == "deepseek-flash"
-    assert calls["max_tokens"] == hwc.MAX_TOKENS == 2000  # 不再被推理 token 吃光预算
+    assert calls["max_tokens"] == hm.MAX_TOKENS == 2000  # 不再被推理 token 吃光预算
     assert calls["temperature"] == 0 and calls["timeout"] == 60
     # DeepSeek 思考模式默认开，逐词分析必须显式关掉，否则 2000 全被 reasoning 吃掉
     assert calls["extra_body"] == {"thinking": {"type": "disabled"}}
@@ -532,7 +533,7 @@ def test_llm_empty_content_reports_real_cause(monkeypatch, caplog):
 
     with caplog.at_level(logging.WARNING):
         with pytest.raises(llm_io.LLMEmptyContent) as ei:
-            llm_io.complete([{"role": "user", "content": "x"}], max_tokens=hwc.MAX_TOKENS)
+            llm_io.complete([{"role": "user", "content": "x"}], max_tokens=hm.MAX_TOKENS)
 
     diag = ei.value.diag
     assert diag["finish_reason"] == "length"
@@ -562,7 +563,7 @@ def test_empty_content_without_reasoning_blames_text_budget(monkeypatch):
     monkeypatch.setattr(provider, "get_llm", lambda: FakeClient())
     monkeypatch.setattr("src.app.config.LLM_API_KEY", "sk-test")
     with pytest.raises(llm_io.LLMEmptyContent) as ei:
-        llm_io.complete([{"role": "user", "content": "x"}], max_tokens=hwc.MAX_TOKENS)
+        llm_io.complete([{"role": "user", "content": "x"}], max_tokens=hm.MAX_TOKENS)
     assert "正文超出 MAX_TOKENS" in ei.value.diag["reason"]
     assert "思考推理" not in ei.value.diag["reason"]
     assert "调大 MAX_TOKENS" in ei.value.diag["hint"]
@@ -607,7 +608,7 @@ def test_no_key_error_message(monkeypatch):
     monkeypatch.setattr(provider, "get_llm", lambda: 1 / 0)   # 被调用就炸
     monkeypatch.setattr("src.app.config.LLM_API_KEY", "")
     with pytest.raises(llm_io.LLMEmptyContent) as ei:
-        llm_io.complete([{"role": "user", "content": "x"}], max_tokens=hwc.MAX_TOKENS)
+        llm_io.complete([{"role": "user", "content": "x"}], max_tokens=hm.MAX_TOKENS)
     assert "LLM_API_KEY" in str(ei.value)
     assert ei.value.diag["no_key"] is True
 

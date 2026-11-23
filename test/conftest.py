@@ -334,8 +334,8 @@ def fake_prompt_store(monkeypatch):
     只替换 fetcher + 打开 configured 开关，不动 registry 的对象引用（它 import 的
     是同一个单例）。测试内部若自行 monkeypatch configured / prompt_store，优先级更高。
     """
+    from src.app.prompts import hotword_messages
     from src.app.prompts.d1_source import D1PromptStore, prompt_store
-    from src.app.tools.adapters.hotwords import criteria
 
     def fetch(_account, _token, _db):
         # 深拷贝，避免某测试改动桩数据污染其它测试
@@ -345,7 +345,7 @@ def fake_prompt_store(monkeypatch):
     monkeypatch.setattr(D1PromptStore, "configured", staticmethod(lambda: True))
     monkeypatch.setattr(prompt_store, "_fetcher", fetch)
     prompt_store._cache = None
-    criteria._prompt_pair.cache_clear()
+    hotword_messages._prompt_pair.cache_clear()
     yield
     prompt_store._cache = None
-    criteria._prompt_pair.cache_clear()
+    hotword_messages._prompt_pair.cache_clear()

@@ -10,7 +10,8 @@ agent 直接读这份共享数据，不调 radar 的 App 接口）：
                     （updatedMs / geosOk / raw / failed）：判断「有没有新热词」看
                     meta.updatedMs，不能看 candidates 是否非空——累计词库几乎永远非空。
     select_pending  取下一个未跟进的词（saved / rejected / tags / ai:v3: 取并集后跳过）。
-    read_examples   读人工「不做」标记，挑出可喂回 AI 的判例（挑选规则在 criteria）。
+    read_examples   读人工「不做」标记，挑出可喂回 AI 的判例（挑选规则就在本文件的
+                    pick_examples：rejected 表的形状与字段口径都归这层）。
 
 写侧口径（与 console/src/store.js 原样对齐）：
     agent 直写共享 KV，必须和 console 人工操作落在同一套键、同一套状态枚举上——
@@ -26,6 +27,7 @@ aihints：{ termKey: [信号名] }。
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any, Optional
 
@@ -36,7 +38,6 @@ from src.app.tools.adapters.cloudflare.kv import (
     TAGS_KEY, CloudflareKV, get_kv, term_key,
 )
 from src.app.utils.kv_shape import kv_dict, kv_list
-from .criteria import pick_examples
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +46,14 @@ STATUSES = [s.value for s in CurationStatus]
 
 SAVED_FIELDS = ["term", "related", "hints", "geos", "geoCount", "traffic", "count", "score", "verdict"]
 HINT_NAMES = [h.value for h in HintName]
+
+# 判例反馈条数上限：从 rejected 表挑少量真实词例喂回 AI，让它对同类词倾向判不做。
+# ★v2 提示词已固化高频规则（非工具意图/时效资讯/热度下降/真人/作品），这里只取
+#   「人工判定 + 有泛化价值理由」的词，避开已固化的占位理由，防止提示词与判例重复。
+EXAMPLE_LIMIT = 8
+_EXAMPLE_SKIP_RX = re.compile(
+    r"搜索意图不是找工具|热度下降|趋势下降|未填原因|旧版本本地标记"
+)
 
 
 # ---- 读侧：候选池快照 ----
@@ -80,8 +89,43 @@ def snapshot(status: str = CandidateStatus.DOING.value, limit: int = 40,
 # ---- 读侧：取下一词 / 读判例 ----
 
 def read_examples() -> list[dict[str, str]]:
-    """读人工「不做」标记并挑出可喂回 AI 的判例（挑选规则在纯判据层）。"""
+    """读人工「不做」标记并挑出可喂回 AI 的判例。"""
     return pick_examples(kv_list(get_kv(), REJECTED_KEY))
+
+
+def pick_examples(rejected: list, limit: int = EXAMPLE_LIMIT) -> list[dict[str, str]]:
+    """从 rejected 表挑判例：只人工标记、理由有泛化价值、按理由去重。
+
+    - 排除 `source=ai`（AI 自己的判定不是「学习素材」）与无/占位理由；
+    - 理由过短（<4 字，多是「世界末日」这类纯释义）或无信息量则跳过；
+    - 同一理由只留最新一条，避免 8 条「搜索意图不是找工具」刷屏；
+    - 按 updatedAt/at 倒序取最近 ``limit`` 条。
+    """
+    if not isinstance(rejected, list):
+        return []
+    seen_reason: set[str] = set()
+    out: list[dict[str, str]] = []
+    # 先按时间倒序（最新在前），同理由去重时自然保留最新一条。
+    for row in sorted(
+        (x for x in rejected if isinstance(x, dict)),
+        key=lambda x: (x.get("updatedAt") or x.get("at") or 0),
+        reverse=True,
+    ):
+        if row.get("source") != "manual":
+            continue
+        term = str(row.get("term") or "").strip()
+        reason = str(row.get("reason") or "").strip()
+        if not term or len(reason) < 4 or _EXAMPLE_SKIP_RX.search(reason):
+            continue
+        # 理由归一化去重：去掉首尾标点与空白，同类理由只留一条。
+        norm = re.sub(r"[\s，。；、,.;:：]+$", "", reason)
+        if norm in seen_reason:
+            continue
+        seen_reason.add(norm)
+        out.append({"term": term[:60], "reason": reason[:120]})
+        if len(out) >= max(0, min(int(limit), 20)):
+            break
+    return out
 
 
 def select_pending(seen: set[str]) -> dict[str, Any] | None:

@@ -16,7 +16,8 @@
     ``*_user`` 固定跟随默认版本（换 system 版本时 human 保持同一格式）。
 
 ``services/prompt_service.py`` 的 ``load_prompt`` 是**带日志**的节点入口；本模块的是
-不含业务逻辑的纯加载函数，供工具层（adapters 不能反向依赖 services）直接使用。
+不含业务逻辑的纯加载函数，供本包的 ``hotword_messages.py``（逐词提示词拼装）直接使用——
+prompts 是横切包，反向依赖 services 就把分层倒过来了。
 """
 
 from __future__ import annotations

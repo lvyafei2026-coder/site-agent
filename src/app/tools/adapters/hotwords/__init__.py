@@ -11,7 +11,6 @@
                                （回环与分支路由在 graph/edges.py）。
 
 数据通道与业务读写（都落在共享 KV 上；KV 操作实现统一在 ../cloudflare/kv.py）：
-    criteria.py     纯判据：提示词拼装、结论/红线/信号标签解析、本线 max_tokens 口径（无 IO）。
     fetch.py        取数层：SERP / Trends 读缓存 → 现抓 → 写回 + 全局节流。
     wordlib.py      词库：候选池快照 / 取下一个未跟进的词 / 读判例，外加 saved /
                     rejected / aihints 三张表的写侧口径（与 console store.js 对齐）。
@@ -23,16 +22,21 @@
 外部取数：
     scrape_serp.py / scrape_trend.py   单个源怎么抓、怎么解析
 
+判据不在本包（2026-11-23 上移：adapters 只做外部系统 IO 与表读写）：
+    prompts/hotword_messages.py   提示词拼装 + 本线 max_tokens=2000 口径
+    services/hotword_criteria.py  结论 / 红线 / 信号标签解析、SERP 证据降维
+
 与业务无关的横切件已上移到 src/app/utils/，本包只引用不再持有：
-    utils/llm_io.py         LLM 传输与空正文诊断（本线的 max_tokens=2000 口径在 criteria）
+    utils/llm_io.py         LLM 传输与空正文诊断
     utils/kv_shape.py       kv_list / kv_dict 形状兜底读取
     utils/source_errors.py  SourceUnavailable：源级不可用 vs 单条降级
 
 依赖单向无环：graph → nodes → services → tools（工具契约 + registry）→ adapters
 （本包叶子）→ cloudflare.kv。热词线与常规线走同一套工具契约：本包的 KV / 抓取 IO 由
 tools/hotwords_tools.py 的 6 个工具暴露，逐词子图里的 fetch_one 与各步骤节点经 tool_service
-调用，不再自打 tool span。纯判据（criteria）与 LLM 传输（utils/llm_io）不是
-工具，节点层直接复用——与常规线「LLM 走 llm/completion、不经 registry」一致。
+调用，不再自打 tool span。LLM 传输（utils/llm_io）、提示词拼装（prompts/hotword_messages）
+与判定解析（services/hotword_criteria）都不是工具，节点按层直接复用——与常规线
+「LLM 走 llm/completion、不经 registry」一致。
 上层入口统一由 src.app.graph 包导出；本包不反向依赖 graph / nodes / services / tools 契约
 （见 test_architecture.py::test_adapters_are_leaves）。
 

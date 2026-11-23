@@ -86,6 +86,18 @@ def test_adapters_are_leaves():
     assert not offenders, f"adapters 反向依赖：{sorted(offenders)}"
 
 
+def test_nodes_never_import_adapters():
+    """编排层只说步骤名、只用 service：节点伸手抓 adapters 就跨过了 services / tools 两层。
+
+    2026-11-23 前，热词节点的提示词拼装与判定解析直连 adapters/hotwords/criteria.py，
+    services/__init__.py 因此留着一段「热词线不经本层」的例外说明。criteria 上移到
+    prompts/hotword_messages 与 services/hotword_criteria 之后，例外没有了，用守卫钉住，
+    不再靠文档口径维持分层。
+    """
+    offenders = {m for m in imports_of("nodes") if m.startswith(ADAPTERS)}
+    assert not offenders, f"节点层直接依赖 adapters：{sorted(offenders)}"
+
+
 def test_tools_import_only_own_adapters():
     """域文件只碰厂商层 + 自己同名的适配器包：adapters 的包划分不能只是文档口径。
 
