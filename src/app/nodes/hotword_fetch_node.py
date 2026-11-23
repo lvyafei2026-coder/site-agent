@@ -23,7 +23,6 @@ from typing import Any
 from src.app.enums import HotwordStep
 from src.app.graph.state import HotwordLoopState
 from src.app.services.tool_service import tool_service
-from src.app.tools.adapters.hotwords.word_result import new_word
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +65,11 @@ def fetch_one(state: HotwordLoopState) -> dict[str, Any]:
     seen.add(str(item["key"]))
     # 取到词就同时把逐词通道铺好：word = 该词结果骨架，body = 喂 AI 的素材起点，
     # 之后每个补证据节点往这两个通道里填，collect_word 落账时清空。
+    # word 的这 6 个键就是前端逐词表与汇总读的形状（evidence 的键 = 本轮走过的步骤名），
+    # 每个词都从这里开始，所以形状只写在这一处。notice / writeErrors / llm_diag 是
+    # 各节点按需补的可选键，读侧一律 .get()。
+    word = {"term": item["term"], "verdict": "", "status": "", "model": "",
+            "evidence": {}, "error": ""}
     return {**updates, "current": item, "has_more": True, "seen": seen,
-            "word": new_word(item["term"]), "body": dict(item),
+            "word": word, "body": dict(item),
             "signals": [], "ai": {}}

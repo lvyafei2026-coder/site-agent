@@ -17,7 +17,6 @@ from typing import Any
 from src.app.enums import HotwordStep
 from src.app.graph.state import HotwordLoopState
 from src.app.services.tool_service import tool_service
-from src.app.tools.adapters.hotwords.word_result import add_notice, add_write_errors
 
 log = logging.getLogger(__name__)
 
@@ -30,21 +29,25 @@ def gather_trend(state: HotwordLoopState) -> dict[str, Any]:
     degrade = state["degrade"]
 
     if STEP in degrade.disabled:
-        add_notice(word, "趋势未取到：本轮已跳过（源不可用）")
+        word["notice"] = "；".join(x for x in (
+            word.get("notice"), "趋势未取到：本轮已跳过（源不可用）") if x)
         word["evidence"][STEP] = False
         return {"word": word}
 
     res = tool_service.execute_for_step(STEP, term=word["term"])
     if not res["ok"]:
-        add_notice(word, f"趋势未取到：{res['error']}")
+        word["notice"] = "；".join(x for x in (
+            word.get("notice"), f"趋势未取到：{res['error']}") if x)
         word["evidence"][STEP] = False
         if res["retryable"] and degrade.disable(STEP):
             log.warning("趋势源不可用，后续词跳过这一步：%s", res["error"])
         return {"word": word}
 
     result = res["result"]
-    add_write_errors(word, result.get("writeErrors") or [])
+    if result.get("writeErrors"):
+        word.setdefault("writeErrors", []).extend(result["writeErrors"])
     word["evidence"][STEP] = bool(result.get("ok"))
     if result.get("error"):
-        add_notice(word, f"趋势未取到：{result['error']}")
+        word["notice"] = "；".join(x for x in (
+            word.get("notice"), f"趋势未取到：{result['error']}") if x)
     return {"word": word}

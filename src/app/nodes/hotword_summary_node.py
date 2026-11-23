@@ -14,7 +14,8 @@ from typing import Any
 
 from src.app.enums import Verdict
 from src.app.graph.state import HotwordLoopState
-from src.app.tools.adapters.hotwords.word_result import OK_MIN_RATE
+
+OK_MIN_RATE = 0.5    # 整轮成功判定：成功率低于此值即视为失败
 
 
 def summary_node(state: HotwordLoopState) -> dict[str, Any]:

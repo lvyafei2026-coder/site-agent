@@ -16,7 +16,6 @@ from typing import Any
 from src.app.enums import HotwordStep
 from src.app.graph.state import HotwordLoopState
 from src.app.services.tool_service import tool_service
-from src.app.tools.adapters.hotwords.word_result import add_error, add_write_errors
 
 STEP = HotwordStep.WRITE_RESULT.value   # 步骤名：后置动作名单与工具路由都用它
 
@@ -30,10 +29,12 @@ def write_result(state: HotwordLoopState) -> dict[str, Any]:
                                         reason=str(ai.get("reason") or ""),
                                         hints=ai.get("hints") or [])
     if not res["ok"]:
-        add_error(word, f"结论回写失败：{res['error']}")
+        msg = f"结论回写失败：{res['error']}"
+        word["error"] = "；".join(x for x in (word["error"], msg) if x)
         return {"word": word}
 
     result = res["result"]
     word["status"] = str(result.get("status") or "")
-    add_write_errors(word, result.get("writeErrors") or [])
+    if result.get("writeErrors"):
+        word.setdefault("writeErrors", []).extend(result["writeErrors"])
     return {"word": word}

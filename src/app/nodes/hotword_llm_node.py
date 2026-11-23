@@ -20,7 +20,6 @@ from src.app.graph.state import HotwordLoopState
 from src.app.tools.adapters.hotwords.criteria import (
     MAX_TOKENS, build_messages, decide, signals_of,
 )
-from src.app.tools.adapters.hotwords.word_result import add_error
 from src.app.utils import llm_io
 
 log = logging.getLogger(__name__)
@@ -35,16 +34,18 @@ def llm_analyze(state: HotwordLoopState) -> dict[str, Any]:
             state["body"], prompt_version=state.get("prompt_version"),
             examples=state.get("examples") or []), max_tokens=MAX_TOKENS)
     except llm_io.LLMEmptyContent as exc:
-        add_error(word, str(exc))
+        word["error"] = "；".join(x for x in (word["error"], str(exc)) if x)
         word["llm_diag"] = exc.diag
         return {"word": word}
     except Exception as exc:  # noqa: BLE001
-        add_error(word, "LLM 调用失败：" + str(exc)[:160])
+        msg = "LLM 调用失败：" + str(exc)[:160]
+        word["error"] = "；".join(x for x in (word["error"], msg) if x)
         log.warning("LLM 失败（本轮第 %d 次，继续跑其它词）：%s",
                     degrade.note_llm_failure(), str(exc)[:120])
         return {"word": word}
     if not text:
-        add_error(word, "LLM 返回空正文（未携带诊断信息，请查 llm_empty_content 日志）")
+        msg = "LLM 返回空正文（未携带诊断信息，请查 llm_empty_content 日志）"
+        word["error"] = "；".join(x for x in (word["error"], msg) if x)
         return {"word": word}
 
     verdict, reason = decide(text, "；".join(state.get("signals") or []))

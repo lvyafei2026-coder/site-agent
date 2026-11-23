@@ -13,10 +13,10 @@
 数据通道与业务读写（都落在共享 KV 上；KV 操作实现统一在 ../cloudflare/kv.py）：
     criteria.py     纯判据：提示词拼装、结论/红线/信号标签解析、本线 max_tokens 口径（无 IO）。
     fetch.py        取数层：SERP / Trends 读缓存 → 现抓 → 写回 + 全局节流。
-    word_result.py  一条词的结果形状（new_word / add_notice / add_error /
-                    add_write_errors / finish_word）+ 整轮成功阈值。
     wordlib.py      词库：候选池快照 / 取下一个未跟进的词 / 读判例，外加 saved /
                     rejected / aihints 三张表的写侧口径（与 console store.js 对齐）。
+                    一条词的结果形状（那几个键名）不在本包——由取词节点
+                    nodes/hotword_fetch_node.py 铺，落账节点收尾。
     writeback.py    KV 写入层：写入账本 WriteLog（每次写入的成败与阶段名）+
                     结论落库（正文 / 标签 / 状态，正文先写、失败即收手）。
 

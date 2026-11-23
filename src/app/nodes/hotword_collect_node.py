@@ -6,7 +6,7 @@
 
 这是逐词子图的最后一站，**所有分支都要走到这里**（LLM 失败也一样），所以
 「失败只落在这个词身上、不中断整轮」不靠 try/except，靠图的连线保证。
-收尾规则（写入失败算不算 analyzed）在 word_result.finish_word。
+收尾口径也在这里：有任何一个 KV 写失败就不算 analyzed，明细并进该词 error 后才落账。
 """
 
 from __future__ import annotations
@@ -14,12 +14,15 @@ from __future__ import annotations
 from typing import Any
 
 from src.app.graph.state import HotwordLoopState
-from src.app.tools.adapters.hotwords.word_result import finish_word
 
 
 def collect_word(state: HotwordLoopState) -> dict[str, Any]:
     """结该词本轮：填好的 word 追加进 results，并把下一步要用的通道归零。"""
-    word = finish_word(state["word"])
+    word = state["word"]
+    write_errors = word.get("writeErrors") or []
+    if write_errors:
+        msg = "KV 写入失败：" + "、".join(write_errors)
+        word["error"] = "；".join(x for x in (word["error"], msg) if x)
     return {
         "results": list(state.get("results") or []) + [word],
         "loop_count": state.get("loop_count", 0) + 1,

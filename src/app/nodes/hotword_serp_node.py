@@ -19,7 +19,6 @@ from src.app.enums import HotwordStep
 from src.app.graph.state import HotwordLoopState
 from src.app.services.tool_service import tool_service
 from src.app.tools.adapters.hotwords.criteria import serp_brief, work_signal
-from src.app.tools.adapters.hotwords.word_result import add_notice, add_write_errors
 
 log = logging.getLogger(__name__)
 
@@ -37,13 +36,15 @@ def gather_serp(state: HotwordLoopState) -> dict[str, Any]:
     degrade = state["degrade"]
 
     if STEP in degrade.disabled:
-        add_notice(word, "SERP 未取到：本轮已跳过（源不可用）")
+        word["notice"] = "；".join(x for x in (
+            word.get("notice"), "SERP 未取到：本轮已跳过（源不可用）") if x)
         word["evidence"][STEP] = False
         return {"word": word}
 
     res = tool_service.execute_for_step(STEP, term=word["term"])
     if not res["ok"]:
-        add_notice(word, f"SERP 未取到：{res['error']}")
+        word["notice"] = "；".join(x for x in (
+            word.get("notice"), f"SERP 未取到：{res['error']}") if x)
         word["evidence"][STEP] = False
         # retryable=True = 源级/网络级不可用：后续词别再撞一遍超时
         if res["retryable"] and degrade.disable(STEP):
@@ -51,10 +52,12 @@ def gather_serp(state: HotwordLoopState) -> dict[str, Any]:
         return {"word": word}
 
     result = res["result"]
-    add_write_errors(word, result.get("writeErrors") or [])
+    if result.get("writeErrors"):
+        word.setdefault("writeErrors", []).extend(result["writeErrors"])
     word["evidence"][STEP] = bool(result.get("ok"))
     if result.get("error"):
-        add_notice(word, f"SERP 未取到：{result['error']}")
+        word["notice"] = "；".join(x for x in (
+            word.get("notice"), f"SERP 未取到：{result['error']}") if x)
 
     brief = serp_brief(result.get("data"))
     body["serp"] = brief                      # 只把前 6 名的域名 + 标题交给 AI
