@@ -13,7 +13,7 @@ from __future__ import annotations
 from langchain_core.prompts import ChatPromptTemplate
 
 from src.app.config import INTENTS
-from src.app.enums import Intent, PromptTask
+from src.app.enums import Intent, PromptTask, normalize_intent
 from src.app.llm.completion import complete_json
 from src.app.observability.langsmith import traceable
 from src.app.observability.metrics import metrics
@@ -37,7 +37,7 @@ class IntentService:
         intent, confidence = Intent.GENERAL.value, DEFAULT_CONFIDENCE
         data, _, _ = complete_json(template.format(input_text=text), text, "intent_llm_failed")
         if data:
-            intent = str(data.get("intent", intent)).strip().lower()
+            intent = normalize_intent(str(data.get("intent", intent)).strip().lower())
             try:
                 confidence = float(data.get("confidence", confidence))
             except (TypeError, ValueError):

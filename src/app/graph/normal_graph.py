@@ -105,7 +105,7 @@ def run_workflow(input_text: str, *, intent: Optional[str] = None,
         config={
             "configurable": {"thread_id": thread_id},
             # run_name / tags / metadata 只在 LangSmith 开启时才有意义，关闭时被忽略：
-            # 有了 run_name，追踪列表里图这一层是 site-agent:select_pages 而不是 "LangGraph"。
+            # 有了 run_name，追踪列表里图这一层是 site-agent:word_create_page 而不是 "LangGraph"。
             "run_name": f"site-agent:{intent or 'auto'}",
             "tags": ["site-agent"],
             "metadata": {"thread_id": thread_id, "intent": intent or "",

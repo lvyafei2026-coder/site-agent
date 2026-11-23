@@ -18,7 +18,7 @@ from src.app.enums import (
     GraphNode, HintName, HotwordStep, Intent, LedgerStrategy, LlmThinking, MemoryBackend,
     PageQueryMode, PageStatus, PlanStatus, PromptTask, RejectSource,
     ReportKind, RouteTag, SearchTimeframe, SerpEngine, SerpVerdict,
-    ToolKind, TrackEvent, Verdict, WorkflowStatus, TraceName,
+    ToolKind, TrackEvent, Verdict, WorkflowStatus, TraceName, normalize_intent,
 )
 
 ALL_ENUMS = [
@@ -60,7 +60,7 @@ def test_every_member_has_docstring_note():
 
 
 @pytest.mark.parametrize("cls,expected", [
-    (Intent, {"select_pages", "plan_promo", "find_backlinks", "review_metrics",
+    (Intent, {"word_create_page", "plan_promo", "find_backlinks", "review_metrics",
               "analyze_hotwords", "general"}),
     (HotwordStep, {"fetch", "examples", "serp", "trend", "write_result"}),
     (CandidateStatus, {"doing", "live"}),
@@ -75,6 +75,13 @@ def test_every_member_has_docstring_note():
 def test_locked_value_sets(cls, expected):
     """核心枚举族的取值集合锁定：改动必须显式（防止误删/误加导致口径漂移）。"""
     assert {m.value for m in cls} == expected
+
+
+def test_legacy_intent_is_normalized():
+    """旧值 select_pages 仍来自 D1 intent 提示词与浏览器缓存：入口归一后才能命中工具表。"""
+    assert normalize_intent("select_pages") == Intent.WORD_CREATE_PAGE
+    assert normalize_intent("word_create_page") == Intent.WORD_CREATE_PAGE
+    assert normalize_intent("nope") == "nope"
 
 
 def test_string_compatibility():

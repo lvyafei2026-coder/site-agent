@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from src.app.enums import normalize_intent
 from src.app.graph.state import WorkflowState
 from src.app.services.intent_service import intent_service
 from src.app.utils.logger import get_logger
@@ -17,7 +18,7 @@ def intent_node(state: WorkflowState) -> WorkflowState:
     """Reads: input_text, intent, prompt_versions
     Writes: intent, confidence, messages
     """
-    forced = state.get("intent", "")
+    forced = normalize_intent(state.get("intent", ""))
     if forced:
         result = {"intent": forced, "confidence": 1.0}
     else:

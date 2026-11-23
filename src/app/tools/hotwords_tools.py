@@ -7,7 +7,7 @@
 热词分析（POST /hotwords）与常规线（POST /run）都是「工具编排 + LLM + 落库」，
 差别只在节点类型：这条线逐词回环。它用的 IO 与常规线一样是 registry 里的工具，
 没有绕过工具契约的旁路。本域 6 个工具：
-    get_hotwords                候选池快照（常规线 select_pages 用）
+    get_hotwords                候选池快照（常规线 word_create_page 用）
     next_candidate              取下一个未跟进的词（热词线每轮一次）
     read_examples               读人工判例（热词线每轮一次）
     fetch_serp / fetch_trend    补证据：读缓存 → 现抓 → 写回（ledger：会写缓存表）
@@ -53,7 +53,7 @@ class HotwordsOps:
 
 
 class GetHotwordsTool(RuntimeTool):
-    """读取选题雷达候选关键词，并返回 meta（updatedMs 抓取时间、geosOk 成功区域数、raw 原始条数）。判断有无新数据必须看 meta。doing=未跟进（candidates）；todo=待开发（saved 表，热词分析判「做」的产出，select_pages 排产用）。"""
+    """读取选题雷达候选关键词，并返回 meta（updatedMs 抓取时间、geosOk 成功区域数、raw 原始条数）。判断有无新数据必须看 meta。doing=未跟进（candidates）；todo=待开发（saved 表，热词分析判「做」的产出，word_create_page 排产用）。"""
 
     tool_name = "get_hotwords"
     method = "hotwords"

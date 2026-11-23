@@ -99,7 +99,7 @@ API 的 `LLM_MODEL` 要写 **`openai/gpt-4o-mini`**（vendor/model）——以�
 
 ### 2.2 LangSmith 追踪（怎么看每轮跑了什么）
 
-**它解决什么**：`/run` 返回的 JSON 只有最终 state，看不到「意图凭什么判成 select_pages」
+**它解决什么**：`/run` 返回的 JSON 只有最终 state，看不到「意图凭什么判成 word_create_page」
 「哪个工具慢」「重试那一轮模型收到什么 prompt」。打开追踪后每一轮都是一棵可展开的
 调用树：图级 run → 各节点 → LLM 请求（含完整 messages、token 数、耗时）。
 

@@ -35,12 +35,25 @@ from enum import StrEnum
 class Intent(StrEnum):
     """一轮运营的意图。llm 负责分类、tool_service 负责映射到工具集。"""
 
-    SELECT_PAGES = "select_pages"          # 选题：捞候选词 + 站点清单 + 历史复盘
+    WORD_CREATE_PAGE = "word_create_page"  # 建页：待开发词 + 站点近 30 天新页 + 历史复盘
     PLAN_PROMO = "plan_promo"              # 推广排期：最新排期 + 站点清单 + 待消费事件
     FIND_BACKLINKS = "find_backlinks"      # 找外链：外链台账 + Reddit + DEV 文章
     REVIEW_METRICS = "review_metrics"      # 复盘：站点点击/GSC/页面清单，再调 LLM 分析
     ANALYZE_HOTWORDS = "analyze_hotwords"  # 热词逐词分析并回写状态（走独立入口 /hotwords，非工具）
     GENERAL = "general"                    # 通用兜底；无 LLM key 或非法意图都回退到它
+
+
+# 旧意图值 → 新值：2026-11-23 把 select_pages 改名为 word_create_page，但
+# ① D1 的 intent 提示词正文仍写着旧值（改措辞走 /rules/prompts 升版，不发版）；
+# ② 浏览器可能还缓存着旧前端。入口统一归一，提示词升版后可删本表。
+LEGACY_INTENTS: dict[str, str] = {
+    "select_pages": Intent.WORD_CREATE_PAGE.value,
+}
+
+
+def normalize_intent(value: str) -> str:
+    """把外部传来的意图字符串归一成当前枚举值；非法值原样返回（由调用方兜底 general）。"""
+    return LEGACY_INTENTS.get(value, value)
 
 
 class WorkflowStatus(StrEnum):

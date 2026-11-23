@@ -49,7 +49,7 @@ curl -s -X POST localhost:10000/run -H 'Content-Type: application/json' \
   -d '{"input_text":"复盘近期点击","intent":"review_metrics"}'
 ```
 
-`intent` 可选 `select_pages` / `plan_promo` / `find_backlinks` / `review_metrics` / `general`；
+`intent` 可选 `word_create_page` / `plan_promo` / `find_backlinks` / `review_metrics` / `general`；
 不传则由 LLM 分类。请求还能传 `tools`（覆盖默认工具集）、`prompt_versions`
 （如 `{"intent":"v2"}`）、`thread_id`。
 

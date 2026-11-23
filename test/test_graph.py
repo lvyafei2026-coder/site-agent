@@ -94,7 +94,7 @@ def test_processing_llm_down_terminates_without_validate(graph, fake, monkeypatc
     monkeypatch.setattr(ext_mod.extraction_service, "extract", lambda *a, **k: {})
 
     r = graph.invoke(
-        {"input_text": "看看新热词", "intent": "select_pages",
+        {"input_text": "看看新热词", "intent": "word_create_page",
          "retry_count": 0, "messages": [], "tool_results": {}},
         config={"configurable": {"thread_id": "t-fatal-llm"}},
     )
@@ -113,7 +113,7 @@ def test_processing_llm_network_timeout_goes_to_validate(graph, fake, monkeypatc
     monkeypatch.setattr(ext_mod.extraction_service, "extract", lambda *a, **k: {})
 
     r = graph.invoke(
-        {"input_text": "看看新热词", "intent": "select_pages",
+        {"input_text": "看看新热词", "intent": "word_create_page",
          "retry_count": 0, "messages": [], "tool_results": {}},
         config={"configurable": {"thread_id": "t-llm-timeout"}},
     )

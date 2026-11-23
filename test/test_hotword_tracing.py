@@ -418,7 +418,7 @@ def test_runtime_tool_span_nests_under_real_langgraph_node(fake, monkeypatch, tr
 
     graph = (StateGraph(S).add_node("tools", node)
              .add_edge(START, "tools").add_edge("tools", END).compile())
-    result = graph.invoke({"out": {}}, config={"run_name": "site-agent:select_pages"})
+    result = graph.invoke({"out": {}}, config={"run_name": "site-agent:word_create_page"})
 
     span = next(r for r in traced_runs if r.name == "tool:get_hotwords")
     assert node_run_ids and node_run_ids[0]

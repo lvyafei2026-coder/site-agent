@@ -12,7 +12,7 @@ NODES = ("classify_intent", "run_processing", "validate_result", "build_output",
 
 
 def test_trace_success_path(fake):
-    r = run_workflow(input_text="看看新热词", intent="select_pages")
+    r = run_workflow(input_text="看看新热词", intent="word_create_page")
     trace = r["trace"]
 
     assert trace["route"] == "complete"
@@ -32,10 +32,10 @@ def test_trace_clear_failure_short_circuits_without_retry(fake, monkeypatch):
     def boom(*_a, **_k):
         raise RuntimeError("radar 挂了")
 
-    # select_pages 挂三个只读工具，全部打挂
+    # word_create_page 挂三个只读工具，全部打挂
     for name in ("hotwords", "page_inventory", "reflections"):
         monkeypatch.setattr(fake, name, boom)
-    r = run_workflow(input_text="看看新热词", intent="select_pages")
+    r = run_workflow(input_text="看看新热词", intent="word_create_page")
     trace = r["trace"]
 
     assert trace["route"] == "error"
@@ -56,7 +56,7 @@ def test_trace_network_timeout_retries_then_errors(fake, monkeypatch):
 
     for name in ("hotwords", "page_inventory", "reflections"):
         monkeypatch.setattr(fake, name, net)
-    r = run_workflow(input_text="看看新热词", intent="select_pages")
+    r = run_workflow(input_text="看看新热词", intent="word_create_page")
     trace = r["trace"]
 
     assert trace["route"] == "error"
@@ -69,7 +69,7 @@ def test_trace_network_timeout_retries_then_errors(fake, monkeypatch):
 
 def test_trace_changed_fields_are_small(fake):
     """trace 只放摘要：不许把 tool_results 里的整份热词塞进来。"""
-    r = run_workflow(input_text="看看新热词", intent="select_pages")
+    r = run_workflow(input_text="看看新热词", intent="word_create_page")
     trace = r["trace"]
 
     assert json.dumps(trace, ensure_ascii=False).__len__() < 4000

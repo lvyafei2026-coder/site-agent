@@ -13,7 +13,7 @@
 
 | name | kind | method | 参数 | 用途 |
 |---|---|---|---|---|
-| `get_hotwords` | read | `hotwords` | `status=doing|todo`、`limit=40` | 读共享 KV 的候选词（radar 抓取写入），返回 `items` + `meta`（`updatedMs` / `geosOk` / `raw`）。**判断有没有新数据要看 meta**。`doing`=未跟进（读 candidates）；`todo`=待开发（读 saved 表过滤，即热词分析判「做」的产出，select_pages 排产用），查不到给空、不回落全量 |
+| `get_hotwords` | read | `hotwords` | `status=doing|todo`、`limit=40` | 读共享 KV 的候选词（radar 抓取写入），返回 `items` + `meta`（`updatedMs` / `geosOk` / `raw`）。**判断有没有新数据要看 meta**。`doing`=未跟进（读 candidates）；`todo`=待开发（读 saved 表过滤，即热词分析判「做」的产出，word_create_page 排产用），查不到给空、不回落全量 |
 
 > 热词分析**不是工具**，走独立入口 `POST /hotwords`。它是编排：读三方共用的共享 KV
 > （radar 候选池 + console 整理的 `saved`/`rejected`/`tags`）→ 补 SERP 竞争度与
@@ -75,7 +75,7 @@
 
 | 意图 | 默认集 |
 |---|---|
-| `select_pages` | `get_hotwords` + `get_page_inventory` + `get_reflections` |
+| `word_create_page` | `get_hotwords` + `get_page_inventory` + `get_reflections` |
 | `plan_promo` | `get_latest_plan` + `get_page_inventory` + `get_pending_events` |
 | `find_backlinks` | `get_backlink_ledger` + `search_reddit` + `list_devto_articles` |
 | `review_metrics` | `get_click_stats` + `get_search_analytics` + `get_page_inventory` | `get_click_stats` 现按站点×事件类型聚合；取数后 `run_processing` 再调 LLM `analyze_metrics`（提示词在 D1 的 `review_metrics` task）比对各站 PV/UV/点击/搜索，输出「表现好的站点」排名与理由，并入 `output` 报告 |
