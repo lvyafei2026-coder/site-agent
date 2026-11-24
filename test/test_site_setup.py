@@ -84,6 +84,7 @@ def test_add_to_sites_json_appends_and_idempotent(tmp_path):
 def test_create_site_repo_scaffold_and_push(monkeypatch, tmp_path):
     monkeypatch.setattr(site_scaffold, "REPO_DIR", tmp_path / "repos")
     monkeypatch.setattr(site_scaffold, "repo_info", lambda full: None)
+    monkeypatch.setattr(site_scaffold, "_clone", lambda *a: False)
     monkeypatch.setattr(site_scaffold, "github_rest",
                         lambda method, path, payload=None: {"status": 201, "body": {
                             "id": 5, "full_name": f"acme/{payload['name']}",
@@ -118,6 +119,7 @@ def test_create_site_repo_existing_repo_and_existing_files(monkeypatch, tmp_path
     (work / "public").mkdir()
     (work / "public" / "index.html").write_text("keep me")
     called = {"push": False}
+    monkeypatch.setattr(site_scaffold, "_clone", lambda *a: False)
     monkeypatch.setattr(site_scaffold, "init_and_push", lambda *a: called.update(push=True))
 
     out = site_scaffold.create_site_repo(NEW_SITE, "calculator")
