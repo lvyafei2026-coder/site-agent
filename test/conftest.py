@@ -316,6 +316,8 @@ PROMPT_STUB_DATA = {
         {"task": "hotwords_user", "version": "v2", "content": _PROMPT_STUB_USER_V2},
         {"task": "review_metrics", "version": "v1",
          "content": "review_metrics 站点表现分析桩：找出表现较好的站点并排名"},
+        {"task": "promo_article", "version": "v1",
+         "content": "promo_article 外链起稿桩：只输出 JSON {title,tags,target_url,draft}"},
     ],
     "defaults": [
         {"task": "intent", "version": "v1"},
@@ -325,6 +327,7 @@ PROMPT_STUB_DATA = {
         {"task": "hotwords", "version": "v2"},
         {"task": "hotwords_user", "version": "v2"},
         {"task": "review_metrics", "version": "v1"},
+        {"task": "promo_article", "version": "v1"},
     ],
 }
 

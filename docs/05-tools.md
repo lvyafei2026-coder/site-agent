@@ -77,8 +77,8 @@
 |---|---|
 | `word_create_page` | `get_hotwords` + `get_page_inventory` + `get_reflections` |
 | `plan_promo` | `get_latest_plan` + `get_page_inventory` + `get_pending_events` |
-| `find_backlinks` | `get_backlink_ledger` + `search_reddit` + `list_devto_articles` |
-| `review_metrics` | `get_click_stats` + `get_search_analytics` + `get_page_inventory` | `get_click_stats` 现按站点×事件类型聚合；取数后 `run_processing` 再调 LLM `analyze_metrics`（提示词在 D1 的 `review_metrics` task）比对各站 PV/UV/点击/搜索，输出「表现好的站点」排名与理由，并入 `output` 报告 |
+| `find_backlinks` | `get_backlink_ledger` + `search_reddit` + `list_devto_articles` | 取数后 `run_processing` 再调 LLM `draft_article`（提示词在 D1 的 `promo_article` task）起稿一篇 Dev.to 推广文并自动发布（走 `publish_devto_article` 同一 devto 适配器，canonical_url 指回 target_site）；起稿/发布失败只记录在 `outreach_result`，不阻塞出报告 |
+| `review_metrics` | `get_click_stats` + `get_search_analytics` + `get_page_inventory` | `get_click_stats` 现按站点×事件类型聚合；取数后 `run_processing` 再调 LLM `analyze_metrics`（提示词在 D1 的 `review_metrics` task）比对各站 PV/UV/点击/搜索，输出「表现好的站点」排名与理由，并入 `output` 报告，并通过 Resend 推送复盘邮件（`metrics_notice.sent` 为回执，缺 RESEND_API_KEY/ADMIN_EMAIL 时 sent=False 不阻塞） |
 | `general` | `get_pending_events` + `get_reflections` |
 
 默认集只含 read 工具。热词分析是编排而非工具，走独立入口 `POST /hotwords`，不占工具注册表；

@@ -18,10 +18,11 @@ logger = get_logger(__name__)
 
 
 def processing_node(state: WorkflowState) -> WorkflowState:
-    """Reads: input_text, intent, prompt_versions, requested_tools
+    """    Reads: input_text, intent, prompt_versions, requested_tools
     Writes: extracted_data, tool_results, retry_count, messages
             [明确非网络失败时另写] processing_fatal, error
-            [review_metrics 分析出正文时另写] metrics_analysis
+            [review_metrics 分析出正文时另写] metrics_analysis, metrics_notice
+            [find_backlinks 走完起稿发布时另写] outreach_result
     """
     intent = state.get("intent", Intent.GENERAL.value)
     step = processing_service.run(
@@ -39,6 +40,10 @@ def processing_node(state: WorkflowState) -> WorkflowState:
                           "messages": state.get("messages", []) + ["processed"]}
     if step["metrics_analysis"]:
         out["metrics_analysis"] = step["metrics_analysis"]
+    if step["metrics_notice"]:
+        out["metrics_notice"] = step["metrics_notice"]
+    if step["outreach_result"]:
+        out["outreach_result"] = step["outreach_result"]
     if step["fatal"]:
         out["processing_fatal"] = True
         out["error"] = step["error"]

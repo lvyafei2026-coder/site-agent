@@ -19,6 +19,8 @@ class WorkflowResult(BaseModel):
     tool_results: dict = Field(default_factory=dict)
     tool_errors: list[str] = Field(default_factory=list)
     metrics_analysis: str = Field(default="")
+    metrics_notice: dict = Field(default_factory=dict)
+    outreach_result: dict = Field(default_factory=dict)
 
     @classmethod
     def from_state(cls, state: dict) -> "WorkflowResult":
@@ -35,6 +37,8 @@ class WorkflowResult(BaseModel):
             tool_results=results,
             tool_errors=errors,
             metrics_analysis=state.get("metrics_analysis", "") or "",
+            metrics_notice=state.get("metrics_notice", {}) or {},
+            outreach_result=state.get("outreach_result", {}) or {},
         )
 
     def render(self) -> str:
@@ -43,4 +47,13 @@ class WorkflowResult(BaseModel):
                 f"tools={len(self.tool_results)}; errors={len(self.tool_errors)}")
         if self.metrics_analysis:
             base += "\n\n" + self.metrics_analysis
+        if self.metrics_notice:
+            base += f"\n\n[复盘邮件] sent={self.metrics_notice.get('sent')} " \
+                    f"subject={self.metrics_notice.get('subject', '')}"
+        if self.outreach_result:
+            article = self.outreach_result.get("article") or {}
+            base += f"\n\n[外链发布] ok={self.outreach_result.get('ok')} " \
+                    f"status={self.outreach_result.get('status', '')} " \
+                    f"source={self.outreach_result.get('source_url', '')} " \
+                    f"target={article.get('target_url', '')}"
         return base

@@ -11,15 +11,29 @@
 
 from __future__ import annotations
 
+import html
 import json
+from datetime import datetime, timedelta, timezone
 
 from src.app.enums import PromptTask
 from src.app.llm.completion import complete_text
 from src.app.observability.langsmith import traceable
 from src.app.services.prompt_service import prompt_service
+from src.app.tools.adapters.notification import email
 from src.app.utils.text import clip_with_count
 
 MAX_PAYLOAD_CHARS = 6000
+# 给人看的邮件一律北京 UTC+8（时间口径见工作记忆）
+_BEIJING = timezone(timedelta(hours=8))
+
+
+def _report_date() -> str:
+    return datetime.now(_BEIJING).strftime("%Y-%m-%d")
+
+
+def _markdown_to_html(text: str) -> str:
+    """复盘正文是 markdown 纯文本；邮件不需要富排版，转义后按行换成 <br> 即可。"""
+    return "<br>".join(html.escape(line) for line in text.splitlines())
 
 
 def _compact_payload(results: dict) -> str:
@@ -49,6 +63,15 @@ class MetricsService:
             version=versions.get(PromptTask.REVIEW_METRICS.value))
         return complete_text(system, _compact_payload(results),
                              warn_event="analyze_metrics_failed")
+
+    def notify(self, analysis: str) -> dict:
+        """把复盘分析推给运营者（Resend）。缺凭据 / 发送失败返回 sent=False，不抛异常。
+
+        email.send 内部已把「未配置」「发送失败」分开记日志；这里只如实回传结果。
+        """
+        subject = f"流量复盘 · {_report_date()}"
+        sent = email.send(subject, _markdown_to_html(analysis))
+        return {"sent": sent, "subject": subject}
 
 
 metrics_service = MetricsService()

@@ -57,6 +57,15 @@ class WorkflowState(TypedDict, total=False):
     """processing 节点产出（review_metrics 专属）。LLM 对各站埋点 / GSC / 页面数据做的自然语言分析，
     识别「表现好的站点」及理由；无 LLM key 或分析失败时为空串。build_output 把它并入 output 报告。"""
 
+    metrics_notice: dict
+    """processing 节点产出（review_metrics 专属）。分析正文推给运营者的邮件回执：
+    {sent, subject, [detail]}；sent=False 只表示没发出去（缺凭据/失败），不影响整轮状态。"""
+
+    outreach_result: dict
+    """processing 节点产出（find_backlinks 专属）。外链起稿 + Dev.to 发布回执：
+    {ok, article:{title,tags,target_url,draft}, status, detail, source_url}；
+    ok=False 时 status 说明败在哪一步（draft_failed / blocked / failed）。"""
+
     tool_results: dict[str, Any]
     """processing 节点产出。{工具名: ToolOutput dict}，入口初始化为 {}；
     validation 节点据此判断「全部失败不算 is_valid」，WorkflowResult 统计成功/失败数。"""

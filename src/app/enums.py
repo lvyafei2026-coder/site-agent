@@ -368,3 +368,4 @@ class PromptTask(StrEnum):
     HOTWORDS = "hotwords"
     HOTWORDS_USER = "hotwords_user"
     REVIEW_METRICS = "review_metrics"
+    PROMO_ARTICLE = "promo_article"
