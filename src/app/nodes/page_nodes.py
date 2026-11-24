@@ -42,7 +42,7 @@ def page_plan(state: dict[str, Any]) -> dict[str, Any]:
         return {**out, "picked": picked, "ai_text": picked["text"], "page": page,
                 "site": "", "classify_by": cls["by"],
                 "error": (f"「{picked['term']}」归不进任何已有子站，"
-                          "需要走「建新站」流程（尚未实现，本期跳过）")}
+                          "需要走「建新站」流程（launch_new_site 工具，人工触发）")}
     return {**out, "picked": picked, "ai_text": picked["text"], "page": page,
             "site": cls["site"], "classify_by": cls["by"]}
 

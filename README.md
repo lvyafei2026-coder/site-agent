@@ -18,7 +18,7 @@ POST /run → classify_intent → run_processing → validate_result
                                                      └─ 重试耗尽 → handle_error
 ```
 
-25 个工具全部是 `BaseTool` 子类，配 Pydantic `Input`，统一返回 `ToolOutput`：
+31 个工具全部是 `BaseTool` 子类，配 Pydantic `Input`，统一返回 `ToolOutput`：
 13 个 `read`、10 个 `ledger`、2 个 `write`。所有外部 IO 只发生在 `tools/adapters/`。
 
 | 记住这一条 | 含义 |
@@ -104,7 +104,7 @@ src/app/
 ├── services/                llm · prompt · tool · evaluation · hotword_service · page_build_service
 ├── tools/
 │   ├── base.py              契约（BaseTool / RuntimeTool / ToolOutput）
-│   ├── registry.py          门面装配（RuntimeService）+ 25 个工具注册
+│   ├── registry.py          门面装配（RuntimeService）+ 31 个工具注册
 │   ├── *_tools.py           6 个业务域：<Domain>Ops 实现 + 工具类
 │   └── adapters/            cloudflare · terms · hosting · publishing
 ├── models/                  ExtractionSchema · WorkflowResult
@@ -138,7 +138,7 @@ migrations/0001_agent_tables.sql  D1 台账表
    包内 `src.app.*` 依赖一律顶层声明（第三方 SDK 按需加载除外）。
    这些约束由 `test/test_architecture.py` 的 AST 守卫守着。
    `src.app.enums` 是零依赖纯数据模块，是唯一被放行给 base/sql 叶子引用的包内模块。
-2. 门面靠构造注入：`RuntimeService` 在 `registry.py` 组装后注入 25 个工具，
+2. 门面靠构造注入：`RuntimeService` 在 `registry.py` 组装后注入 31 个工具，
    外部可通过 `tool_registry.bind(...)` 整体换门面。
 3. 站点信息只在 `config/sites.json`；域名只在 `FLEET_DOMAIN`。
 4. SQL 只在 `tools/adapters/cloudflare/sql.py`；表名列名只来自白名单契约。
@@ -157,7 +157,7 @@ migrations/0001_agent_tables.sql  D1 台账表
 | [02-architecture](docs/02-architecture.md) | 分层与依赖、装配、运行时序、部署拓扑、边界、扩展点 |
 | [03-tech-design](docs/03-tech-design.md) | 状态契约、图、节点、服务、工具、适配器、SQL、表结构 |
 | [04-runbook](docs/04-runbook.md) | 本地 / 测试 / D1 建表 / Render / 排障 / 安全 |
-| [05-tools](docs/05-tools.md) | 25 个工具速查、意图映射、站点清单、新增清单 |
+| [05-tools](docs/05-tools.md) | 31 个工具速查、意图映射、站点清单、新增清单 |
 | [10-structure](docs/10-structure.md) | 结构唯一口径（脚手架来源、分包规则、文件级目录） |
 | [glossary](docs/glossary.md) | 术语表 |
 

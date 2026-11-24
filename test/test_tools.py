@@ -10,18 +10,18 @@ from src.app.tools.base import BaseTool, RuntimeTool, ToolOutput, is_retryable_e
 from src.app.tools.registry import tool_registry
 
 
-def test_registry_has_30_tools():
-    assert len(tool_registry.names()) == 30
-    assert len(set(tool_registry.names())) == 30
+def test_registry_has_31_tools():
+    assert len(tool_registry.names()) == 31
+    assert len(set(tool_registry.names())) == 31
 
 
 def test_kind_split():
-    # write = git_push / wait_build（空提交重推）/ publish_devto_article / send_notice
+    # write = git_push / wait_build（空提交重推）/ publish_devto_article / send_notice / launch_new_site
     # 热词线的 fetch_serp / fetch_trend / write_hotword_result 都写共享 KV，
     # 但都是幂等 upsert / 缓存回写 → ledger，不是不可逆的 write。
     assert len(tool_registry.by_kind("read")) == 15
     assert len(tool_registry.by_kind("ledger")) == 11
-    assert len(tool_registry.by_kind("write")) == 4
+    assert len(tool_registry.by_kind("write")) == 5
 
 
 def test_every_tool_is_basetool_with_pydantic_input():

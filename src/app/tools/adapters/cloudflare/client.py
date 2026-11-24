@@ -47,10 +47,16 @@ class CloudflareClient:
         path = "/".join(quote(str(s), safe=":") for s in segments)
         return f"{API}/accounts/{self.account_id}/{path}"
 
+    def top_url(self, *segments: str) -> str:
+        """账户级之外的端点（如 /zones），不带 /accounts/{id} 前缀。"""
+        path = "/".join(quote(str(s), safe=":") for s in segments)
+        return f"{API}/{path}"
+
     def request(self, method: str, *segments: str, params=None, json=None,
-                data=None, timeout: int = 30) -> requests.Response:
+                data=None, timeout: int = 30, account_level: bool = True) -> requests.Response:
+        url = self.url(*segments) if account_level else self.top_url(*segments)
         return requests.request(
-            method, self.url(*segments),
+            method, url,
             headers={"Authorization": f"Bearer {self.api_token}"},
             params=params, json=json, data=data, timeout=timeout,
         )
