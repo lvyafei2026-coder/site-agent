@@ -61,6 +61,8 @@ class Settings:
                 PromptTask.EXTRACTION.value: "v1", PromptTask.EXTRACTION_USER.value: "v1",
                 PromptTask.HOTWORDS.value: "v2", PromptTask.HOTWORDS_USER.value: "v2",
                 PromptTask.REVIEW_METRICS.value: "v1",
+                PromptTask.PROMO_ARTICLE.value: "v1",
+                PromptTask.WORD_CREATE_PAGE.value: "v1",
             }
 
 

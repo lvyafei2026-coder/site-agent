@@ -70,6 +70,11 @@ class WorkflowState(TypedDict, total=False):
     {ok, article:{title,tags,target_url,draft}, status, detail, source_url}；
     ok=False 时 status 说明败在哪一步（draft_failed / blocked / failed）。"""
 
+    planning_analysis: str
+    """processing 节点产出（word_create_page 专属）。LLM 排产方案（markdown）：
+    待开发池 × 近 30 天新页 × 历史复盘 → 选哪些词 / 落哪个站 / 排除原因；
+    无 LLM key 或排产失败时为空串。build_output 把它并入 output 报告。"""
+
     tool_results: dict[str, Any]
     """processing 节点产出。{工具名: ToolOutput dict}，入口初始化为 {}；
     validation 节点据此判断「全部失败不算 is_valid」，WorkflowResult 统计成功/失败数。"""

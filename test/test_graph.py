@@ -59,6 +59,40 @@ def test_review_metrics_skips_analysis_without_key(graph, fake, monkeypatch):
     assert "status=success" in r["output"]
 
 
+def test_word_create_page_runs_llm_plan(graph, fake, monkeypatch):
+    """word_create_page 三份取数后调用 LLM 排产，方案并进 output 报告。"""
+    import src.app.services.planning_service as planning_mod
+
+    captured = {}
+    def fake_complete(system_prompt, text, **_kwargs):
+        captured["system"] = system_prompt
+        captured["data"] = text
+        return "## 本轮排产方案\n1. **music** ← free invoice calculator（待开发池第 1 名）\n排除：无"
+    monkeypatch.setattr(planning_mod, "complete_text", fake_complete)
+
+    r = graph.invoke({"input_text": "给待开发词排产", "intent": "word_create_page",
+                      "retry_count": 0, "messages": [], "tool_results": {}},
+                     config={"configurable": {"thread_id": "t-wcp"}})
+    assert set(r["tool_results"]) == {"get_hotwords", "get_page_inventory", "get_reflections"}
+    assert captured, "word_create_page 应触发 planning_service.plan"
+    # 提示词来自 D1 prompts 表（桩由 conftest 注入），数据里带待开发词
+    assert "word_create_page" in captured["system"] or "排产" in captured["system"]
+    assert "invoice" in captured["data"]
+    assert r["planning_analysis"]
+    assert "排产" in r["output"]
+
+
+def test_word_create_page_skips_plan_without_key(graph, fake, monkeypatch):
+    """无 LLM key 时 plan 返回空串，不写 planning_analysis，整轮照常成功。"""
+    import src.app.services.planning_service as planning_mod
+    monkeypatch.setattr(planning_mod.planning_service, "plan", lambda *a, **k: "")
+    r = graph.invoke({"input_text": "排产", "intent": "word_create_page",
+                      "retry_count": 0, "messages": [], "tool_results": {}},
+                     config={"configurable": {"thread_id": "t-wcp-nokey"}})
+    assert "planning_analysis" not in r
+    assert "status=success" in r["output"]
+
+
 def test_explicit_tools_override_intent(graph, fake):
     r = graph.invoke({"input_text": "hello", "intent": "general",
                       "requested_tools": ["get_latest_plan"],

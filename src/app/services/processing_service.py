@@ -23,6 +23,7 @@ from src.app.enums import Intent
 from src.app.services.extraction_service import extraction_service
 from src.app.services.metrics_service import metrics_service
 from src.app.services.outreach_service import outreach_service
+from src.app.services.planning_service import planning_service
 from src.app.services.tool_service import tool_service
 from src.app.tools.base import is_retryable_error
 
@@ -32,7 +33,7 @@ class ProcessingService:
             requested_tools: list[str] | None = None,
             tool_args: dict[str, dict] | None = None) -> dict:
         """返回 {extracted, results, fatal, error, metrics_analysis, metrics_notice,
-        outreach_result}，由节点写回 state。"""
+        outreach_result, planning_analysis}，由节点写回 state。"""
         extracted = extraction_service.extract(text, intent, versions)
 
         # LLM 故障分类：已配置 key 但调用抛异常才计失败；明确非网络失败 → 短路。
@@ -86,9 +87,19 @@ class ProcessingService:
             except Exception:  # noqa: BLE001 - 推广失败不影响出报告
                 outreach_result = {"ok": False, "status": "failed", "detail": "外链流程异常"}
 
+        # word_create_page 专属：三份取数（待开发池 / 近 30 天新页 / 历史复盘）交给
+        # LLM 出排产方案。分析失败返回空串，不影响取数与出报告。
+        planning_analysis = ""
+        if intent == Intent.WORD_CREATE_PAGE.value and results and not fatal:
+            try:
+                planning_analysis = planning_service.plan(results, versions)
+            except Exception:  # noqa: BLE001 - 排产失败不影响取数与出报告
+                planning_analysis = ""
+
         return {"extracted": extracted, "results": results, "fatal": fatal,
                 "error": error, "metrics_analysis": metrics_analysis,
-                "metrics_notice": metrics_notice, "outreach_result": outreach_result}
+                "metrics_notice": metrics_notice, "outreach_result": outreach_result,
+                "planning_analysis": planning_analysis}
 
 
 processing_service = ProcessingService()
