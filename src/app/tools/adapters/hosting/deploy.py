@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import time
+
 from src.app.config import SiteConfig, env
 from src.app.tools.adapters.cloudflare.client import CloudflareClient
 from src.app.tools.adapters.hosting.site_scaffold import repo_info
@@ -129,15 +131,46 @@ def _bound_domains() -> list[dict]:
 
 
 def attach_domain(site: SiteConfig) -> dict[str, Any]:
-    """幂等绑自定义域：hostname 必须带 zone（FLEET_DOMAIN 的子域），DNS 记录自动创建。"""
+    """幂等绑自定义域：hostname 必须带 zone（FLEET_DOMAIN 的子域），DNS 记录自动创建。
+
+    Worker 空壳（还没首次部署）绑域会 100124：先触发一次构建，轮询等部署出现再绑。
+    """
     hostname = site.host
     for d in _bound_domains():
         if d.get("hostname") == hostname:
             return {"ok": True, "created": False, "hostname": hostname,
                     "service": d.get("service")}
-    workers.result("PUT", "workers", "domains", json={
-        "zone_id": _zone_id(), "hostname": hostname,
-        "service": site.repo_name, "environment": "production",
-    })
-    return {"ok": True, "created": True, "hostname": hostname,
-            "service": site.repo_name}
+    last_error = "未知错误"
+    for attempt in range(10):
+        resp = workers.request("PUT", "workers", "domains", json={
+            "zone_id": _zone_id(), "hostname": hostname,
+            "service": site.repo_name, "environment": "production",
+        })
+        body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+        if resp.status_code < 300 and body.get("success", True):
+            return {"ok": True, "created": True, "hostname": hostname,
+                    "service": site.repo_name}
+        errors = body.get("errors") or []
+        last_error = str(errors) or f"HTTP {resp.status_code}"
+        if any(e.get("code") == 100124 for e in errors):
+            trigger_build(site.repo_name, site.branch)   # 无部署：触发构建后等下一轮
+            time.sleep(20)
+            continue
+        break
+    raise RuntimeError(f"Cloudflare PUT workers/domains 失败: {last_error}")
+
+
+def trigger_build(name: str, branch: str = "main") -> dict[str, Any]:
+    """幂等触发一次生产构建：复用 site-agent-auto hook（没有就建），POST 顶层触发端点。"""
+    hooks = builds.result("GET", "builds", "workers", name, "deploy_hooks")
+    hook = next((h for h in hooks if h.get("deploy_hook_name") == "site-agent-auto"), None)
+    if hook is None:
+        hook = builds.result("POST", "builds", "workers", name, "deploy_hooks",
+                             json={"branch": branch,
+                                   "deploy_hook_name": "site-agent-auto"})
+    # 触发端点在账户前缀之外（/workers/builds/deploy_hooks/{uuid}）
+    resp = builds.request("POST", "builds", "deploy_hooks", hook["deploy_hook_uuid"],
+                          account_level=False)
+    if resp.status_code >= 300:
+        raise RuntimeError(f"触发构建失败: HTTP {resp.status_code} {resp.text[:200]}")
+    return resp.json().get("result") or {}

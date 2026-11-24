@@ -158,6 +158,7 @@ class FakeCF:
             return handler(method, url, json)
         import types
         resp = types.SimpleNamespace(status_code=200,
+                                     headers={"content-type": "application/json"},
                                      json=lambda: {"success": True, "result": handler})
         return resp
 
@@ -214,7 +215,9 @@ def test_connect_build_already_connected(site, monkeypatch):
     }).__call__)
 
     def fake_builds_get(method, *segments, **kw):
-        return types.SimpleNamespace(status_code=200, json=lambda: {
+        return types.SimpleNamespace(status_code=200,
+                                     headers={"content-type": "application/json"},
+                                     json=lambda: {
             "success": True, "result": {"git_repository": {"repo_name": "fresh-site-tool"}}})
 
     monkeypatch.setattr(cf_deploy.builds, "request", fake_builds_get)
