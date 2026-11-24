@@ -139,26 +139,38 @@ def write_scaffold(work: Path, site: SiteConfig, description: str) -> list[str]:
     return written
 
 
+def _git(work: Path, *args: str) -> None:
+    cmd = ["git"]
+    if args and args[0] == "commit":
+        # Render 容器没有全局 git 身份；commit 必须显式带，否则整条推送链挂掉。
+        cmd += ["-c", f"user.name={env('GIT_AUTHOR_NAME', 'site-agent')}",
+                "-c", f"user.email={env('GIT_AUTHOR_EMAIL', CONTACT_EMAIL)}"]
+    cmd += [*args]
+    proc = subprocess.run(cmd, cwd=str(work),
+                          capture_output=True, text=True, timeout=180)
+    if proc.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)} 失败: {proc.stderr.strip()[:400]}")
+
+
+def _clone(work: Path, repo_full: str, branch: str) -> bool:
+    """clone 远端到 work；失败（典型是空仓）返回 False，调用方走 init_and_push 首推。"""
+    token = env("GITHUB_TOKEN", required=True)
+    url = f"https://x-access-token:{token}@github.com/{repo_full}.git"
+    proc = subprocess.run(
+        ["git", "clone", "--depth", "1", "--branch", branch, url, str(work)],
+        capture_output=True, text=True, timeout=300)
+    return proc.returncode == 0
+
+
 def init_and_push(work: Path, repo_full: str, branch: str) -> str:
     """空仓/新工作副本的首次提交推送（git 子进程只在 publishing.github_repo 之外的这里出现一次）。"""
     token = env("GITHUB_TOKEN", required=True)
     url = f"https://x-access-token:{token}@github.com/{repo_full}.git"
-    def run(*args: str) -> None:
-        cmd = ["git"]
-        if args and args[0] == "commit":
-            # Render 容器没有全局 git 身份；commit 必须显式带，否则整条推送链挂掉。
-            cmd += ["-c", f"user.name={env('GIT_AUTHOR_NAME', 'site-agent')}",
-                    "-c", f"user.email={env('GIT_AUTHOR_EMAIL', CONTACT_EMAIL)}"]
-        cmd += [*args]
-        proc = subprocess.run(cmd, cwd=str(work),
-                              capture_output=True, text=True, timeout=180)
-        if proc.returncode != 0:
-            raise RuntimeError(f"git {' '.join(args)} 失败: {proc.stderr.strip()[:400]}")
-    run("init", "-b", branch)
-    run("remote", "add", "origin", url)
-    run("add", "-A")
-    run("commit", "-m", "init: scaffold static site")
-    run("push", "-u", "origin", branch)
+    _git(work, "init", "-b", branch)
+    _git(work, "remote", "add", "origin", url)
+    _git(work, "add", "-A")
+    _git(work, "commit", "-m", "init: scaffold static site")
+    _git(work, "push", "-u", "origin", branch)
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(work),
                           capture_output=True, text=True, timeout=30).stdout.strip()
 
@@ -171,7 +183,15 @@ def create_site_repo(site: SiteConfig, description: str = "") -> dict[str, Any]:
     if (work / ".git").exists():
         # 已有工作副本：只补缺失文件（本地副本本来就是我们推过的）
         scaffold = write_scaffold(work, site, description)
+    elif _clone(work, site.repo, site.branch):
+        # 本地没有副本但远端已有提交（容器重启后重跑）：clone 下来只补缺失文件再推
+        scaffold = write_scaffold(work, site, description)
+        if scaffold:
+            _git(work, "add", "-A")
+            _git(work, "commit", "-m", "init: scaffold static site")
+            _git(work, "push", "origin", site.branch)
     else:
+        # 真空仓：本地起 init 首推
         work.parent.mkdir(parents=True, exist_ok=True)
         work.mkdir(exist_ok=True)
         scaffold = write_scaffold(work, site, description)
