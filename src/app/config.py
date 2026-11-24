@@ -62,7 +62,7 @@ class Settings:
                 PromptTask.HOTWORDS.value: "v2", PromptTask.HOTWORDS_USER.value: "v2",
                 PromptTask.REVIEW_METRICS.value: "v1",
                 PromptTask.PROMO_ARTICLE.value: "v1",
-                PromptTask.WORD_CREATE_PAGE.value: "v1",
+                PromptTask.WORD_PLAN_PAGE.value: "v1",
             }
 
 

@@ -60,7 +60,7 @@ def test_every_member_has_docstring_note():
 
 
 @pytest.mark.parametrize("cls,expected", [
-    (Intent, {"word_create_page", "plan_promo", "find_backlinks", "review_metrics",
+    (Intent, {"word_plan_page", "plan_promo", "find_backlinks", "review_metrics",
               "analyze_hotwords", "general"}),
     (HotwordStep, {"fetch", "examples", "serp", "trend", "write_result"}),
     (CandidateStatus, {"doing", "live"}),
@@ -78,9 +78,11 @@ def test_locked_value_sets(cls, expected):
 
 
 def test_legacy_intent_is_normalized():
-    """旧值 select_pages 仍来自 D1 intent 提示词与浏览器缓存：入口归一后才能命中工具表。"""
-    assert normalize_intent("select_pages") == Intent.WORD_CREATE_PAGE
-    assert normalize_intent("word_create_page") == Intent.WORD_CREATE_PAGE
+    """旧值 select_pages / word_create_page 仍来自 D1 老提示词、浏览器缓存与历史 run：
+    入口归一后才能命中工具表。"""
+    assert normalize_intent("select_pages") == Intent.WORD_PLAN_PAGE
+    assert normalize_intent("word_create_page") == Intent.WORD_PLAN_PAGE
+    assert normalize_intent("word_plan_page") == Intent.WORD_PLAN_PAGE
     assert normalize_intent("nope") == "nope"
 
 

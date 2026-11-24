@@ -2,14 +2,14 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""热词创页排产（word_create_page 专属的共用能力）：待开发词 → 本轮排产方案。
+"""热词创页排产（word_plan_page 专属的共用能力）：待开发词 → 本轮排产方案。
 
 由 processing_service 在取数成功后调用；三份输入各管一个决策维度：
     get_hotwords(todo)    做什么——待开发池
     get_page_inventory    什么已经做了——近 30 天新页（查重 / 防撞车）
     get_reflections       上次怎么翻车的——历史复盘（避坑）
 返回 markdown 排产方案正文（选词 + 落站 + 排除原因）。无 key 或调用失败返回
-空串，上层跳过该段，不阻塞整轮。提示词来自 D1 的 word_create_page task。
+空串，上层跳过该段，不阻塞整轮。提示词来自 D1 的 word_plan_page task。
 """
 
 from __future__ import annotations
@@ -43,8 +43,8 @@ class PlanningService:
     def plan(self, results: dict, versions: dict[str, str] | None = None) -> str:
         versions = versions or {}
         system = prompt_service.load_prompt(
-            PromptTask.WORD_CREATE_PAGE.value,
-            version=versions.get(PromptTask.WORD_CREATE_PAGE.value))
+            PromptTask.WORD_PLAN_PAGE.value,
+            version=versions.get(PromptTask.WORD_PLAN_PAGE.value))
         return complete_text(system, _compact_payload(results),
                              warn_event="plan_pages_failed")
 

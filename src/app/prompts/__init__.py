@@ -34,7 +34,7 @@ PROMPT_TASKS: dict[str, str] = {
     "hotwords_user": "逐词站点方案 human 模板（关键词 / 关联查询 / SERP 标题 / 信号 / 地区 / 热度）",
     "review_metrics": "review_metrics 意图的站点表现分析 system：把各站埋点/GSC/页面数据交给 LLM 比对，识别表现好的站点（提示词集中此处，禁止在代码里写整段提示词）",
     "promo_article": "外链文章起稿 system：Dev.to 推广文（标题/tags/target_url/draft 的 JSON，正文一律英文）",
-    "word_create_page": "热词创页排产 system：待开发词 × 近 30 天新页 × 历史复盘 → 本轮排产方案",
+    "word_plan_page": "热词创页排产 system：待开发词 × 近 30 天新页 × 历史复盘 → 本轮排产方案",
 }
 
 _registry = PromptRegistry()

@@ -444,7 +444,7 @@ def test_snapshot_status_filter_keeps_default_doing(fake_kv):
 
 
 def test_snapshot_status_todo_reads_saved(fake_kv):
-    """word_create_page 取「待开发」：跟进状态只存在 saved 表，candidates 条目不带 status。"""
+    """word_plan_page 取「待开发」：跟进状态只存在 saved 表，candidates 条目不带 status。"""
     fake_kv.put_json("candidates", [{"term": "raw1"}, {"term": "raw2"}])
     fake_kv.put_json("saved", [
         {"term": "done1", "status": "todo", "score": 9},

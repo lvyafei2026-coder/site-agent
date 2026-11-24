@@ -163,7 +163,7 @@ def test_analyze_hotwords_is_a_line_not_a_tool():
     """
     assert "analyze_hotwords" not in tool_registry.names()
     assert "analyze_hotwords" not in INTENT_TOOLS
-    assert "get_hotwords" in INTENT_TOOLS[Intent.WORD_CREATE_PAGE.value]
+    assert "get_hotwords" in INTENT_TOOLS[Intent.WORD_PLAN_PAGE.value]
     assert set(STEP_TOOLS) == {s.value for s in HotwordStep}   # 步骤名口径唯一
     for step, name in STEP_TOOLS.items():
         assert name in tool_registry.names(), f"步骤 {step} 路由到不存在的工具 {name}"

@@ -35,7 +35,7 @@ from enum import StrEnum
 class Intent(StrEnum):
     """一轮运营的意图。llm 负责分类、tool_service 负责映射到工具集。"""
 
-    WORD_CREATE_PAGE = "word_create_page"  # 建页：待开发词 + 站点近 30 天新页 + 历史复盘
+    WORD_PLAN_PAGE = "word_plan_page"      # 排产：从待开发词里选本轮建页清单（不含建页动作）
     PLAN_PROMO = "plan_promo"              # 推广排期：最新排期 + 站点清单 + 待消费事件
     FIND_BACKLINKS = "find_backlinks"      # 找外链：外链台账 + Reddit + DEV 文章
     REVIEW_METRICS = "review_metrics"      # 复盘：站点点击/GSC/页面清单，再调 LLM 分析
@@ -43,11 +43,13 @@ class Intent(StrEnum):
     GENERAL = "general"                    # 通用兜底；无 LLM key 或非法意图都回退到它
 
 
-# 旧意图值 → 新值：2026-11-23 把 select_pages 改名为 word_create_page，但
-# ① D1 的 intent 提示词正文仍写着旧值（改措辞走 /rules/prompts 升版，不发版）；
-# ② 浏览器可能还缓存着旧前端。入口统一归一，提示词升版后可删本表。
+# 旧意图值 → 新值。两次改名留下的旧名：select_pages（11-23 首版）→
+# word_create_page（11-23 改名）→ word_plan_page（11-24 正名，因为这条线只排产不建页）。
+# 留着的原因：① D1 里老版本 intent 提示词正文仍写旧值（提示词升版不发版）；
+# ② 浏览器缓存、历史 run / trace / 台账里的 intent 字段都是旧值，读侧要能认。
 LEGACY_INTENTS: dict[str, str] = {
-    "select_pages": Intent.WORD_CREATE_PAGE.value,
+    "select_pages": Intent.WORD_PLAN_PAGE.value,
+    "word_create_page": Intent.WORD_PLAN_PAGE.value,
 }
 
 
@@ -369,4 +371,4 @@ class PromptTask(StrEnum):
     HOTWORDS_USER = "hotwords_user"
     REVIEW_METRICS = "review_metrics"
     PROMO_ARTICLE = "promo_article"
-    WORD_CREATE_PAGE = "word_create_page"
+    WORD_PLAN_PAGE = "word_plan_page"

@@ -118,7 +118,7 @@ START → fetch_one（每轮问 tool 要一个词）→ analyze_one → should_c
 
 | 意图 | 默认工具 |
 |---|---|
-| `word_create_page` | `get_hotwords`、`get_page_inventory`、`get_reflections` |
+| `word_plan_page` | `get_hotwords`、`get_page_inventory`、`get_reflections` |
 | `plan_promo` | `get_latest_plan`、`get_page_inventory`、`get_pending_events` |
 | `find_backlinks` | `get_backlink_ledger`、`search_reddit`、`list_devto_articles` |
 | `review_metrics` | `get_click_stats`、`get_search_analytics`、`get_page_inventory` |

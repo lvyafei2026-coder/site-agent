@@ -19,7 +19,7 @@ from src.app.enums import CurationStatus, HotwordStep, Intent, PageBuildStep, Pa
 from src.app.tools.registry import tool_registry
 
 INTENT_TOOLS: dict[str, tuple[str, ...]] = {
-    Intent.WORD_CREATE_PAGE.value: ("get_hotwords", "get_page_inventory", "get_reflections"),
+    Intent.WORD_PLAN_PAGE.value: ("get_hotwords", "get_page_inventory", "get_reflections"),
     Intent.PLAN_PROMO.value: ("get_latest_plan", "get_page_inventory", "get_pending_events"),
     Intent.FIND_BACKLINKS.value: ("get_backlink_ledger", "search_reddit", "list_devto_articles"),
     Intent.REVIEW_METRICS.value: ("get_click_stats", "get_search_analytics", "get_page_inventory"),
@@ -45,7 +45,7 @@ PAGE_STEP_TOOLS: dict[str, str] = {
 }
 
 TOOL_ARGS = {
-    # ★word_create_page 读「待开发」池：承接热词分析的产出（分析判「做」→ saved/todo），
+    # ★word_plan_page 读「待开发」池：承接热词分析的产出（分析判「做」→ saved/todo），
     #   不再看原始未跟进词——漏斗顺序 = 分析筛选 → 排产 → 建页。
     "get_hotwords": lambda t, e: {"limit": 20, "status": CurationStatus.TODO.value},
     "get_page_inventory": lambda t, e: {"mode": PageQueryMode.NEW.value, "limit": 10},

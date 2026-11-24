@@ -87,10 +87,10 @@ class ProcessingService:
             except Exception:  # noqa: BLE001 - 推广失败不影响出报告
                 outreach_result = {"ok": False, "status": "failed", "detail": "外链流程异常"}
 
-        # word_create_page 专属：三份取数（待开发池 / 近 30 天新页 / 历史复盘）交给
+        # word_plan_page 专属：三份取数（待开发池 / 近 30 天新页 / 历史复盘）交给
         # LLM 出排产方案。分析失败返回空串，不影响取数与出报告。
         planning_analysis = ""
-        if intent == Intent.WORD_CREATE_PAGE.value and results and not fatal:
+        if intent == Intent.WORD_PLAN_PAGE.value and results and not fatal:
             try:
                 planning_analysis = planning_service.plan(results, versions)
             except Exception:  # noqa: BLE001 - 排产失败不影响取数与出报告

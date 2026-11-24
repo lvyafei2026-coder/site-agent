@@ -106,7 +106,7 @@ def classify_site(term: str, text: str = "") -> dict[str, Any]:
     #   extraction 的归类请求，不是提示词模板——字段名换成自有叫法。
     ask = (f"站点清单：{sites_line}\n待归类词：{term}\n方案摘要：{brief}\n"
            "只输出清单里最匹配的站点名；都不合适就输出空。")
-    extracted = extraction_service.extract(ask, Intent.WORD_CREATE_PAGE.value)
+    extracted = extraction_service.extract(ask, Intent.WORD_PLAN_PAGE.value)
     site = extracted.get("target_site", "").strip()
     by = "llm"
     if site not in SITES:

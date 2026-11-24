@@ -23,7 +23,7 @@ def processing_node(state: WorkflowState) -> WorkflowState:
             [明确非网络失败时另写] processing_fatal, error
             [review_metrics 分析出正文时另写] metrics_analysis, metrics_notice
             [find_backlinks 走完起稿发布时另写] outreach_result
-            [word_create_page 排产出正文时另写] planning_analysis
+            [word_plan_page 排产出正文时另写] planning_analysis
     """
     intent = state.get("intent", Intent.GENERAL.value)
     step = processing_service.run(

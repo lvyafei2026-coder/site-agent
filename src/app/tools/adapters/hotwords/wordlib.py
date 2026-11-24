@@ -79,7 +79,7 @@ def _read(kv: CloudflareKV, status: str, limit: int, light: bool) -> dict[str, A
     meta = kv_dict(kv, "meta")
 
     # 跟进状态（todo / wip / live / parked）只存在 saved 表，candidates 条目本身
-    # 不带 status。word_create_page 取「待开发」时直接回 saved 过滤，查不到就给空——
+    # 不带 status。word_plan_page 取「待开发」时直接回 saved 过滤，查不到就给空——
     # 绝不能回落成全量候选，否则没分析过的词会混进排产视野。
     if status != CandidateStatus.DOING.value:
         rows = [r for r in kv_list(kv, SAVED_KEY)

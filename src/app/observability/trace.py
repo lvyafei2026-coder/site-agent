@@ -21,7 +21,7 @@
     {
       "path": "classify_intent → run_processing → validate_result → build_output",
       "nodes": [{"node": "classify_intent", "ms": 8,
-                 "changed": {"intent": "word_create_page", "confidence": 1.0}}, ...],
+                 "changed": {"intent": "word_plan_page", "confidence": 1.0}}, ...],
       "totalMs": 1420,
       "route": "complete",         # complete / error：终态是否带错误收尾
       "looped": false              # 有节点被重复执行（常规线=重试，热词线=逐词回环）
