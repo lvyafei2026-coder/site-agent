@@ -103,13 +103,17 @@ def _git(cwd: Path, *args: str) -> str:
 def _repo_copy(repo_full: str, branch: str = "main") -> Path:
     """clone-or-update 一份远端仓库工作副本（配置真源永远以远端为准）。"""
     class _RepoSite:
-        """ensure_repo 只读 repo_name / repo / branch 三个字段，就地给一个。"""
-        name = "config-repo"
-        repo_name = repo_full.split("/", 1)[1]
-        branch = branch
-        repo = repo_full
+        """ensure_repo 只读 repo_name / repo / branch 三个字段，就地给一个。
 
-    return ensure_repo(_RepoSite())  # type: ignore[arg-type]
+        ★赋值必须走 __init__：类体是 `branch = branch` 的话，类体不闭包、读不到外层参数。
+        """
+        def __init__(self, full: str, br: str) -> None:
+            self.name = "config-repo"
+            self.repo_name = full.split("/", 1)[1]
+            self.branch = br
+            self.repo = full
+
+    return ensure_repo(_RepoSite(repo_full, branch))  # type: ignore[arg-type]
 
 
 def _commit_push(work: Path, message: str, branch: str) -> dict[str, Any]:
