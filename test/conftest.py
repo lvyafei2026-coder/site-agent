@@ -242,15 +242,17 @@ def fake_kv(monkeypatch):
 
     热词线的 IO 已全部收进工具（next_candidate / read_examples / fetch_serp /
     fetch_trend / write_hotword_result），句柄由这些适配器自取，所以逐个 patch
-    它们的 get_kv 引用；state 不再携带 kv 句柄。
+    它们的 get_kv 引用；state 不再携带 kv 句柄。建页线（page_build_service）
+    同样持有自己的 get_kv 绑定，一并 patch。
     """
+    from src.app.services import page_build_service
     from src.app.tools.adapters.cloudflare import kv as kvmod
     from src.app.tools.adapters.hotwords import (
         fetch, wordlib, writeback,
     )
 
     fake = FakeKV()
-    for mod in (kvmod, wordlib, fetch, writeback):
+    for mod in (kvmod, wordlib, fetch, writeback, page_build_service):
         monkeypatch.setattr(mod, "get_kv", lambda: fake)
     return fake
 

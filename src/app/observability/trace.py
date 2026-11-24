@@ -126,3 +126,17 @@ def run_traced(graph, state: dict, config: dict, *,
         "looped": any(n > 1 for n in visits.values()),
     }
     return acc, trace
+
+
+def page_snapshot(state: dict) -> dict[str, Any]:
+    """建页线快照：PageBuildState 里有语义的字段。"""
+    page = state.get("page") or {}
+    return {
+        "term": (state.get("picked") or {}).get("term") or state.get("term") or "",
+        "stage": state.get("stage") or "",
+        "site": state.get("site") or "",
+        "slug": page.get("slug") or "",
+        "sha": state.get("sha") or "",
+        "url": state.get("url") or "",
+        "error": clip(str(state.get("error") or ""), _MAX_TEXT),
+    }

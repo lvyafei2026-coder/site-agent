@@ -6,6 +6,7 @@
 
     POST /run        常规线主图（意图分类 → 取数 → 校验 → 输出）
     POST /hotwords   热词循环图（逐词取词 → 分析 → 汇总）
+    POST /page       建页子图（取词 → 归类 → 渲染 → 推送 → 验活）
     GET  /health     状态与进程内计数
     GET  /llm-quota  DeepSeek 余额与用量
 
@@ -21,7 +22,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from src.app.config import settings
-from src.app.graph import run_hotwords, run_workflow
+from src.app.graph import run_hotwords, run_page_build, run_workflow
 from src.app.llm.quota import check_quota
 from src.app.observability.metrics import metrics
 
@@ -61,6 +62,23 @@ def hotwords(request: HotwordsRequest) -> dict:
     名单非法时整轮 ok=False，不跑任何词。
     """
     return run_hotwords(**request.model_dump())
+
+
+class PageRequest(BaseModel):
+    term: str = ""                        # 空 = 自动取下一条带分析正文的 todo 词
+    confirm: bool = False                 # False = dry-run 只预览，不写任何数据
+
+
+@api.post("/page")
+def page(request: PageRequest) -> dict:
+    """建页子图：请求字段与 run_page_build 签名一一对应，直接展开。
+
+    与 /run、/hotwords 同一套封装（终态汇总 + trace + langsmith）。一次只建一页，
+    逐词建页由调用方多次触发。confirm=False 是 dry-run：plan 出结构与目标站即收尾；
+    confirm=True 才真正渲染、推送 GitHub 并验活——这个入口不带强鉴权，
+    但写动作只发生在 confirm=true 时，且目标站点与页面结构都来自已有分析正文，不接受任意输入。
+    """
+    return run_page_build(**request.model_dump())
 
 
 @api.get("/health")

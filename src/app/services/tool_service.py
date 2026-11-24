@@ -15,7 +15,7 @@
 
 from __future__ import annotations
 
-from src.app.enums import CurationStatus, HotwordStep, Intent, PageQueryMode
+from src.app.enums import CurationStatus, HotwordStep, Intent, PageBuildStep, PageQueryMode
 from src.app.tools.registry import tool_registry
 
 INTENT_TOOLS: dict[str, tuple[str, ...]] = {
@@ -34,6 +34,14 @@ STEP_TOOLS: dict[str, str] = {
     HotwordStep.SERP.value: "fetch_serp",
     HotwordStep.TREND.value: "fetch_trend",
     HotwordStep.WRITE_RESULT.value: "write_hotword_result",
+}
+
+# 建页线：子图步骤名 → 工具名。pick / classify / build 是纯业务不经 registry（见 PageBuildStep）；
+# render / push / verify 三个工具步骤全在这里，节点只说步骤名，不说工具名。
+PAGE_STEP_TOOLS: dict[str, str] = {
+    PageBuildStep.RENDER.value: "render_files",
+    PageBuildStep.PUSH.value: "git_push",
+    PageBuildStep.VERIFY.value: "check_live_page",
 }
 
 TOOL_ARGS = {
@@ -68,6 +76,13 @@ class ToolService:
     def execute_for_step(self, step: str, **kwargs) -> dict:
         """热词线：逐词步骤名 → 该步的工具，参数由节点按这一步的需要给出。"""
         name = STEP_TOOLS.get(step)
+        if name is None or name not in self.registry.names():
+            return {"ok": False, "error": f"unknown step: {step}", "retryable": False}
+        return self._run(name, **kwargs)
+
+    def execute_for_page(self, step: str, **kwargs) -> dict:
+        """建页线：子图步骤名 → 该步的工具（render / push / verify），与热词线同构。"""
+        name = PAGE_STEP_TOOLS.get(step)
         if name is None or name not in self.registry.names():
             return {"ok": False, "error": f"unknown step: {step}", "retryable": False}
         return self._run(name, **kwargs)

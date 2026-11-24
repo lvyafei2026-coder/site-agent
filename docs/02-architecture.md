@@ -8,7 +8,7 @@
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │ 入口      main.py:serve() 只起 uvicorn；两个业务入口各一条线                       │
-│           线1 用户线 POST /run；线2 热词线 POST /hotwords（前端按需触发）          │
+│           线1 用户线 POST /run；线2 热词线 POST /hotwords；线3 建页线 POST /page（前端按需触发）          │
 │           python -m src.app.main 常驻 HTTP；run() 可单跑用户线                     │
 ├──────────────────────────────────────────────────────────────┤
 │ 编排      graph/（user_graph · hotword_graph〔图+运行入口〕· state · constants · edges）│

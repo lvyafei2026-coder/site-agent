@@ -202,3 +202,58 @@ def initial_hotword_state(limit: int = 20,
         "results": [],
         "loop_count": 0,
     }
+
+
+# ============================================================================
+# 建页线（POST /page）：一条待开发词 → 一页上线。与上面两线并列同构。
+# ============================================================================
+
+class PageBuildState(TypedDict, total=False):
+    """建页子图在节点间流转的状态。一次只建一页（词级循环由调用方多次触发）。
+
+    plan 节点产出 term / ai_text / site / page，后续节点逐步填充 work / sha /
+    url / live_ok；error 短路后由 run_page_build 汇总成 summary。
+    """
+
+    # ── 输入（运行入口注入）──
+    term: str                # 要建的词；空串 = 自动取下一条带正文的 todo 词
+    confirm: bool            # False = dry-run（只 plan，不渲染不推送）
+    status_filter: str       # 取词的跟进状态，默认 todo
+
+    # ── 节点间流转 ──
+    picked: dict             # pick_word 的产出：{term, text}
+    ai_text: str             # 该词的 ai:v3 方案正文
+    site: str                # 归类到的站点名（空串 = 归不进已有站）
+    classify_by: str         # llm / rule / none（汇总里如实展示）
+    page: dict               # 解析出的页面结构
+    work: str                # render_files 返回的本地仓库路径
+    sha: str                 # git_push 返回的 commit sha
+    url: str                 # 验活命中的线上 URL
+    live_ok: bool
+    stage: str               # 走到了哪一步（summary 与失败定位用）
+    error: str               # 第一个失败的步骤 + 原因
+
+    # ── 输出（run_page_build 直接取用）──
+    summary: dict[str, Any]
+
+
+def initial_page_build_state(term: str = "", confirm: bool = False,
+                             status_filter: str = "todo") -> PageBuildState:
+    """构造建页线一轮的入口状态（与前两个工厂对称）。"""
+    return {
+        "term": str(term or ""),
+        "confirm": bool(confirm),
+        "status_filter": str(status_filter or "todo"),
+        "picked": {},
+        "ai_text": "",
+        "site": "",
+        "classify_by": "",
+        "page": {},
+        "work": "",
+        "sha": "",
+        "url": "",
+        "live_ok": False,
+        "stage": "plan",
+        "error": "",
+        "summary": {},
+    }

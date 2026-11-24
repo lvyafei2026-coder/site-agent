@@ -6,6 +6,7 @@
 
 线 1｜常规运营  normal_graph.py   build_normal_graph / get_normal_graph / run_workflow  （POST /run）
 线 2｜热词分析  hotword_graph.py  build_hotword_graph / get_hotword_graph / run_hotwords（POST /hotwords）
+线 3｜热词创页  page_graph.py     build_page_graph / get_page_graph / run_page_build（POST /page）
 
 两条线互不嵌套、各有独立 API，但**机制同构**：装配 → 单例 → initial_*_state →
 run_traced（共用驱动器 + 各自快照）→ 终态 + trace + langsmith + traceRun。
@@ -19,8 +20,12 @@ from src.app.graph.hotword_graph import (  # noqa: F401
 from src.app.graph.normal_graph import (  # noqa: F401
     build_normal_graph, get_normal_graph, run_workflow,
 )
+from src.app.graph.page_graph import (  # noqa: F401
+    build_page_graph, get_page_graph, run_page_build,
+)
 
 __all__ = [
     "get_normal_graph", "build_normal_graph", "run_workflow",
     "get_hotword_graph", "build_hotword_graph", "run_hotwords",
+    "get_page_graph", "build_page_graph", "run_page_build",
 ]

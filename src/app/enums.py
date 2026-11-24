@@ -86,6 +86,12 @@ class GraphNode(StrEnum):
     WRITE_RESULT = "write_result"   # 结论回写（步骤名与之一致）
     COLLECT_WORD = "collect_word"   # 该词结果落进 results + 轮次计数
 
+    # 建页子图（graph/page_graph.py）：一条待开发词 → 一页上线的固定串形流程
+    PAGE_PLAN = "page_plan"         # 取词 + 归类站点 + 解析方案正文成页面结构
+    PAGE_RENDER = "page_render"     # 渲染 HTML + sitemap（步骤名 render → render_files）
+    PAGE_PUSH = "page_push"         # push 仓库（步骤名 push → git_push，成功即落台账）
+    PAGE_VERIFY = "page_verify"     # 线上验活（步骤名 verify → check_live_page）
+
 
 class RouteTag(StrEnum):
     """节点路由标签：edges.py 依此决定下一条边（两条线共用同一套写法）。"""
@@ -98,7 +104,24 @@ class RouteTag(StrEnum):
     SUMMARIZE = "summarize"  # 热词取尽 / 达上限 / KV 失败 → build_summary
     ANALYZE = "analyze"      # 取到词了 → 进逐词子图
     NEXT = "next"            # 逐词子图：LLM 出了结论 → 继续走后置动作
+    STOP = "stop"            # 建页子图：前置阶段失败 / dry-run → 直接收尾，不再往后走
     COLLECT = "collect"      # 逐词子图：LLM 失败 / 没有后置动作 → 直接落账
+
+
+class PageBuildStep(StrEnum):
+    """建页子图的固定步骤（graph/page_graph.py），与 HotwordStep 同一口径：
+
+    图连线（page_graph.py）、工具路由表（tool_service.PAGE_STEP_TOOLS）共用。
+    pick / classify / build 是纯业务（KV 读 + LLM 归类 + 解析方案正文），不经 registry；
+    render / push / verify 才是工具步骤。
+    """
+
+    PICK = "pick"        # 从 todo 池取一条词（连带 ai:v3 分析正文）
+    CLASSIFY = "classify"  # LLM 归类到已有子站（extraction 的 target_site + 规则兜底）
+    BUILD = "build"      # 解析方案正文成页面结构（slug/title/sections/faq）
+    RENDER = "render"    # render_files：渲染 + sitemap + git add
+    PUSH = "push"        # git_push：推送触发构建（成功即落 agent_pages）
+    VERIFY = "verify"    # check_live_page：线上验活，成功置 verified
 
 
 class HotwordStep(StrEnum):
@@ -122,6 +145,7 @@ class TraceName(StrEnum):
 
     WORKFLOW_RUN = "site-agent:workflow-run"  # 常规线一轮（POST /run）
     HOTWORD_RUN = "site-agent:hotword-run"    # 热词线一轮（POST /hotwords）
+    PAGE_RUN = "site-agent:page-run"          # 建页线一轮（POST /page，一条词一页）
 
 
 class ToolKind(StrEnum):

@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from langgraph.graph import END
+
 from src.app.config import settings
 from src.app.enums import GraphNode, RouteTag
 from src.app.graph.state import HotwordLoopState, WorkflowState
@@ -94,3 +96,31 @@ def route_after_llm(state: HotwordLoopState) -> str:
     这里只判「有没有结论」，不认识具体步骤名。
     """
     return RouteTag.NEXT if state.get("ai") else RouteTag.COLLECT
+
+
+# ── 建页线（graph/page_graph.py）：plan 出预览/失败就停，push 落账后没失败才验活 ──
+
+def route_after_plan(state) -> str:
+    """plan 失败 / 归类不出站点 / confirm=False（dry-run 预览）→ 直接收尾，不碰写工具。"""
+    if state.get("error") or not state.get("confirm"):
+        return RouteTag.STOP
+    return RouteTag.NEXT
+
+
+PAGE_PLAN_EDGE_MAP = {
+    RouteTag.NEXT: GraphNode.PAGE_RENDER,
+    RouteTag.STOP: END,
+}
+
+
+def route_after_push(state) -> str:
+    """push 成功才验活；失败（含前面渲染失败的透传）→ 直接收尾。"""
+    if state.get("error"):
+        return RouteTag.STOP
+    return RouteTag.NEXT
+
+
+PAGE_PUSH_EDGE_MAP = {
+    RouteTag.NEXT: GraphNode.PAGE_VERIFY,
+    RouteTag.STOP: END,
+}

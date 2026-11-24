@@ -17,7 +17,7 @@ cp .env.example .env                              # 不填任何凭据也能跑
 
 ```bash
 pytest -q                                          # 全量单测
-python -m src.app.main                             # 常驻 HTTP：/run 用户线 + /hotwords 热词线
+python -m src.app.main                             # 常驻 HTTP：/run 用户线 + /hotwords 热词线 + /page 建页线
 curl -s localhost:10000/health
 curl -s localhost:10000/llm-quota                  # LLM 剩余额度（每次消耗 1 次请求额度）
 curl -s -X POST localhost:10000/run \
@@ -294,7 +294,7 @@ env 改 `MEMORY_BACKEND=sqlite`、`DATABASE_URL=sqlite:////data/agent.sqlite`、
 
 ## 7. 安全
 
-1. **`/run` · `/hotwords` · `/llm-quota` 无鉴权**：正式环境必须放在网关鉴权或内网之后，
+1. **`/run` · `/hotwords` · `/page` · `/llm-quota` 无鉴权**：正式环境必须放在网关鉴权或内网之后，
    不要裸奔公网（console 侧已过 Basic Auth 再转发，直连 agent 没有这层）。
 2. **写工具不可逆**：`git_push` / `publish_devto_article` 只能由请求 `tools` 显式触发，
    调用方自己承担后果；不要把 `tools` 的来源接到不可信输入上。

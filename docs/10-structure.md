@@ -15,7 +15,7 @@
 | 生成命令 | `langgraph-init site-agent --template production` |
 | 模板档位 | `base` 最小图 / `advanced` 模块化 + 真实 LLM / `production` 全套 tooling + observability + evaluation |
 | 生成后自检 | `cd site-agent && cp .env.example .env && pip install -e . && python -m src.app.main` |
-| 本项目的入口 | `python -m src.app.main`（起 uvicorn）；HTTP 路由 `/run` · `/hotwords` · `/health` · `/llm-quota` |
+| 本项目的入口 | `python -m src.app.main`（起 uvicorn）；HTTP 路由 `/run` · `/hotwords` · `/page` · `/health` · `/llm-quota` |
 
 **不要重复生成**：CLI 没有 upgrade 子命令，在已有目录重跑会覆盖同名文件。要跟新版本只能
 另起临时目录生成一次再人工 diff，不要直接覆盖。
@@ -118,7 +118,7 @@ site-agent/
 ├── src/app/
 │   ├── main.py                  进程入口：serve()（uvicorn），无第二个单跑入口
 │   ├── config.py                Settings(settings) + INTENTS + FLEET_DOMAIN + SiteConfig/SITES
-│   ├── api/routes.py            FastAPI：POST /run、POST /hotwords、GET /health、GET /llm-quota
+│   ├── api/routes.py            FastAPI：POST /run、POST /hotwords、POST /page、GET /health、GET /llm-quota
 │   ├── graph/
 │   │   ├── __init__.py          统一门面：两图（get_user_graph / get_hotword_graph）+ 热词运行入口 run_hotwords
 │   │   ├── user_graph.py        用户线装配：get_user_graph()（主图，checkpointer）

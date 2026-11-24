@@ -25,6 +25,7 @@ POST /run → classify_intent → run_processing → validate_result
 |---|---|
 | **只读默认** | 默认编排一般只调 `read` 工具；`write`（`git_push`、`publish_devto_article`）必须由请求 `tools` 显式列出 |
 | **热词分析不是工具** | 它是编排：独立入口 `POST /hotwords` 走 `graph.run_hotwords()`（逐词循环图），不经过工具注册表。★上线前必须加访问控制 |
+| **建页不是工具** | 同为编排：独立入口 `POST /page` 走 `graph.run_page_build()`（plan→render→push→verify 串形子图）；`confirm=false` 是 dry-run，一个写动作都不发生 |
 | **写动作靠显式声明** | 不保存待审状态；`write` 工具必须由请求 `tools` 列出，热词分析的状态写入由热词图自身负责 |
 | **无 LLM 也能跑** | 没有 `LLM_API_KEY` 时意图回退 `general`、抽取走本地正则，图照样跑完；热词分析拿不到 LLM 正文会跳过该词、不编造结论 |
 | **工具失败不抛异常** | 单个数据源挂了只记 `ok=false`，由校验环节决定重试还是报错 |
@@ -34,12 +35,13 @@ POST /run → classify_intent → run_processing → validate_result
 ```bash
 pip install -e .
 cp .env.example .env
-python -m src.app.main                 # 常驻 HTTP：/run 用户线 + /hotwords 热词线
-pytest -q                              # 全量单测（含 test_hotwords.py）
+python -m src.app.main                 # 常驻 HTTP：/run 用户线 + /hotwords 热词线 + /page 建页线
+pytest -q                              # 全量单测（含 test_hotwords.py / test_page_build.py）
 ```
 
-`python -m src.app.main` 直接进 `serve()`：只起 uvicorn，两个业务线各是一个 HTTP
-入口——`POST /run`（用户线主图）与 `POST /hotwords`（热词逐词循环图）。**没有后台
+`python -m src.app.main` 直接进 `serve()`：只起 uvicorn，三条业务线各是一个 HTTP
+入口——`POST /run`（用户线主图）、`POST /hotwords`（热词逐词循环图）、
+`POST /page`（建页子图）。**没有后台
 线程、没有定时任务**：热词分析由前端按需触发，跑完即返回（一轮 1-2 分钟）。
 本地想看一轮结果直接 `curl -X POST localhost:10000/run`（热词同理 `POST /hotwords`）——
 进程里只有 HTTP 入口，没有第二个「单跑一轮」的函数。
@@ -63,6 +65,20 @@ curl -s -X POST localhost:10000/hotwords -H 'Content-Type: application/json' \
 它返回热词图自己的结果（`ok / fetched / analyzed / failed / successRate / items / traceRun`），
 不套主图 state——它本就不是主图节点。
 
+热词分析跑完后，待开发（`saved/todo` 且带 `ai:v3:` 方案正文）的词走第三条线建页：
+
+```bash
+curl -s -X POST localhost:10000/page -H 'Content-Type: application/json' \
+  -d '{}'                                  # 自动取下一条可建词，dry-run 只出预览
+curl -s -X POST localhost:10000/page -H 'Content-Type: application/json' \
+  -d '{"term":"when is black friday in canada","confirm":true}'
+```
+
+一次只建一页（逐词建页由调用方多次触发）。流程：取词 → 解析 8 小节方案正文成页面
+结构 → 归类到已有子站（LLM 的 `target_site` 优先、站点名规则兜底）→ 渲染 HTML +
+sitemap → 推 GitHub 触发 Cloudflare 自动部署（成功即落 `agent_pages` 台账）→ 线上验活。
+归不进任何已有站的词报错说明要走「建新站」（尚未实现）。
+
 热词分析链路：直读三方共用的共享 KV（radar 写入的候选池 + console 整理的
 `saved`/`rejected`/`tags`）→ 补 SERP 竞争度与 30 天趋势（读缓存，缺失现抓并写回）
 → 外部 LLM 出 8 小节站点方案 → 直写 KV（`ai:v3:` 正文 / `aihints` 信号 / `rejected`
@@ -81,11 +97,11 @@ should_continue ─┬→ fetch_one（还有词）└→ END（没有 / 达上�
 src/app/
 ├── enums.py                 ★枚举唯一真源：29 个 StrEnum 族（意图/状态/类型/kind…），逐值注释含义
 ├── main.py / config.py      进程入口（uvicorn）/ Settings 单例 + 站群清单 + 意图兼容别名
-├── api/routes.py            FastAPI /run /hotwords /health /llm-quota
-├── graph/                   user_graph（用户线）· hotword_graph（热词循环图 + 运行入口）
+├── api/routes.py            FastAPI /run /hotwords /page /health /llm-quota
+├── graph/                   user_graph（用户线）· hotword_graph（热词循环图）· page_graph（建页子图）
 │                            · state · constants(Names/Tags) · edges
-├── nodes/                   intent · processing · validation · output · error · hotword_nodes（逐词）
-├── services/                llm · prompt · tool · evaluation · hotword_service
+├── nodes/                   intent · processing · validation · output · error · hotword_nodes（逐词）· page_nodes（建页四步）
+├── services/                llm · prompt · tool · evaluation · hotword_service · page_build_service
 ├── tools/
 │   ├── base.py              契约（BaseTool / RuntimeTool / ToolOutput）
 │   ├── registry.py          门面装配（RuntimeService）+ 25 个工具注册
