@@ -89,13 +89,17 @@ def test_metrics_notify_sends_and_skips(monkeypatch):
     sent: dict = {}
     monkeypatch.setattr(metrics_mod.email, "send",
                         lambda subject, html, to=None: sent.update(subject=subject,
-                                                                   html=html) or True)
+                                                                   html=html)
+                        or {"sent": True, "detail": ""})
     out = metrics_mod.metrics_service.notify("结论：A 站最好\n排名：A > B")
     assert out["sent"] is True and "流量复盘 · " in out["subject"]
     assert sent["html"] == "结论：A 站最好<br>排名：A &gt; B"
 
-    monkeypatch.setattr(metrics_mod.email, "send", lambda subject, html, to=None: False)
-    assert metrics_mod.metrics_service.notify("x")["sent"] is False
+    monkeypatch.setattr(metrics_mod.email, "send",
+                        lambda subject, html, to=None: {"sent": False,
+                                                        "detail": "未配置 RESEND_API_KEY"})
+    out = metrics_mod.metrics_service.notify("x")
+    assert out["sent"] is False and out["detail"] == "未配置 RESEND_API_KEY"
 
 
 def test_graph_review_metrics_sends_email(graph, fake, monkeypatch):
@@ -103,7 +107,7 @@ def test_graph_review_metrics_sends_email(graph, fake, monkeypatch):
     monkeypatch.setattr(metrics_mod, "complete_text",
                         lambda system, user, warn_event="": "A 站表现最好")
     monkeypatch.setattr(metrics_mod.email, "send",
-                        lambda subject, html, to=None: True)
+                        lambda subject, html, to=None: {"sent": True, "detail": ""})
 
     r = graph.invoke({"input_text": "复盘各站点击表现", "intent": "review_metrics",
                       "retry_count": 0, "messages": [], "tool_results": {}},

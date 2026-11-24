@@ -22,7 +22,7 @@ class NotificationOps:
     """notification 域的实现：只碰 adapters/notification。"""
 
     def send_notice(self, subject, html):
-        return {"sent": bool(email.send(subject, html))}
+        return email.send(subject, html)
 
 
 class SendNoticeTool(RuntimeTool):

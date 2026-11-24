@@ -24,12 +24,14 @@ def _from() -> str:
     return env("MAIL_FROM", f"site-agent <{CONTACT_EMAIL}>")
 
 
-def send(subject: str, html: str, to: str | None = None) -> bool:
+def send(subject: str, html: str, to: str | None = None) -> dict:
+    """返回 {sent, detail}：detail 说明跳过/失败原因，供调用方回传给上游排查。"""
     api_key = env("RESEND_API_KEY")
     recipient = to or env("ADMIN_EMAIL")
     if not api_key or not recipient:
-        log.warning("未配置 RESEND_API_KEY / ADMIN_EMAIL，邮件跳过：%s", subject)
-        return False
+        missing = [k for k, v in (("RESEND_API_KEY", api_key), ("ADMIN_EMAIL", recipient)) if not v]
+        log.warning("未配置 %s，邮件跳过：%s", "/".join(missing), subject)
+        return {"sent": False, "detail": f"未配置 {'/'.join(missing)}"}
     try:
         resp = requests.post(
             RESEND_API,
@@ -39,8 +41,8 @@ def send(subject: str, html: str, to: str | None = None) -> bool:
         )
         if resp.status_code >= 300:
             log.warning("邮件发送失败 %s: %s", resp.status_code, resp.text[:200])
-            return False
-        return True
+            return {"sent": False, "detail": f"Resend {resp.status_code}: {resp.text[:200]}"}
+        return {"sent": True, "detail": ""}
     except requests.RequestException as exc:
         log.warning("邮件发送异常：%s", exc)
-        return False
+        return {"sent": False, "detail": str(exc)}

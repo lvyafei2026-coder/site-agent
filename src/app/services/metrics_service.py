@@ -70,8 +70,8 @@ class MetricsService:
         email.send 内部已把「未配置」「发送失败」分开记日志；这里只如实回传结果。
         """
         subject = f"流量复盘 · {_report_date()}"
-        sent = email.send(subject, _markdown_to_html(analysis))
-        return {"sent": sent, "subject": subject}
+        receipt = email.send(subject, _markdown_to_html(analysis))
+        return {"sent": receipt["sent"], "detail": receipt.get("detail", ""), "subject": subject}
 
 
 metrics_service = MetricsService()
