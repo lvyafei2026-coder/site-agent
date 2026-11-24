@@ -21,7 +21,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from src.app.config import REPO_DIR, SiteConfig, env
+from src.app.config import CONTACT_EMAIL, REPO_DIR, SiteConfig, env
 from src.app.tools.adapters.publishing.github_repo import ensure_repo
 
 
@@ -93,7 +93,13 @@ def _js_syntax_ok(text: str) -> bool:
 
 
 def _git(cwd: Path, *args: str) -> str:
-    proc = subprocess.run(["git", *args], cwd=str(cwd),
+    cmd = ["git"]
+    if args and args[0] == "commit":
+        # Render 容器没有全局 git 身份；commit 必须显式带（与 site_scaffold/github_repo 同口径）。
+        cmd += ["-c", f"user.name={env('GIT_AUTHOR_NAME', 'site-agent')}",
+                "-c", f"user.email={env('GIT_AUTHOR_EMAIL', CONTACT_EMAIL)}"]
+    cmd += [*args]
+    proc = subprocess.run(cmd, cwd=str(cwd),
                           capture_output=True, text=True, timeout=180)
     if proc.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} 失败: {proc.stderr.strip()[:400]}")
