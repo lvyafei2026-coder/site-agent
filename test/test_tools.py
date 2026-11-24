@@ -54,6 +54,22 @@ def test_unknown_tool_is_reported():
     assert out["not_a_tool"]["ok"] is False
 
 
+def test_tool_args_merge_overrides_preset(fake):
+    """点名工具的 tool_args 与 TOOL_ARGS 预置合并（请求侧赢），没有预置的空入参工具靠它拿参数。"""
+    from src.app.services.tool_service import tool_service
+
+    out = tool_service.execute_for_intent(
+        "general", "x", {}, tools=["get_hotwords"],
+        tool_args={"get_hotwords": {"limit": 3, "status": "doing"}})
+    assert out["get_hotwords"]["ok"] is True
+    assert len(out["get_hotwords"]["result"]["items"]) == 2   # fake 池只有 2 条，limit=3 生效
+
+    out = tool_service.execute_for_intent(
+        "general", "x", {}, tools=["launch_new_site"],
+        tool_args={"launch_new_site": {"name": "freshsite"}})
+    assert out["launch_new_site"]["tool"] == "launch_new_site"   # 不再因缺 name 报 pydantic 错
+
+
 def test_unknown_step_is_reported():
     """步骤名不在路由表里就返回失败信封，而不是拿 KeyError 打断整轮。"""
     from src.app.services.tool_service import tool_service

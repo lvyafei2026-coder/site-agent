@@ -88,6 +88,7 @@ def _run_outputs(out: dict[str, Any]) -> dict[str, Any]:
           outputs=_run_outputs, tags=["site-agent"], link="traceRun")
 def run_workflow(input_text: str, *, intent: Optional[str] = None,
                  tools: Optional[list[str]] = None,
+                 tool_args: Optional[dict[str, dict]] = None,
                  prompt_versions: Optional[dict[str, str]] = None,
                  thread_id: Optional[str] = None) -> dict[str, Any]:
     """跑一轮常规线主图（与热词线 run_hotwords 同一套机制）。
@@ -97,6 +98,7 @@ def run_workflow(input_text: str, *, intent: Optional[str] = None,
     thread_id 决定 checkpointer 的会话归属，可按同一 thread 续跑、中断恢复。
     """
     state = initial_workflow_state(input_text, intent=intent, tools=tools,
+                                   tool_args=tool_args,
                                    prompt_versions=prompt_versions)
     thread_id = thread_id or f"run-{int(time.time() * 1000)}"
     final, trace = run_traced(

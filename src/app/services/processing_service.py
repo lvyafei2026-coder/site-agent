@@ -29,7 +29,8 @@ from src.app.tools.base import is_retryable_error
 
 class ProcessingService:
     def run(self, text: str, intent: str, versions: dict[str, str] | None = None,
-            requested_tools: list[str] | None = None) -> dict:
+            requested_tools: list[str] | None = None,
+            tool_args: dict[str, dict] | None = None) -> dict:
         """返回 {extracted, results, fatal, error, metrics_analysis, metrics_notice,
         outreach_result}，由节点写回 state。"""
         extracted = extraction_service.extract(text, intent, versions)
@@ -43,7 +44,8 @@ class ProcessingService:
         try:
             results = tool_service.execute_for_intent(
                 intent=intent, text=text, extracted=extracted,
-                tools=requested_tools, prompt_versions=versions)
+                tools=requested_tools, tool_args=tool_args,
+                prompt_versions=versions)
         except Exception as exc:  # noqa: BLE001 - 工具抛未捕获异常（非 RuntimeTool 安全网）
             # 只有「明确非网络失败」才短路；网络超时类交给 validation 重试。
             if not is_retryable_error(exc):

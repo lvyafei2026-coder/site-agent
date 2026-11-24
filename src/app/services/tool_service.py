@@ -65,13 +65,14 @@ class ToolService:
         # 复用 tools/registry.py 的那个单例，避免工具被实例化两遍
         self.registry = tool_registry
 
-    def _run(self, name: str, **kwargs):
+    def _run(self, tool: str, **kwargs):
         """按 registry 工具名调一个工具，返回统一 ToolOutput dict。
 
         私有：两条线的调用方都只能通过名字表分发进来（execute_for_intent /
         execute_for_step），不允许把工具名字面量写回节点。
+        形参叫 tool 不叫 name：工具入参（如 launch_new_site）也有 name 字段，避免撞名。
         """
-        return self.registry.run(name, **kwargs)
+        return self.registry.run(tool, **kwargs)
 
     def execute_for_step(self, step: str, **kwargs) -> dict:
         """热词线：逐词步骤名 → 该步的工具，参数由节点按这一步的需要给出。"""
@@ -89,6 +90,7 @@ class ToolService:
 
     def execute_for_intent(self, intent: str, text: str,
                            extracted: dict, tools: list[str] | None = None,
+                           tool_args: dict[str, dict] | None = None,
                            prompt_versions: dict[str, str] | None = None) -> dict:
         names = list(tools) if tools else list(
             INTENT_TOOLS.get(intent, INTENT_TOOLS[Intent.GENERAL.value]))
@@ -100,6 +102,8 @@ class ToolService:
                 continue
             builder = TOOL_ARGS.get(name)
             kwargs = builder(text, extracted) if builder else {}
+            if tool_args and name in tool_args:
+                kwargs = {**kwargs, **tool_args[name]}
             results[name] = self._run(name, **kwargs)
         return results
 

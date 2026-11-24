@@ -44,6 +44,10 @@ class WorkflowState(TypedDict, total=False):
     """可选输入。显式指定本轮调用的工具名列表，覆盖 INTENT_TOOLS 默认集。
     None = 按意图默认集（只含 read 工具）；显式传 write 工具名（如 git_push）才会触发不可逆写——这是当前唯一的写工具开关。"""
 
+    tool_args: dict[str, dict]
+    """可选输入。点名工具的入参，形如 {"launch_new_site": {"name": "invoices"}}；
+    没点名的工具忽略此项，仍走 TOOL_ARGS 预置。缺省为空 dict。"""
+
     # ── 中间变量（节点产出，节点间流动）───────────────────────────
     confidence: float
     """intent 节点产出。意图分类置信度 0~1（强制指定时为 1.0，LLM 失败回退 0.55）；
@@ -102,6 +106,7 @@ def initial_workflow_state(
     *,
     intent: str | None = None,
     tools: list[str] | None = None,
+    tool_args: dict[str, dict] | None = None,
     prompt_versions: dict[str, str] | None = None,
 ) -> WorkflowState:
     """构造常规线一轮的入口状态（与 initial_hotword_state 对称）。"""
@@ -112,6 +117,7 @@ def initial_workflow_state(
         "prompt_versions": dict(prompt_versions or settings.default_prompt_versions),
         "tool_results": {},
         "requested_tools": tools,
+        "tool_args": dict(tool_args or {}),
     }
     if intent:
         state["intent"] = intent

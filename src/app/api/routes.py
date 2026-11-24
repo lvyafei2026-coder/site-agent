@@ -31,6 +31,7 @@ class WorkflowRequest(BaseModel):
     input_text: str
     intent: str | None = None
     tools: list[str] | None = None
+    tool_args: dict[str, dict] | None = None   # 点名工具的入参，如 {"launch_new_site": {"name": "x"}}
     prompt_versions: dict[str, str] | None = None
     thread_id: str | None = None
 

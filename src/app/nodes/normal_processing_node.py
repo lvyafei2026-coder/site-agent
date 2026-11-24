@@ -28,7 +28,8 @@ def processing_node(state: WorkflowState) -> WorkflowState:
     step = processing_service.run(
         text=state.get("input_text", ""), intent=intent,
         versions=state.get("prompt_versions"),
-        requested_tools=state.get("requested_tools"))
+        requested_tools=state.get("requested_tools"),
+        tool_args=state.get("tool_args") or {})
 
     logger.info("processing_node", extra={"intent": intent,
                                           "tool_count": len(step["results"]),

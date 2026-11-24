@@ -155,8 +155,9 @@ class ToolRegistry:
     def get(self, name: str) -> BaseTool:
         return self._tools[name]
 
-    def run(self, name: str, **kwargs):
-        return self.get(name).run(**kwargs)
+    def run(self, tool: str, **kwargs):
+        """形参叫 tool 不叫 name：工具入参（如 launch_new_site）也有 name 字段，避免撞名。"""
+        return self.get(tool).run(**kwargs)
 
     def names(self) -> list[str]:
         return list(self._tools)
