@@ -103,6 +103,12 @@ def connect_build(site: SiteConfig) -> dict[str, Any]:
             "build_token_uuid": _token_uuid(),
         },
         "previews_enabled": False,
+        # ★previews_base_config 是必填（官方文档正文没写明），缺了整包 12002 Invalid request body
+        "previews_base_config": {
+            "build_command": "npm run build",
+            "deploy_command": "npx wrangler preview",
+            "build_token_uuid": _token_uuid(),
+        },
     })
     return {"ok": True, "created": True, "worker": site.repo_name,
             "tag": tag, "repo": info["full_name"]}
