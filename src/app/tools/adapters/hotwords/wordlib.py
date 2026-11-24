@@ -58,10 +58,25 @@ _EXAMPLE_SKIP_RX = re.compile(
 
 # ---- 读侧：候选池快照 ----
 
+def _filter_interests(interests: dict, items: list) -> dict:
+    """interests 摘要表只保留本次返回词的条目。
+
+    全库 interests 是历史分析逐词累积的（几百条很正常），原样透出只会变成
+    前端「30 天兴趣曲线」里的无关噪音、白占 LLM 上下文——AI 判据从不看它，
+    唯一消费方就是按词展示的面板。键两侧都过 term_key，容忍形状漂移。
+    """
+    wanted = set()
+    for it in items if isinstance(items, list) else []:
+        if isinstance(it, dict):
+            k = it.get("key") or it.get("term")
+            if k:
+                wanted.add(term_key(k))
+    return {k: v for k, v in interests.items() if term_key(k) in wanted}
+
+
 def _read(kv: CloudflareKV, status: str, limit: int, light: bool) -> dict[str, Any]:
     # ★这三张表由 radar / console 写，形状漂移时按空处理，不能让整次工具调用失败
     meta = kv_dict(kv, "meta")
-    interests = {} if light else kv_dict(kv, INTERESTS_KEY)
 
     # 跟进状态（todo / wip / live / parked）只存在 saved 表，candidates 条目本身
     # 不带 status。word_create_page 取「待开发」时直接回 saved 过滤，查不到就给空——
@@ -69,10 +84,12 @@ def _read(kv: CloudflareKV, status: str, limit: int, light: bool) -> dict[str, A
     if status != CandidateStatus.DOING.value:
         rows = [r for r in kv_list(kv, SAVED_KEY)
                 if isinstance(r, dict) and r.get("status") == status]
+        rows = rows[:limit or None]
         # query 字段告诉消费方（前端 / LLM）：本次查的是 saved 表哪个状态、命中几条——
         # meta 里的 termsCount / candCount / dropped 是雷达抓取轮次的统计，与本次查询无关，
         # 不带 query 时前端按「候选池快照」口径展示 meta。
-        return {"items": rows[:limit or None], "meta": meta, "interests": interests,
+        return {"items": rows, "meta": meta, "interests": {} if light else
+                _filter_interests(kv_dict(kv, INTERESTS_KEY), rows),
                 "query": {"status": status, "matched": len(rows)}}
 
     candidates = kv_list(kv, CANDIDATES_KEY)
@@ -84,12 +101,13 @@ def _read(kv: CloudflareKV, status: str, limit: int, light: bool) -> dict[str, A
                     and i.get("status", CandidateStatus.DOING.value) == status]
         items = filtered or items
 
-    return {"items": items, "meta": meta, "interests": interests}
+    return {"items": items, "meta": meta, "interests": {} if light else
+            _filter_interests(kv_dict(kv, INTERESTS_KEY), items)}
 
 
 def snapshot(status: str = CandidateStatus.DOING.value, limit: int = 40,
              light: bool = False) -> dict[str, Any]:
-    """给 Agent 的完整快照：候选 + meta + interests。
+    """给 Agent 的完整快照：候选 + meta + interests（interests 只带本次返回词的条目）。
     status=doing（默认）读 candidates 未跟进词；其他状态（todo 等）读 saved 表过滤——
     跟进状态只存在 saved，candidates 条目不带 status。"""
     kv = get_kv()
