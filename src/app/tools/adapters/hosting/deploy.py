@@ -41,7 +41,11 @@ def _token_uuid() -> str:
 
 def worker_exists(name: str) -> bool:
     scripts = workers.result("GET", "workers", "scripts")
-    return any(s.get("id") == name for s in scripts)
+    if any(s.get("id") == name for s in scripts):
+        return True
+    # 空壳 Worker（还没被 Builds 部署过脚本）不出现在 scripts 列表里，单独探一次
+    probe = workers.request("GET", "workers", "workers", name)
+    return probe.status_code == 200
 
 
 def create_worker(name: str) -> dict[str, Any]:
@@ -59,6 +63,11 @@ def _worker_tag(name: str) -> str:
             tag = s.get("tag", "")
             if tag:
                 return tag
+    # 空壳 Worker 不在 scripts 列表里：GET workers/workers/{name} 的 id 就是 script tag
+    info = workers.result("GET", "workers", "workers", name)
+    tag = info.get("id", "")
+    if tag:
+        return tag
     raise RuntimeError(f"Worker {name} 拿不到 tag（Workers Scripts Read）")
 
 
