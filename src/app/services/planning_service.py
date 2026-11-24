@@ -37,12 +37,15 @@ def _sites_line() -> str:
 
 
 def _compact_payload(results: dict) -> str:
-    """把三个工具的结果压成 LLM 易读的精简 JSON：只取 ok 工具的 result，过长截断。"""
-    slim: dict = {}
+    """把三个工具的结果压成 LLM 易读的精简 JSON：只取 ok 工具的 result，过长截断。
+
+    ★sites 放最前：payload 超 MAX_PAYLOAD_CHARS 时从尾部截断，工具结果（尤其
+    get_hotwords 的 20 条）排在后面被截没关系，站点清单被截掉 LLM 就只能给「待定」。
+    """
+    slim: dict = {"sites": _sites_line()}
     for name, out in (results or {}).items():
         if isinstance(out, dict) and out.get("ok"):
             slim[name] = out.get("result")
-    slim["sites"] = _sites_line()
     try:
         text = json.dumps(slim, ensure_ascii=False, default=str)
     except TypeError:
