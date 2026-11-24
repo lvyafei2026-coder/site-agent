@@ -199,7 +199,7 @@ def test_connect_build_full_flow(site, monkeypatch):
     assert out["ok"] is True and out["created"] is True and out["tag"] == "tag1"
     post = next(c for c in builds_fake.calls if c[0] == "POST" and "builds/workers" in c[1])
     body = post[2]
-    assert body["script_tag"] == "tag1" and body["git_repository"]["repo_id"] == 7
+    assert body["script_tag"] == "tag1" and body["git_repository"]["repo_id"] == "7"
     assert body["production_settings"]["deploy_command"] == "npx wrangler deploy"
     assert body["production_settings"]["build_token_uuid"] == "bt-1"
 

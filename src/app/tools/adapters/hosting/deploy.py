@@ -82,10 +82,11 @@ def connect_build(site: SiteConfig) -> dict[str, Any]:
     builds.result("POST", "builds", "workers", json={
         "script_tag": tag,
         "git_repository": {
+            # Builds API 这些 id 字段只收字符串，传 GitHub 的 int 会 12002 Invalid request body
             "provider_type": "github",
-            "provider_account_id": info["owner"]["id"],
+            "provider_account_id": str(info["owner"]["id"]),
             "provider_account_name": info["owner"]["login"],
-            "repo_id": info["id"], "repo_name": info["name"], "branch": site.branch,
+            "repo_id": str(info["id"]), "repo_name": info["name"], "branch": site.branch,
         },
         "production_settings": {
             "build_command": "npm run build",
