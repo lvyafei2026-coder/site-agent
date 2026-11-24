@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 
+from src.app.config import SITES
 from src.app.enums import PromptTask
 from src.app.llm.completion import complete_text
 from src.app.observability.langsmith import traceable
@@ -25,12 +26,23 @@ from src.app.utils.text import clip_with_count
 MAX_PAYLOAD_CHARS = 8000
 
 
+def _sites_line() -> str:
+    """站群清单（name + brand）随排产 payload 一起给 LLM。
+
+    落站匹配不能只依赖 get_page_inventory 的已建页风格——新站群冷启动时那张表
+    是空的，没有这份清单 LLM 只能给「待定」。brand / repo 名自带语义
+    （ai-background-remover 之类），足以按词义直接落站，不捏造。
+    """
+    return [{"name": s.name, "brand": s.brand} for s in SITES.values()]
+
+
 def _compact_payload(results: dict) -> str:
     """把三个工具的结果压成 LLM 易读的精简 JSON：只取 ok 工具的 result，过长截断。"""
     slim: dict = {}
     for name, out in (results or {}).items():
         if isinstance(out, dict) and out.get("ok"):
             slim[name] = out.get("result")
+    slim["sites"] = _sites_line()
     try:
         text = json.dumps(slim, ensure_ascii=False, default=str)
     except TypeError:
