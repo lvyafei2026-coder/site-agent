@@ -69,7 +69,11 @@ def _read(kv: CloudflareKV, status: str, limit: int, light: bool) -> dict[str, A
     if status != CandidateStatus.DOING.value:
         rows = [r for r in kv_list(kv, SAVED_KEY)
                 if isinstance(r, dict) and r.get("status") == status]
-        return {"items": rows[:limit or None], "meta": meta, "interests": interests}
+        # query 字段告诉消费方（前端 / LLM）：本次查的是 saved 表哪个状态、命中几条——
+        # meta 里的 termsCount / candCount / dropped 是雷达抓取轮次的统计，与本次查询无关，
+        # 不带 query 时前端按「候选池快照」口径展示 meta。
+        return {"items": rows[:limit or None], "meta": meta, "interests": interests,
+                "query": {"status": status, "matched": len(rows)}}
 
     candidates = kv_list(kv, CANDIDATES_KEY)
     items = candidates if not limit else candidates[:limit]
