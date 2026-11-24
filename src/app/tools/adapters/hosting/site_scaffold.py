@@ -22,7 +22,7 @@ from typing import Any
 
 import requests
 
-from src.app.config import REPO_DIR, SiteConfig, env
+from src.app.config import CONTACT_EMAIL, REPO_DIR, SiteConfig, env
 
 os_env = __import__("os").environ
 os_env.setdefault("GIT_TERMINAL_PROMPT", "0")
@@ -144,7 +144,13 @@ def init_and_push(work: Path, repo_full: str, branch: str) -> str:
     token = env("GITHUB_TOKEN", required=True)
     url = f"https://x-access-token:{token}@github.com/{repo_full}.git"
     def run(*args: str) -> None:
-        proc = subprocess.run(["git", *args], cwd=str(work),
+        cmd = ["git"]
+        if args and args[0] == "commit":
+            # Render 容器没有全局 git 身份；commit 必须显式带，否则整条推送链挂掉。
+            cmd += ["-c", f"user.name={env('GIT_AUTHOR_NAME', 'site-agent')}",
+                    "-c", f"user.email={env('GIT_AUTHOR_EMAIL', CONTACT_EMAIL)}"]
+        cmd += [*args]
+        proc = subprocess.run(cmd, cwd=str(work),
                               capture_output=True, text=True, timeout=180)
         if proc.returncode != 0:
             raise RuntimeError(f"git {' '.join(args)} 失败: {proc.stderr.strip()[:400]}")
