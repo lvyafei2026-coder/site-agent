@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""热词分析：提示词拼装、结论/红线/标签判据、作品硬证据、意图→工具映射，以及
+"""候选池分析：提示词拼装、结论/红线/标签判据、作品硬证据、意图→工具映射，以及
 run_hotwords 经共享 KV 的端到端写回（不碰 console / radar / OpenAI / DDG / Google）。
 
 2026-11-12 去接口化后，run_hotwords 直接读写共享 KV（见 ../cloudflare/kv.py）。这里用

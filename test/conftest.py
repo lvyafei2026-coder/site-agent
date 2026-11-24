@@ -279,14 +279,14 @@ def graph(fake):
 # 桩文本放在 test/ 下（test_prompts.py 的 FORBIDDEN_IN_CODE 只扫 src/app/**/*.py，
 # 不扫测试目录），这样生产代码里依然没有任何提示词字面量。
 _PROMPT_STUB_SYSTEM_V1 = (
-    "热词分析 system 桩 v1\n"
+    "候选池分析 system 桩 v1\n"
     "⓪ 先辨形 · ③ 其余情况\n"
     "1) 词义 2) 信号 7) 结论\n"
     "7) 结论：做 / 观望 / 不做\n"
     "8) 信号标签：工具查询、日程日期\n"
 )
 _PROMPT_STUB_SYSTEM_V2 = (
-    "热词分析 system 桩 v2\n"
+    "候选池分析 system 桩 v2\n"
     "非工具意图 · 时效资讯 · 热度走弱 · 专名释义\n"
     "观望」是稀缺档\n"
     "1) 词义 2) 信号 7) 结论\n"

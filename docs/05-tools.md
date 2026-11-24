@@ -2,7 +2,7 @@
 
 > 25 个工具一张表；意图到工具集的映射；站点清单字段；新增工具的检查清单。
 > 契约与实现细节见 `03-tech-design.md §5`。
-> 热词分析不是工具：它是 `graph.run_hotwords()` 编排，在 API 入口按意图分流。
+> 候选池分析不是工具：它是 `graph.run_hotwords()` 编排，在 API 入口按意图分流。
 
 ## 1. 全量工具（25）
 
@@ -13,9 +13,9 @@
 
 | name | kind | method | 参数 | 用途 |
 |---|---|---|---|---|
-| `get_hotwords` | read | `hotwords` | `status=doing|todo`、`limit=40` | 读共享 KV 的候选词（radar 抓取写入），返回 `items` + `meta`（`updatedMs` / `geosOk` / `raw`）。**判断有没有新数据要看 meta**。`doing`=未跟进（读 candidates）；`todo`=待开发（读 saved 表过滤，即热词分析判「做」的产出，word_plan_page 排产用），查不到给空、不回落全量 |
+| `get_hotwords` | read | `hotwords` | `status=doing|todo`、`limit=40` | 读共享 KV 的候选词（radar 抓取写入），返回 `items` + `meta`（`updatedMs` / `geosOk` / `raw`）。**判断有没有新数据要看 meta**。`doing`=未跟进（读 candidates）；`todo`=待开发（读 saved 表过滤，即候选池分析判「做」的产出，word_plan_page 排产用），查不到给空、不回落全量 |
 
-> 热词分析**不是工具**，走独立入口 `POST /hotwords`。它是编排：读三方共用的共享 KV
+> 候选池分析**不是工具**，走独立入口 `POST /hotwords`。它是编排：读三方共用的共享 KV
 > （radar 候选池 + console 整理的 `saved`/`rejected`/`tags`）→ 补 SERP 竞争度与
 > 30 天趋势（读缓存，缺失现抓并写回）→ LLM 出 8 小节站点方案 → 直写 KV
 > （`ai:v3:` 正文 / `aihints` / `rejected` / `saved`）。实现见
@@ -81,9 +81,9 @@
 | `review_metrics` | `get_click_stats` + `get_search_analytics` + `get_page_inventory` | `get_click_stats` 现按站点×事件类型聚合；取数后 `run_processing` 再调 LLM `analyze_metrics`（提示词在 D1 的 `review_metrics` task）比对各站 PV/UV/点击/搜索，输出「表现好的站点」排名与理由，并入 `output` 报告，并通过 Resend 推送复盘邮件（`metrics_notice.sent` 为回执，缺 RESEND_API_KEY/ADMIN_EMAIL 时 sent=False 不阻塞） |
 | `general` | `get_pending_events` + `get_reflections` |
 
-默认集只含 read 工具。热词分析是编排而非工具，走独立入口 `POST /hotwords`，不占工具注册表；
+默认集只含 read 工具。候选池分析是编排而非工具，走独立入口 `POST /hotwords`，不占工具注册表；
 因此 `services/tool_service.py` 的意图映射里没有 `analyze_hotwords`。
-`TOOL_ARGS`（`services/tool_service.py`）给几个工具预置参数：热词取 20 条（`status=todo` 待开发池，承接热词分析的产出）、页面台账取 `mode=new` 10 条、Reddit 搜索词取请求文本前 80 字等。
+`TOOL_ARGS`（`services/tool_service.py`）给几个工具预置参数：热词取 20 条（`status=todo` 待开发池，承接候选池分析的产出）、页面台账取 `mode=new` 10 条、Reddit 搜索词取请求文本前 80 字等。
 
 请求里传 `tools` 会完全覆盖默认集，包含写工具也一样——这是触发不可逆动作的
 唯一开关：

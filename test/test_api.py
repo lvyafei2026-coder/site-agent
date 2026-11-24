@@ -48,7 +48,7 @@ def test_http_validation_error():
 
 
 def test_hotwords_is_a_separate_entry(fake, monkeypatch):
-    """热词分析是独立入口，不再混在 /run 的 intent 分流里。"""
+    """候选池分析是独立入口，不再混在 /run 的 intent 分流里。"""
     import src.app.api.routes as routes
 
     seen = {}

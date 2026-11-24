@@ -35,7 +35,7 @@ def page_plan(state: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {"stage": "plan"}
     picked = page_build_service.pick_word(state.get("term") or None)
     if not picked:
-        return {**out, "error": "待开发池里没有带分析正文的词（先在 /agent 跑「热词分析」）"}
+        return {**out, "error": "待开发池里没有带分析正文的词（先在 /agent 跑「候选池分析」）"}
     page = page_build_service.parse_page(picked["term"], picked["text"])
     cls = page_build_service.classify_site(picked["term"], picked["text"])
     if not cls["site"]:

@@ -59,7 +59,7 @@ curl -s -X POST localhost:10000/run \
 | `SITES_FILE` | 否 | 站点清单路径，默认 `config/sites.json` |
 | `AGENT_STATE_DIR` | 否 | 本地仓库副本根目录，默认 `data/`；生产 `/data` |
 | `CF_ACCOUNT_ID` / `CF_API_TOKEN` / `D1_DATABASE_ID` | 是 | D1 读写 |
-| `KV_NAMESPACE_ID` | 是 | Workers KV（★热词分析必须）：与 radar / console 共用同一个 RADAR_KV 命名空间，键与 console/radar 对齐（`ai:v3:` / `serp:v1:` / `trend:v1:` / `saved` / `rejected` 等），agent 经 Cloudflare KV REST API 直读直写，不调它们的 App 接口 |
+| `KV_NAMESPACE_ID` | 是 | Workers KV（★候选池分析必须）：与 radar / console 共用同一个 RADAR_KV 命名空间，键与 console/radar 对齐（`ai:v3:` / `serp:v1:` / `trend:v1:` / `saved` / `rejected` 等），agent 经 Cloudflare KV REST API 直读直写，不调它们的 App 接口 |
 | `GITHUB_TOKEN` / `GH_ORG` | 是 | 仓库 clone / push / check run |
 | `GSC_SA_JSON` / `GSC_PROPERTY` | 否 | 有则读 GSC，无则返回空列表 |
 | `DEVTO_API_KEY` | 否 | 无则发布工具返回 `blocked` |
@@ -157,7 +157,7 @@ site-agent:hotword-run                       ← 根 span（POST /hotwords 触�
          └─ tool:kv.write  → 写了哪些键、每个键 ok 与否、正文预览、失败清单
 ```
 
-热词分析是编排不是工具，走独立入口 `POST /hotwords`，直接返回热词图的结果，不套主图 state。
+候选池分析是编排不是工具，走独立入口 `POST /hotwords`，直接返回热词图的结果，不套主图 state。
 
 这棵树的父子关系**全部由 contextvar 自动继承**：逐词串行执行，`@observed` 声明的
 span 天然挂在当前节点 run 下，所以代码里没有 `parent=`、没有 `pass_run`、没有手工拼

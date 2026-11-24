@@ -48,7 +48,7 @@ def test_entry_has_single_run_path():
 
 
 def test_no_background_thread():
-    """后台线程已移除：热词分析由 /hotwords 前端触发，进程内不再有定时循环。"""
+    """后台线程已移除：候选池分析由 /hotwords 前端触发，进程内不再有定时循环。"""
     assert not hasattr(app_main, "_background_loop")
     assert not hasattr(app_main, "run_background")
     assert not hasattr(app_main, "threading")

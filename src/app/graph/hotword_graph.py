@@ -181,7 +181,7 @@ def run_hotwords(limit: int = 20,
                  prompt_version: Optional[str] = None,
                  evidence: Optional[list[str]] = None,
                  post: Optional[list[str]] = None) -> dict[str, Any]:
-    """跑一轮热词分析：问 tool 逐词取 → 逐词跑子图 → 没有更多词或达上限就汇总收尾。
+    """跑一轮候选池分析：问 tool 逐词取 → 逐词跑子图 → 没有更多词或达上限就汇总收尾。
 
     limit 是最大循环次数（1-50，由 state 工厂收口）。evidence / post 是步骤名单，
     只能取本文件两张表里的名字（None=默认计划，[]=该段不做）；名单非法或

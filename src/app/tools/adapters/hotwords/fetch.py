@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""热词分析的外部取数层：SERP / Trends 读缓存 → 缺失则现抓 → 写回共享 KV。
+"""候选池分析的外部取数层：SERP / Trends 读缓存 → 缺失则现抓 → 写回共享 KV。
 
 只负责「补数据」，不碰判据 / LLM / 结论回写（判据在 criteria，回写与写入账本 WriteLog 在
 writeback，谁来调这一步是 graph/hotword_graph.py 的连线）。

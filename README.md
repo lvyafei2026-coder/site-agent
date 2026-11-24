@@ -24,10 +24,10 @@ POST /run → classify_intent → run_processing → validate_result
 | 记住这一条 | 含义 |
 |---|---|
 | **只读默认** | 默认编排一般只调 `read` 工具；`write`（`git_push`、`publish_devto_article`）必须由请求 `tools` 显式列出 |
-| **热词分析不是工具** | 它是编排：独立入口 `POST /hotwords` 走 `graph.run_hotwords()`（逐词循环图），不经过工具注册表。★上线前必须加访问控制 |
+| **候选池分析不是工具** | 它是编排：独立入口 `POST /hotwords` 走 `graph.run_hotwords()`（逐词循环图），不经过工具注册表。★上线前必须加访问控制 |
 | **建页不是工具** | 同为编排：独立入口 `POST /page` 走 `graph.run_page_build()`（plan→render→push→verify 串形子图）；`confirm=false` 是 dry-run，一个写动作都不发生 |
-| **写动作靠显式声明** | 不保存待审状态；`write` 工具必须由请求 `tools` 列出，热词分析的状态写入由热词图自身负责 |
-| **无 LLM 也能跑** | 没有 `LLM_API_KEY` 时意图回退 `general`、抽取走本地正则，图照样跑完；热词分析拿不到 LLM 正文会跳过该词、不编造结论 |
+| **写动作靠显式声明** | 不保存待审状态；`write` 工具必须由请求 `tools` 列出，候选池分析的状态写入由热词图自身负责 |
+| **无 LLM 也能跑** | 没有 `LLM_API_KEY` 时意图回退 `general`、抽取走本地正则，图照样跑完；候选池分析拿不到 LLM 正文会跳过该词、不编造结论 |
 | **工具失败不抛异常** | 单个数据源挂了只记 `ok=false`，由校验环节决定重试还是报错 |
 
 ## 快速开始
@@ -42,7 +42,7 @@ pytest -q                              # 全量单测（含 test_hotwords.py / t
 `python -m src.app.main` 直接进 `serve()`：只起 uvicorn，三条业务线各是一个 HTTP
 入口——`POST /run`（用户线主图）、`POST /hotwords`（热词逐词循环图）、
 `POST /page`（建页子图）。**没有后台
-线程、没有定时任务**：热词分析由前端按需触发，跑完即返回（一轮 1-2 分钟）。
+线程、没有定时任务**：候选池分析由前端按需触发，跑完即返回（一轮 1-2 分钟）。
 本地想看一轮结果直接 `curl -X POST localhost:10000/run`（热词同理 `POST /hotwords`）——
 进程里只有 HTTP 入口，没有第二个「单跑一轮」的函数。
 
@@ -55,7 +55,7 @@ curl -s -X POST localhost:10000/run -H 'Content-Type: application/json' \
 不传则由 LLM 分类。请求还能传 `tools`（覆盖默认工具集）、`prompt_versions`
 （如 `{"intent":"v2"}`）、`thread_id`。
 
-热词分析是另一条线，走独立入口：
+候选池分析是另一条线，走独立入口：
 
 ```bash
 curl -s -X POST localhost:10000/hotwords -H 'Content-Type: application/json' \
@@ -65,7 +65,7 @@ curl -s -X POST localhost:10000/hotwords -H 'Content-Type: application/json' \
 它返回热词图自己的结果（`ok / fetched / analyzed / failed / successRate / items / traceRun`），
 不套主图 state——它本就不是主图节点。
 
-热词分析跑完后，待开发（`saved/todo` 且带 `ai:v3:` 方案正文）的词走第三条线建页：
+候选池分析跑完后，待开发（`saved/todo` 且带 `ai:v3:` 方案正文）的词走第三条线建页：
 
 ```bash
 curl -s -X POST localhost:10000/page -H 'Content-Type: application/json' \
@@ -79,7 +79,7 @@ curl -s -X POST localhost:10000/page -H 'Content-Type: application/json' \
 sitemap → 推 GitHub 触发 Cloudflare 自动部署（成功即落 `agent_pages` 台账）→ 线上验活。
 归不进任何已有站的词报错说明要走「建新站」（尚未实现）。
 
-热词分析链路：直读三方共用的共享 KV（radar 写入的候选池 + console 整理的
+候选池分析链路：直读三方共用的共享 KV（radar 写入的候选池 + console 整理的
 `saved`/`rejected`/`tags`）→ 补 SERP 竞争度与 30 天趋势（读缓存，缺失现抓并写回）
 → 外部 LLM 出 8 小节站点方案 → 直写 KV（`ai:v3:` 正文 / `aihints` 信号 / `rejected`
 不做 / `saved` 待开发）。实现按层归位：`graph/hotword_graph.py`（图装配 + 运行入口）→
@@ -134,7 +134,7 @@ migrations/0001_agent_tables.sql  D1 台账表
    `tools/base.py` 只依赖标准库与 pydantic。
    函数内 import、运行入口与图装配的分层穿透都已清零：两张图在 `graph/` 下对称命名
    （`user_graph.py` / `hotword_graph.py`），统一门面是 `graph/__init__.py`；
-   热词分析走独立入口 `POST /hotwords` → `graph.run_hotwords`，不经过工具注册表。
+   候选池分析走独立入口 `POST /hotwords` → `graph.run_hotwords`，不经过工具注册表。
    包内 `src.app.*` 依赖一律顶层声明（第三方 SDK 按需加载除外）。
    这些约束由 `test/test_architecture.py` 的 AST 守卫守着。
    `src.app.enums` 是零依赖纯数据模块，是唯一被放行给 base/sql 叶子引用的包内模块。

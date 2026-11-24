@@ -9,7 +9,7 @@
     execute_for_intent(意图, ...)  常规线：意图 → 一组取数的 read 工具（INTENT_TOOLS）
     execute_for_step(步骤, **参数)  热词线：逐词步骤 → 该步的那一个工具（STEP_TOOLS）
 
-热词分析（POST /hotwords）与常规线（POST /run）都是「工具编排 + LLM + 落库」，
+候选池分析（POST /hotwords）与常规线（POST /run）都是「工具编排 + LLM + 落库」，
 本身都不是 registry 里的一个工具——差别只在节点类型：热词线逐词回环、收尾走汇总节点。
 """
 
@@ -45,7 +45,7 @@ PAGE_STEP_TOOLS: dict[str, str] = {
 }
 
 TOOL_ARGS = {
-    # ★word_plan_page 读「待开发」池：承接热词分析的产出（分析判「做」→ saved/todo），
+    # ★word_plan_page 读「待开发」池：承接候选池分析的产出（分析判「做」→ saved/todo），
     #   不再看原始未跟进词——漏斗顺序 = 分析筛选 → 排产 → 建页。
     "get_hotwords": lambda t, e: {"limit": 20, "status": CurationStatus.TODO.value},
     "get_page_inventory": lambda t, e: {"mode": PageQueryMode.NEW.value, "limit": 10},
