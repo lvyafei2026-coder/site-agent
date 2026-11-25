@@ -107,9 +107,14 @@ class PlanningService:
             # 但这一轮没有可落库的结构化入选词，建页线只能回退待开发池顺序。
             return raw
         items = valid_items(data.get("items"))
-        if items:
-            self.save_plan(items)
-        return str(data.get("report") or "").strip() or raw
+        report = str(data.get("report") or "").strip() or raw
+        if not items:
+            return report
+        saved = self.save_plan(items)
+        # 落库结果写进报告：排产的产出是「待建页清单」，写没写进去必须让人一眼看见，
+        # 否则下一步建页线取不到词时无从判断是没排产还是没落库。
+        return (f"{report}\n\n> 已写入台账 {saved}/{len(items)} 条 planned 行"
+                f"（建页线按此顺序取词，建页成功后自动转 deployed）。")
 
     def save_plan(self, items: list[dict]) -> int:
         """入选词按给定顺序写成 planned 台账行，返回实际落库条数。

@@ -32,7 +32,8 @@ def test_plan_saves_planned_rows_and_returns_report(monkeypatch):
 
     out = planning_service.plan({"get_hotwords": {"ok": True, "result": {}}})
 
-    assert out == REPORT
+    assert out.startswith(REPORT)
+    assert "已写入台账 2/2 条" in out
     assert [r["keyword"] for r in _rows(written)] == ["blackout", "full moon"]
     assert all(r["status"] == "planned" for r in _rows(written))
     assert _rows(written)[0]["site"] == "clocksgoback"
@@ -48,7 +49,7 @@ def test_plan_drops_unknown_site_and_bodyless_json(monkeypatch):
     monkeypatch.setattr(planning_mod._ledger, "ledger_upsert",
                         lambda table, row: written.append({"table": table, "row": row}))
 
-    assert planning_service.plan({}) == REPORT
+    assert planning_service.plan({}) == REPORT   # 一条都不合法就不提落库
     assert written == []
 
 
