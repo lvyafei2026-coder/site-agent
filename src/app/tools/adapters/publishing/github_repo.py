@@ -73,4 +73,5 @@ def push_files(site: SiteConfig, page: dict[str, Any], work: str | Path) -> dict
     git(cwd, "commit", "-m", f"add: {slug}")
     git(cwd, "push", "origin", site.branch)
     return {"ok": True, "skipped": False, "sha": head_sha(cwd),
-            "repo": site.repo, "branch": site.branch, "detail": f"已推送 {slug}"}
+            "repo": site.repo, "branch": site.branch, "slug": slug,
+            "detail": f"已推送 {slug}"}

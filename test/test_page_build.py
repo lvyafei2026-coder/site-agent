@@ -359,3 +359,23 @@ def test_normalize_page_drops_broken_sections_and_envelope():
     assert [s["heading"] for s in out["sections"]] == ["Works"]
     assert out["faq"] == [{"q": "Q?", "a": "A."}]
     assert content_mod.normalize_page({"sections": []}, "term") is None
+
+
+def test_page_push_auto_registers_proxy_sitemap(fake, fake_kv, monkeypatch):
+    """推送成功后自动把规范 URL 登记进代理 sitemap；失败只记录、不影响上线。"""
+    from src.app.nodes import page_nodes
+    from src.app.services import sitemap_service
+
+    seen = []
+    monkeypatch.setattr(sitemap_service, "register_page",
+                        lambda site, slug: (seen.append((site, slug)) or
+                                            {"ok": True, "changed": True, "path": "/" + slug}))
+    monkeypatch.setattr(fake, "git_push", lambda site_name, page, work: {
+        "ok": True, "skipped": False, "sha": "abc123", "slug": page["slug"]})
+
+    state = initial_page_build_state("next full moon", confirm=True)
+    state.update({"site": "clocksgoback", "picked": {"term": "next full moon"},
+                  "page": {"slug": "next-full-moon"}, "work": "/tmp/fake-repo"})
+    out = page_nodes.page_push(state)
+    assert out["sitemap"]["ok"] is True and out["sitemap"]["changed"] is True
+    assert seen == [("clocksgoback", "next-full-moon")]

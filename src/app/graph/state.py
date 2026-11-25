@@ -266,6 +266,7 @@ class PageBuildState(TypedDict, total=False):
     page: dict               # 解析出的页面结构
     work: str                # render_files 返回的本地仓库路径
     sha: str                 # git_push 返回的 commit sha
+    sitemap: dict            # 代理 sitemap 自动登记结果（成功/幂等/失败原因）
     url: str                 # 验活命中的线上 URL
     live_ok: bool
     stage: str               # 走到了哪一步（summary 与失败定位用）
@@ -299,6 +300,7 @@ def initial_page_build_state(term: str = "", confirm: bool = False,
         "page": {},
         "work": "",
         "sha": "",
+        "sitemap": {},
         "url": "",
         "live_ok": False,
         "stage": "plan",

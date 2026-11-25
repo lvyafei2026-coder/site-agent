@@ -103,6 +103,8 @@ def _summarize(state: PageBuildState) -> dict[str, Any]:
     }
     if state.get("sha"):
         summary["sha"] = state["sha"]
+    if state.get("sitemap"):
+        summary["sitemap"] = state["sitemap"]
     if state.get("url"):
         summary["url"] = state["url"]
     if stage == "verify":

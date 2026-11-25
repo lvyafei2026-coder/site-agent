@@ -18,8 +18,10 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from src.app.config import CONTACT_EMAIL, REPO_DIR, SiteConfig, env
 from src.app.tools.adapters.publishing.github_repo import ensure_repo
@@ -167,3 +169,79 @@ def register_in_proxy(site: SiteConfig, paths: list[str] | None = None) -> dict[
 
     return {"ok": True, "proxy": proxy_result, "self": self_result,
             "binding": binding_name(site.repo_name), "host": site.host}
+
+
+def _bump_lastmod(text: str, host: str, today: str) -> str:
+    """只在确实新增了页面时把该站 lastmod 推到今天；已有更晚日期就保留。"""
+    anchor = "export const LAST_MOD = {\n"
+    head, sep, rest = text.partition(anchor)
+    if not sep:
+        return text
+    body, sep2, tail = rest.partition("};")
+    if not sep2:
+        return text
+    pat = re.compile(r"(?m)^(\s*'" + re.escape(host) + r"':\s*)'(\d{4}-\d{2}-\d{2})'(,?)")
+    found = pat.search(body)
+    if found:
+        if found.group(2) >= today:
+            return text
+        body = (body[:found.start()] + found.group(1) + f"'{today}'" + found.group(3)
+                + body[found.end():])
+    else:
+        body = f"  '{host}': '{today}',\n" + body
+    return head + anchor + body + sep2 + tail
+
+
+def patch_page_path(text: str, host: str, slug: str, today: str) -> str:
+    """把新页规范路径（不带 .html）追加到该 host 的 SITE_PATHS 并同步 lastmod。
+
+    ★线上 sitemap 只认 tool-proxy 的 SITE_PATHS，站点仓库里的静态 sitemap 已删。
+    幂等：同一 host 已有该路径就原样返回，连 lastmod 都不动（避免日期天天变）。
+    """
+    path = "/" + slug.strip("/")
+    anchor = "export const SITE_PATHS = {\n"
+    head, sep, rest = text.partition(anchor)
+    if not sep:
+        raise RuntimeError("sites.js 里找不到 SITE_PATHS 锚点")
+    body, sep2, tail = rest.partition("};")
+    if not sep2:
+        raise RuntimeError("sites.js 里 SITE_PATHS 对象没有正常结束")
+    pat = re.compile(r"(?m)^(\s*'" + re.escape(host) + r"':\s*)(\[)([^\]]*)(\],?)")
+    found = pat.search(body)
+    if found:
+        if re.search(r"['\"]" + re.escape(path) + r"['\"]", found.group(3)):
+            return text
+        parts = [p.strip() for p in found.group(3).split(",") if p.strip()]
+        parts.append(json.dumps(path))
+        line = f"{found.group(1)}[{', '.join(parts)}],"
+        body = body[:found.start()] + line + body[found.end():]
+    else:
+        # 站点尚未登记（新站流程没走过）：补一条含首页与新页的完整数组
+        body = f"  '{host}': [\"/\", {json.dumps(path)}],\n" + body
+    return _bump_lastmod(head + anchor + body + sep2 + tail, host, today)
+
+
+def register_page_in_proxy(site: SiteConfig, slug: str) -> dict[str, Any]:
+    """建页成功后自动登记代理 sitemap：改 SITE_PATHS / LAST_MOD 并 push tool-proxy。
+
+    push 会触发 tool-proxy 的 Workers Builds，新页随即进入线上 sitemap；
+    幂等且不碰 DOMAIN_MAP / wrangler.toml / NOINDEX 等新站配置。
+    """
+    clean = slug.strip("/")
+    if not clean:
+        return {"ok": False, "detail": "slug 为空，跳过 sitemap 登记"}
+    gh_org = env("GH_ORG", required=True)
+    work = _repo_copy(env("PROXY_REPO", f"{gh_org}/tool-proxy"))
+    js_path = work / "src" / "sites.js"
+    old = js_path.read_text(encoding="utf-8")
+    today = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    new = patch_page_path(old, site.host, clean, today)
+    if new == old:
+        return {"ok": True, "changed": False, "path": "/" + clean,
+                "detail": "代理 sitemap 已登记，跳过"}
+    if not _js_syntax_ok(new):
+        raise RuntimeError("sites.js 改写后语法校验不过，拒绝提交")
+    js_path.write_text(new, encoding="utf-8")
+    _git(work, "add", "-A")
+    pushed = _commit_push(work, f"index /{clean} in proxy sitemap", "main")
+    return {"ok": True, "changed": True, "path": "/" + clean, **pushed}

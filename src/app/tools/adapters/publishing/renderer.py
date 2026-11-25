@@ -16,6 +16,11 @@ from .github_repo import ensure_repo, git, has_staged_changes
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,60}$")
 
+# ★规范 URL 唯一口径：不带 .html。CF Workers Assets 会把 /x.html 307 到 /x，
+# canonical / JSON-LD / 代理 sitemap 必须用同一个地址，否则 Google 收到互相打架的信号。
+def canonical_url(site: SiteConfig, slug: str) -> str:
+    return f"https://{site.host}/{slug}"
+
 # 新页内容区的最小样式：优先吃原站 CSS 变量（--ink / --accent / --line），
 # 没有的站点走 fallback。这样同一站的新页与首页深浅、配色、字重自然一致。
 _SKIN_CSS = """
@@ -100,7 +105,7 @@ def _render_with_skin(site: SiteConfig, page: dict[str, Any], skin: dict[str, st
         "@graph": [
             {"@type": "Article", "headline": page["title"],
              "description": page["description"],
-             "mainEntityOfPage": f"https://{site.host}/{page['slug']}.html"},
+             "mainEntityOfPage": canonical_url(site, page["slug"])},
             {"@type": "FAQPage", "mainEntity": [
                 {"@type": "Question", "name": item["q"],
                  "acceptedAnswer": {"@type": "Answer", "text": item["a"]}}
@@ -121,7 +126,7 @@ def _render_with_skin(site: SiteConfig, page: dict[str, Any], skin: dict[str, st
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{esc(page['title'])}</title>
 <meta name="description" content="{esc(page['description'])}">
-<link rel="canonical" href="https://{site.host}/{page['slug']}.html">
+<link rel="canonical" href="{canonical_url(site, page['slug'])}">
 <meta property="og:title" content="{esc(page['title'])}">
 <meta property="og:description" content="{esc(page['description'])}">
 <meta property="og:type" content="article">
@@ -161,7 +166,7 @@ def render_page(site: SiteConfig, page: dict[str, Any], skin: dict[str, str] | N
         "@graph": [
             {"@type": "Article", "headline": page["title"],
              "description": page["description"],
-             "mainEntityOfPage": f"https://{site.host}/{page['slug']}.html"},
+             "mainEntityOfPage": canonical_url(site, page["slug"])},
             {"@type": "FAQPage", "mainEntity": [
                 {"@type": "Question", "name": item["q"],
                  "acceptedAnswer": {"@type": "Answer", "text": item["a"]}}
@@ -191,11 +196,16 @@ def _write_page(work: Path, site: SiteConfig, page: dict[str, Any],
 
 
 def _update_sitemap(work: Path, site: SiteConfig, slug: str) -> None:
+    """兜底静态文件（新站 scaffold 才有）；线上真源是 tool-proxy 的 SITE_PATHS。
+
+    这里只保证万一被直接访问时 URL 口径正确，不再承担「新页进 sitemap」的职责——
+    那一步由建页后自动登记代理配置完成。
+    """
     sitemap = work / site.asset_dir / "sitemap.xml"
     if not sitemap.exists():
         return
     text = sitemap.read_text(encoding="utf-8")
-    loc = f"<loc>https://{site.host}/{slug}.html</loc>"
+    loc = f"<loc>{canonical_url(site, slug)}</loc>"
     if loc in text:
         return
     entry = f"  <url>{loc}<changefreq>monthly</changefreq></url>\n"
@@ -203,7 +213,7 @@ def _update_sitemap(work: Path, site: SiteConfig, slug: str) -> None:
 
 
 def render_files(site: SiteConfig, page: dict[str, Any]) -> dict[str, Any]:
-    """渲染 + 更新 sitemap + git add。每一步由 tool 层单独幂等。"""
+    """渲染 + 兜底 sitemap + git add。每一步由 tool 层单独幂等。"""
     slug = page.get("slug", "")
     if not SLUG_RE.match(slug):
         raise RuntimeError(f"非法 slug: {slug!r}")

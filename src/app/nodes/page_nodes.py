@@ -8,7 +8,7 @@
     page_audit  通读原站：判重 + 定增强/新增 + 抽风格基调（纯业务，读已 clone 仓库）
     page_write  分析稿 → 访客可读正文；仍是分析稿就在渲染前拦下
     page_render render_files：渲染 HTML + sitemap + git add（工具步骤 render）
-    page_push   git_push：推送触发构建（工具步骤 push；成功后自动落 agent_pages）
+    page_push   git_push：推送触发构建，成功后自动落台账 + 登记代理 sitemap
     page_verify check_live_page：线上验活（工具步骤 verify）
 
 统一约定：任何节点发现 state.error 非空就直接放行（错误已定位，不再重复动作）；
@@ -20,7 +20,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.app.enums import AuditDecision, ClassifyBy, ContentSource, PageBuildStep
-from src.app.services import page_build_service, term_state_service
+from src.app.services import page_build_service, sitemap_service, term_state_service
 from src.app.services.page_content_service import analysis_leak, page_content_service
 from src.app.services.site_audit_service import audit as audit_site
 from src.app.services.site_audit_service import read_site, style_brief
@@ -144,7 +144,14 @@ def page_push(state: dict[str, Any]) -> dict[str, Any]:
     term = str((state.get("picked") or {}).get("term") or state.get("term") or "")
     if term:
         term_state_service.after_push(term)
-    return {"stage": "push", "sha": str(result.get("sha") or "")}
+    # ★上线与可收录是两步：线上 sitemap 只认 tool-proxy 的 SITE_PATHS，
+    # 站点仓静态 sitemap 已删。推送成功后把新页规范 URL 自动登记进代理配置。
+    sitemap = {"ok": None, "detail": "push 未返回 slug，跳过 sitemap 登记"}
+    slug = str(result.get("slug") or "")
+    if slug:
+        sitemap = sitemap_service.register_page(state["site"], slug)
+    return {"stage": "push", "sha": str(result.get("sha") or ""),
+            "sitemap": sitemap}
 
 
 def page_verify(state: dict[str, Any]) -> dict[str, Any]:

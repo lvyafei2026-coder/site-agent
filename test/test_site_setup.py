@@ -53,6 +53,36 @@ def test_patch_sites_js_idempotent_and_braces_balanced():
     assert once.count("{") == once.count("}")
 
 
+def test_patch_page_path_registers_clean_url_and_lastmod():
+    sample = ("export const SITE_PATHS = {\n"
+              "  'clocksgoback.toolara.dev': [\"/\", \"/when-is-the-next-full-moon\"],\n"
+              "  'blackfriday.toolara.dev': [\"/\"]\n"
+              "};\n\n"
+              "export const LAST_MOD = {\n"
+              "  'blackfriday.toolara.dev': '2026-10-01',\n"
+              "  'clocksgoback.toolara.dev': '2026-11-25'\n"
+              "};\n")
+    out = proxy_config.patch_page_path(
+        sample, "clocksgoback.toolara.dev", "when-is-the-next-friday-the-13th", "2026-11-25")
+    assert "'clocksgoback.toolara.dev': [\"/\", \"/when-is-the-next-full-moon\", " \
+           "\"/when-is-the-next-friday-the-13th\"]" in out
+    assert "'lastmod'" not in out
+    assert "when-is-the-next-friday-the-13th.html" not in out
+    # 当日已有 lastmod 不会被重复推；其它站一行都不动
+    assert "'blackfriday.toolara.dev': '2026-10-01'" in out
+    assert "'clocksgoback.toolara.dev': '2026-11-25'" in out
+    assert proxy_config.patch_page_path(out, "clocksgoback.toolara.dev",
+                                        "when-is-the-next-friday-the-13th", "2026-11-26") == out
+
+
+def test_patch_page_path_appends_host_when_missing():
+    sample = ("export const SITE_PATHS = {\n};\n\n"
+              "export const LAST_MOD = {\n};\n")
+    out = proxy_config.patch_page_path(sample, "clocksgoback.toolara.dev", "new-page", "2026-11-25")
+    assert "'clocksgoback.toolara.dev': [\"/\", \"/new-page\"]" in out
+    assert "'clocksgoback.toolara.dev': '2026-11-25'" in out
+
+
 def test_binding_name_folds_non_alnum():
     assert proxy_config.binding_name("clocks-go-back") == "SITE_CLOCKS_GO_BACK"
     assert proxy_config.binding_name("code-tools") == "SITE_CODE_TOOLS"

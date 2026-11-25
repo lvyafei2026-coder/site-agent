@@ -202,3 +202,15 @@ def test_render_inherits_site_stylesheet(tmp_path, monkeypatch):
     assert 'rel="stylesheet"' in out and "site-header" in out
     assert 'application/ld+json' in out and "--ink" in out
     assert 'href="#dates"' not in out and "Loading" not in out
+
+
+def test_render_canonical_is_clean_url_without_html():
+    """canonical / JSON-LD / 代理 sitemap 同一口径：CF 会把 .html 307 到规范地址。"""
+    site = SITES["blackfriday"]
+    page = {"slug": "test-page", "title": "Test", "description": "D",
+            "h1": "Test", "intro": "i", "sections": [], "faq": []}
+    for skin in (None, {"styles": ""}):
+        out = renderer.render_page(site, page, skin)
+        assert '<link rel="canonical" href="https://blackfriday.toolara.dev/test-page">' in out
+        assert '"mainEntityOfPage": "https://blackfriday.toolara.dev/test-page"' in out
+        assert "/test-page.html" not in out
