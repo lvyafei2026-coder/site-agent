@@ -5,9 +5,9 @@
 """排产服务的落库契约：入选词必须变成 planned 台账行，不然建页线拿不到活。"""
 
 import src.app.services.planning_service as planning_mod
-from src.app.services.planning_service import planning_service, valid_items
-
-REPORT = "## 本轮排产\n\n### 入选\n| 优先级 | 词 | 站 |\n|---|---|---|\n| 高 | blackout | clocksgoback |"
+from src.app.services.planning_service import (
+    planning_service, render_report, valid_excluded, valid_items,
+)
 
 
 def _json(data):
@@ -26,8 +26,8 @@ def _capture(monkeypatch):
     return written
 
 
-def test_plan_saves_planned_rows_and_returns_report(monkeypatch):
-    """结构化输出 → 入选词按顺序写 planned 行，报告末明确说出写了几条。"""
+def test_plan_saves_planned_rows_and_renders_report(monkeypatch):
+    """结构化输出 → 入选词按顺序写 planned 行，报告由代码渲染并与台账一致。"""
     written = _capture(monkeypatch)
     monkeypatch.setattr(planning_mod, "complete_json", _json({
         "items": [{"term": "blackout", "site": "clocksgoback", "priority": "高",
@@ -35,12 +35,12 @@ def test_plan_saves_planned_rows_and_returns_report(monkeypatch):
                   {"term": "full moon", "site": "invoices", "priority": "中",
                    "reason": "月相"}],
         "excluded": [{"term": "tax form", "reason": "无匹配站点"}],
-        "report": REPORT,
     }))
 
     out = planning_service.plan({"get_hotwords": {"ok": True, "result": {}}})
 
-    assert out.startswith(REPORT)
+    assert "| 高 | blackout | clocksgoback | 停电查询 |" in out
+    assert "**tax form** — 无匹配站点" in out
     assert "已写入台账 2/2 条" in out
     assert [r["keyword"] for r in _rows(written)] == ["blackout", "full moon"]
     assert all(r["status"] == "planned" for r in _rows(written))
@@ -48,14 +48,13 @@ def test_plan_saves_planned_rows_and_returns_report(monkeypatch):
 
 
 def test_plan_drops_unknown_site(monkeypatch):
-    """site 不在站群清单里的条目丢掉（LLM 会编站名）；一条都不合法时不写库也不提落库。"""
+    """site 不在站群清单里的条目丢掉（LLM 会编站名）；一条都不合法时不写库。"""
     written = _capture(monkeypatch)
     monkeypatch.setattr(planning_mod, "complete_json", _json({
         "items": [{"term": "blackout", "site": "site-that-does-not-exist"}],
-        "report": REPORT,
     }))
 
-    assert planning_service.plan({}) == REPORT
+    assert "本轮无可排产词" in planning_service.plan({})
     assert written == []
 
 
@@ -77,3 +76,13 @@ def test_valid_items_normalizes_optional_fields():
         "not a dict",
     ]) == [{"term": "blackout", "site": "clocksgoback",
             "priority": "高", "reason": "停电"}]
+
+
+def test_render_report_marks_empty_plan():
+    """没有入选词时给明确结论，不给空表格。"""
+    assert "本轮无可排产词" in render_report([], [{"term": "x", "reason": "y"}])
+
+
+def test_valid_excluded_keeps_reason_only():
+    assert valid_excluded([{"term": " tax ", "reason": " 无站 "}, {"reason": "缺词"}]) == \
+        [{"term": "tax", "reason": "无站"}]

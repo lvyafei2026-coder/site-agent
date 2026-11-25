@@ -14,6 +14,8 @@
 ★入选词必须落台账，否则排产只是会诊：建页线 pick_word 不读这份报告就永远不知道
   该建哪个词。落库形态 = agent_pages 的 planned 行（按优先级顺序插入，rowid 即序），
   建页成功后 git_push 按 (site,slug) 覆盖成 deployed，自动出队。
+★报告由代码渲染（render_report），模型只给结构化 items / excluded：报告与落库
+  必须是同一批数据，让模型分两处各写一遍迟早对不上。
 """
 
 from __future__ import annotations
@@ -89,6 +91,39 @@ def valid_items(raw: object) -> list[dict]:
     return out
 
 
+def valid_excluded(raw: object) -> list[dict]:
+    """本轮排除项：词 + 原因。站名字段不参与，缺 term 的条目丢掉。"""
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        term = str(item.get("term") or "").strip()
+        if not term:
+            continue
+        out.append({"term": term, "reason": str(item.get("reason") or "").strip()})
+    return out
+
+
+def render_report(items: list[dict], excluded: list[dict]) -> str:
+    """把入选/排除渲染成固定 markdown。
+
+    ★报告由代码渲染而不是要模型写：报告与落台账的必须是同一批数据，模型分两处
+    各写一遍迟早对不上（报告说 A、落库是 B）。模型只需给结构化的两个数组。
+    """
+    if not items:
+        return "## 本轮排产\n\n本轮无可排产词。"
+    lines = ["## 本轮排产（按优先级）", "",
+             "| 优先级 | 词 | 目标站点 | 理由 |", "|---|---|---|---|"]
+    lines += [f"| {it['priority'] or '—'} | {it['term']} | {it['site']} | "
+              f"{it['reason'] or '—'} |" for it in items]
+    if excluded:
+        lines += ["", "### 本轮排除"]
+        lines += [f"- **{ex['term']}** — {ex['reason'] or '未给原因'}" for ex in excluded]
+    return "\n".join(lines)
+
+
 class PlanningService:
     @traceable(name="plan_pages")
     def plan(self, results: dict, versions: dict[str, str] | None = None) -> str:
@@ -105,7 +140,12 @@ class PlanningService:
         if data is None:
             return complete_text(system, payload, warn_event="plan_pages_failed") or ""
         items = valid_items(data.get("items"))
-        report = str(data.get("report") or "").strip()
+        excluded = valid_excluded(data.get("excluded"))
+        if not items and not excluded:
+            # 拿到 JSON 但字段对不上（换提示词期间可能出现）：把结构记下来便于定位，
+            # 不把内部细节塞进给人看的报告。
+            log.warning("排产输出缺 items/excluded，本轮不落库：%s", sorted(data)[:10])
+        report = str(data.get("report") or "").strip() or render_report(items, excluded)
         if not items:
             return report
         saved = self.save_plan(items)
@@ -130,7 +170,7 @@ class PlanningService:
             try:
                 _ledger.ledger_upsert("agent_pages", row)
             except Exception as exc:  # noqa: BLE001 - 台账不可写不能打断排产
-                log.warning("plan_save_failed", term=item["term"], error=str(exc)[:200])
+                log.warning("计划行写入失败 %s：%s", item["term"], str(exc)[:200])
                 continue
             saved += 1
         return saved
