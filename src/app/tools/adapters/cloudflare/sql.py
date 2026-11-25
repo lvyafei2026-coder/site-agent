@@ -82,8 +82,15 @@ PAGE_QUERIES: dict[str, PageQuery] = {
     ),
     PageQueryMode.REVIEW.value: PageQuery(
         "SELECT site, slug, keyword, status, created_at, gsc_clicks "
-        "FROM agent_pages WHERE created_at <= ? ORDER BY created_at DESC",
+        "FROM agent_pages WHERE created_at <= ? "
+        "AND status IN ('deployed','indexed','verified') ORDER BY created_at DESC",
         window_days=7,
+    ),
+    # 排产入选但还没建的行：按 rowid 升序 = 排产提示词给的优先级顺序（落库按该序插入）。
+    # 建页成功后 git_push 按 (site,slug) 覆盖成 deployed，这行自动出队。
+    PageQueryMode.PLANNED.value: PageQuery(
+        "SELECT site, keyword, slug FROM agent_pages "
+        "WHERE status = 'planned' ORDER BY rowid"
     ),
 }
 

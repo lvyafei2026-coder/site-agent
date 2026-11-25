@@ -241,10 +241,10 @@ class PageBuildState(TypedDict, total=False):
     status_filter: str       # 取词的跟进状态，默认 todo
 
     # ── 节点间流转 ──
-    picked: dict             # pick_word 的产出：{term, text}
+    picked: dict             # pick_word 的产出：{term, text, site?}（site 来自排产计划）
     ai_text: str             # 该词的 ai:v3 方案正文
-    site: str                # 归类到的站点名（空串 = 归不进已有站）
-    classify_by: str         # llm / rule / none（汇总里如实展示）
+    site: str                # 目标站点名（空串 = 归不进已有站）
+    classify_by: str         # plan / llm / rule / none（汇总里如实展示）
     page: dict               # 解析出的页面结构
     work: str                # render_files 返回的本地仓库路径
     sha: str                 # git_push 返回的 commit sha

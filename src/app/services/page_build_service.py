@@ -19,9 +19,11 @@ import re
 from typing import Any, Optional
 
 from src.app.config import SITES
-from src.app.enums import CurationStatus, Intent
+from src.app.enums import ClassifyBy, CurationStatus, Intent, PageQueryMode
 from src.app.services.extraction_service import extraction_service
+from src.app.tools.adapters.cloudflare import database
 from src.app.tools.adapters.cloudflare.kv import AI_CACHE_PREFIX, SAVED_KEY, get_kv, term_key
+from src.app.tools.adapters.cloudflare.sql import PAGE_QUERIES
 from src.app.utils.kv_shape import kv_list
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -108,26 +110,47 @@ def classify_site(term: str, text: str = "") -> dict[str, Any]:
            "只输出清单里最匹配的站点名；都不合适就输出空。")
     extracted = extraction_service.extract(ask, Intent.WORD_PLAN_PAGE.value)
     site = extracted.get("target_site", "").strip()
-    by = "llm"
+    by = ClassifyBy.LLM.value
     if site not in SITES:
         site = _site_from_rule(term)
-        by = "rule"
+        by = ClassifyBy.RULE.value
     if site and site not in SITES:     # 兜底结果也必须合法，绝不信 LLM 的自由文本
-        site, by = "", "none"
+        site, by = "", ClassifyBy.NONE.value
     return {"site": site, "by": by}
 
 
-def pick_word(term: Optional[str] = None) -> Optional[dict[str, Any]]:
-    """从 todo 池取一条待开发词，连带它的 ai:v3 方案正文。
+def _planned_rows(limit: int = 5) -> list[dict[str, Any]]:
+    """排产入选待建的行，按写入顺序（= 排产给的优先级）返回。
 
-    显式给 term 就只查该词；否则按 saved 表顺序找第一条带正文的 todo 词。
-    没有正文的词跳过——没分析过的词不该建页（漏斗顺序 = 分析筛选 → 建页）。
+    D1 不可达时返回空列表：建页线回退到待开发池顺序，不因为台账读不到就停摆。
+    """
+    query = PAGE_QUERIES[PageQueryMode.PLANNED.value]
+    try:
+        return database.query(f"{query.sql} LIMIT ?", [limit])
+    except Exception:  # noqa: BLE001 - 台账不可读按无计划处理
+        return []
+
+
+def pick_word(term: Optional[str] = None) -> Optional[dict[str, Any]]:
+    """取一条要建页的词，连带它的 ai:v3 方案正文与排产给的目标站点。
+
+    显式给 term 就只查该词；否则**先读排产计划**（agent_pages 里 status=planned
+    的行，写入顺序即优先级顺序），计划里有带正文的词就用它和它定的站点；
+    计划为空或都没正文时回退 saved 表顺序自己找一条。
+    没有正文的词跳过——没分析过的词不该建页（漏斗顺序 = 分析筛选 → 排产 → 建页）。
     找不到返回 None（本轮无事可做）。
     """
     kv = get_kv()
     if term:
         text = kv.get_text(AI_CACHE_PREFIX + term_key(term))
         return {"term": term, "text": text} if text else None
+    for row in _planned_rows():
+        t = str(row.get("keyword") or "")
+        if not t:
+            continue
+        text = kv.get_text(AI_CACHE_PREFIX + term_key(t))
+        if text:
+            return {"term": t, "text": text, "site": str(row.get("site") or "")}
     for row in kv_list(kv, SAVED_KEY):
         if not isinstance(row, dict) or row.get("status") != CurationStatus.TODO.value:
             continue

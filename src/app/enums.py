@@ -285,11 +285,21 @@ class PlanStatus(StrEnum):
 class PageStatus(StrEnum):
     """agent_pages.status：内容页生命周期。"""
 
+    PLANNED = "planned"      # 排产已入选、页面尚未建（建页线优先消费此状态）
     GENERATED = "generated"  # 已生成（默认）
     DEPLOYED = "deployed"    # 已部署
     INDEXED = "indexed"      # 已收录
     VERIFIED = "verified"    # 已验活
     FAILED = "failed"        # 失败（all 查询排除此项）
+
+
+class ClassifyBy(StrEnum):
+    """建页目标站点的判定来源（运行态字段 state.classify_by，不落表）。"""
+
+    PLAN = "plan"  # 排产计划已给定（优先，不再重判）
+    LLM = "llm"    # extraction 的 LLM 归类
+    RULE = "rule"  # 站点名 / 关键词规则兜底
+    NONE = "none"  # 归不进任何已有站
 
 
 class BacklinkStatus(StrEnum):
@@ -312,10 +322,11 @@ class BacklinkChannel(StrEnum):
 class PageQueryMode(StrEnum):
     """页面清单查询模式（get_page_inventory 的 mode）。"""
 
-    ALL = "all"        # 全部去重（排除 failed）
-    RECENT = "recent"  # 最近上线
-    NEW = "new"        # 近 30 天新页（默认）
-    REVIEW = "review"  # 上线满 7 天待复盘
+    ALL = "all"          # 全部去重（排除 failed）
+    RECENT = "recent"    # 最近上线
+    NEW = "new"          # 近 30 天新页（默认）
+    REVIEW = "review"    # 上线满 7 天待复盘
+    PLANNED = "planned"  # 排产入选待建（建页线 pick_word 的取词来源，非工具入参）
 
 
 class LedgerStrategy(StrEnum):

@@ -62,7 +62,7 @@ def test_every_ledger_spec_is_consistent():
 
 
 def test_every_page_query_mode_is_renderable():
-    assert set(PAGE_QUERIES) == {"all", "recent", "new", "review"}
+    assert set(PAGE_QUERIES) == {"all", "recent", "new", "review", "planned"}
     for query in PAGE_QUERIES.values():
         assert "{" not in query.sql and "%s" not in query.sql
 

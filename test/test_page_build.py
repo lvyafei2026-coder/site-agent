@@ -155,6 +155,27 @@ def test_pick_word_skips_bodyless_todo(fake, fake_kv):
     assert page_build_service.pick_word()["term"] == "body ready word"
 
 
+def test_pick_word_prefers_planned_rows(fake, fake_kv, monkeypatch):
+    """排产入选的 planned 行优先：连目标站点一起带出来，不被池顺序和重判抢走。"""
+    _seed_todo(fake_kv, "pool order word")
+    fake_kv.put_text("ai:v3:planned word", "Planned body paragraph. " * 6)
+    monkeypatch.setattr(page_build_service, "_planned_rows", lambda limit=5: [
+        {"site": "invoices", "keyword": "planned word", "slug": "planned-word"},
+    ])
+    picked = page_build_service.pick_word()
+    assert picked["term"] == "planned word"
+    assert picked["site"] == "invoices"
+
+
+def test_pick_word_falls_back_when_plan_has_no_body(fake, fake_kv, monkeypatch):
+    """计划行对应的词没正文（不该发生）→ 跳过它回退池顺序，不建空页面。"""
+    _seed_todo(fake_kv, "body ready word")
+    monkeypatch.setattr(page_build_service, "_planned_rows", lambda limit=5: [
+        {"site": "invoices", "keyword": "planned without body", "slug": "planned-without-body"},
+    ])
+    assert page_build_service.pick_word()["term"] == "body ready word"
+
+
 # ---- 子图端到端 ----
 
 def test_run_page_build_dry_run_touches_nothing(fake, fake_kv, monkeypatch):

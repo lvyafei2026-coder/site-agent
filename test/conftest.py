@@ -336,6 +336,17 @@ PROMPT_STUB_DATA = {
 
 
 @pytest.fixture(autouse=True)
+def no_planned_pages(monkeypatch):
+    """建页取词默认「没有排产计划」：不替测试去打真实 D1，也让旧用例保持按池顺序取。
+
+    需要计划行本的用例自己 monkeypatch page_build_service._planned_rows。
+    """
+    from src.app.services import page_build_service
+
+    monkeypatch.setattr(page_build_service, "_planned_rows", lambda limit=5: [])
+
+
+@pytest.fixture(autouse=True)
 def fake_prompt_store(monkeypatch):
     """每个测试都把全局提示词单例指向 D1 桩：无 CF 凭据也能测拼装逻辑。
 

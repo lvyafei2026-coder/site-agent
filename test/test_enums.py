@@ -69,7 +69,7 @@ def test_every_member_has_docstring_note():
     (WorkflowStatus, {"success", "failed"}),
     (ToolKind, {"read", "ledger", "write"}),
     (EventStatus, {"pending", "consumed"}),
-    (PageQueryMode, {"all", "recent", "new", "review"}),
+    (PageQueryMode, {"all", "recent", "new", "review", "planned"}),
     (LedgerStrategy, {"upsert", "ignore", "lookup"}),
 ])
 def test_locked_value_sets(cls, expected):

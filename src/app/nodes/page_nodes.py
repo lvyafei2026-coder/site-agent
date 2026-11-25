@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.app.enums import ClassifyBy
 from src.app.services import page_build_service
 from src.app.services.tool_service import tool_service
 
@@ -27,8 +28,10 @@ def _pass_if_failed(state: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def page_plan(state: dict[str, Any]) -> dict[str, Any]:
-    """取一条带分析正文的 todo 词 → 归类站点 → 解析出页面结构。
+    """取一条带分析正文的词 → 定目标站点 → 解析出页面结构。
 
+    站点优先用排产计划给的那个（pick_word 从 planned 台账行带出来），没有计划才
+    当场 classify_site 判——排产已经判过站点，这里再判一次只会打架。
     三处短路：池里没有可建词 / 归不进任何已有站（建新站流程未实现）/ 解析不出节
     （仍会给出兜底单节，不短路）。confirm=False 时只出预览，由条件边收尾。
     """
@@ -37,7 +40,9 @@ def page_plan(state: dict[str, Any]) -> dict[str, Any]:
     if not picked:
         return {**out, "error": "待开发池里没有带分析正文的词（先在 /agent 跑「候选池分析」）"}
     page = page_build_service.parse_page(picked["term"], picked["text"])
-    cls = page_build_service.classify_site(picked["term"], picked["text"])
+    planned_site = str(picked.get("site") or "")
+    cls = ({"site": planned_site, "by": ClassifyBy.PLAN.value} if planned_site
+           else page_build_service.classify_site(picked["term"], picked["text"]))
     if not cls["site"]:
         return {**out, "picked": picked, "ai_text": picked["text"], "page": page,
                 "site": "", "classify_by": cls["by"],
