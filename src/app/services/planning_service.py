@@ -124,6 +124,20 @@ def render_report(items: list[dict], excluded: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _pick_list(data: dict, key: str) -> object:
+    """从模型返回里取数组，容忍套一层外壳。
+
+    模型偶尔把结果包成 {"plan": {"items": [...]}} 或 {"result": {...}}——
+    只认顶层会让整轮排产静默落空，所以再往下看一层。
+    """
+    if isinstance(data.get(key), list):
+        return data[key]
+    for value in data.values():
+        if isinstance(value, dict) and isinstance(value.get(key), list):
+            return value[key]
+    return []
+
+
 class PlanningService:
     @traceable(name="plan_pages")
     def plan(self, results: dict, versions: dict[str, str] | None = None) -> str:
@@ -139,12 +153,15 @@ class PlanningService:
             system, payload, warn_event="plan_pages_failed")
         if data is None:
             return complete_text(system, payload, warn_event="plan_pages_failed") or ""
-        items = valid_items(data.get("items"))
-        excluded = valid_excluded(data.get("excluded"))
+        items = valid_items(_pick_list(data, "items"))
+        excluded = valid_excluded(_pick_list(data, "excluded"))
         if not items and not excluded:
-            # 拿到 JSON 但字段对不上（换提示词期间可能出现）：把结构记下来便于定位，
-            # 不把内部细节塞进给人看的报告。
+            # 拿到 JSON 但没有可用条目：把顶层字段名写进报告，否则「无可排产词」看不出
+            # 到底是池子空了还是模型没按约定出结构（两者的处理方式完全不同）。
             log.warning("排产输出缺 items/excluded，本轮不落库：%s", sorted(data)[:10])
+            return ("## 本轮排产\n\n本轮无可排产词。\n\n"
+                    f"> 模型返回字段：{', '.join(sorted(data)[:8]) or '空'}"
+                    "（未取到 items/excluded）。")
         report = str(data.get("report") or "").strip() or render_report(items, excluded)
         if not items:
             return report
