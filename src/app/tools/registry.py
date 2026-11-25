@@ -73,12 +73,13 @@ from src.app.tools.hotwords_tools import (
     HotwordsOps,
     NextCandidateTool,
     ReadExamplesTool,
+    SyncTermStatusTool,
     WriteHotwordResultTool,
 )
 
 
 def _tool_tracer(name: str, kind: str, method: str, kwargs: dict, call):
-    """31 个工具共用的 LangSmith span：入参、统一返回体、失败原因全留在一条 run 上。
+    """32 个工具共用的 LangSmith span：入参、统一返回体、失败原因全留在一条 run 上。
 
     ★`parent=None` 是刻意的：工具在 graph 节点里同步调用，LangSmith 会自动把 span
       挂到当前节点（LangChainTracer 注入的 run）下。热词图的每词 span 同样靠
@@ -101,7 +102,7 @@ def _tool_tracer(name: str, kind: str, method: str, kwargs: dict, call):
 class RuntimeService(HotwordsOps, DistributionOps, LedgerOps,
                      MetricsOps, NotificationOps, PromotionOps, PublishingOps,
                      SiteSetupOps):
-    """31 个工具的唯一门面：实现见各域 Ops 类，这里只有组合。"""
+    """32 个工具的唯一门面：实现见各域 Ops 类，这里只有组合。"""
 
 
 TOOL_CLASSES = (
@@ -135,6 +136,7 @@ TOOL_CLASSES = (
     FetchSerpTool,
     FetchTrendTool,
     WriteHotwordResultTool,
+    SyncTermStatusTool,
     LaunchNewSiteTool,
 )
 
@@ -146,7 +148,7 @@ class ToolRegistry:
         self.bind(RuntimeService())
 
     def bind(self, ops: Any) -> None:
-        """换门面并重建 31 个工具（初始化时绑生产 RuntimeService）。"""
+        """换门面并重建 32 个工具（初始化时绑生产 RuntimeService）。"""
         self.ops = ops
         # tracer 注入而不是在 base.py 里 import 追踪模块：分层守卫要求 base 是叶子。
         self._tools = {tool.name: tool for tool in

@@ -10,9 +10,9 @@ from src.app.tools.base import BaseTool, RuntimeTool, ToolOutput, is_retryable_e
 from src.app.tools.registry import tool_registry
 
 
-def test_registry_has_31_tools():
-    assert len(tool_registry.names()) == 31
-    assert len(set(tool_registry.names())) == 31
+def test_registry_has_32_tools():
+    assert len(tool_registry.names()) == 32
+    assert len(set(tool_registry.names())) == 32
 
 
 def test_kind_split():
@@ -20,7 +20,7 @@ def test_kind_split():
     # 热词线的 fetch_serp / fetch_trend / write_hotword_result 都写共享 KV，
     # 但都是幂等 upsert / 缓存回写 → ledger，不是不可逆的 write。
     assert len(tool_registry.by_kind("read")) == 15
-    assert len(tool_registry.by_kind("ledger")) == 11
+    assert len(tool_registry.by_kind("ledger")) == 12
     assert len(tool_registry.by_kind("write")) == 5
 
 

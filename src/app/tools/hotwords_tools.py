@@ -26,7 +26,7 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 from src.app.enums import CandidateStatus, ToolKind
-from src.app.tools.adapters.hotwords import fetch, wordlib, writeback
+from src.app.tools.adapters.hotwords import fetch, state_sync, wordlib, writeback
 from src.app.tools.base import RuntimeTool
 
 
@@ -50,6 +50,9 @@ class HotwordsOps:
 
     def write_hotword_result(self, item, text, verdict, reason="", hints=None):
         return writeback.write_result(item, text, hints, verdict, reason)
+
+    def sync_term_status(self):
+        return state_sync.sync()
 
 
 class GetHotwordsTool(RuntimeTool):
@@ -120,3 +123,18 @@ class WriteHotwordResultTool(RuntimeTool):
         verdict: str = Field(..., description="结论：做 / 观望 / 不做")
         reason: str = Field("", description="判定理由（不做时写进 rejected 表）")
         hints: Optional[list[str]] = Field(None, description="信号标签；None = 正文里解析不出，不覆盖原标签")
+
+
+class SyncTermStatusTool(RuntimeTool):
+    """全量对账：按 agent_pages 台账把 saved 表的跟进状态补正（planned→wip / 已建页→live）。
+
+    只升级不降级、不动未收藏词、不动人工 parked。幂等，可重复执行——修的是历史遗留
+    （早期排产/建页没回写状态），正常流转由排产和建页节点即时触发，不必手动点。
+    """
+
+    tool_name = "sync_term_status"
+    method = "sync_term_status"
+    kind = ToolKind.LEDGER.value
+
+    class Input(BaseModel):
+        pass

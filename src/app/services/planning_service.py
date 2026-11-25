@@ -29,6 +29,7 @@ from src.app.llm.completion import complete_json, complete_text
 from src.app.observability.langsmith import traceable
 from src.app.services.page_build_service import slugify
 from src.app.services.prompt_service import prompt_service
+from src.app.services import term_state_service
 from src.app.tools.ledger_tools import LedgerOps
 from src.app.utils.logger import get_logger
 from src.app.utils.text import clip_with_count
@@ -194,6 +195,7 @@ class PlanningService:
         """
         now = int(time.time())
         saved = 0
+        landed: list[str] = []
         for item in items:
             row = {"site": item["site"], "keyword": item["term"],
                    "slug": slugify(item["term"]),
@@ -204,6 +206,10 @@ class PlanningService:
                 log.warning("计划行写入失败 %s：%s", item["term"], str(exc)[:200])
                 continue
             saved += 1
+            landed.append(item["term"])
+        # ★闭环：入选词已进待建页台账 → saved 表同步为 wip（开发中），
+        #   否则它们还挂在「待开发」池里，下次排产又会选中同一批词。
+        term_state_service.after_plan(landed)
         return saved
 
 

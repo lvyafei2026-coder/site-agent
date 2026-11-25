@@ -20,7 +20,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.app.enums import AuditDecision, ClassifyBy, ContentSource, PageBuildStep
-from src.app.services import page_build_service
+from src.app.services import page_build_service, term_state_service
 from src.app.services.page_content_service import analysis_leak, page_content_service
 from src.app.services.site_audit_service import audit as audit_site
 from src.app.services.site_audit_service import read_site, style_brief
@@ -140,6 +140,10 @@ def page_push(state: dict[str, Any]) -> dict[str, Any]:
         return {"stage": "push", "error": f"推送失败：{res.get('error', res)}"}
     result = res.get("result") or {}
     # git_push 成功后台账已自动 UPSERT（publishing_tools.git_push），这里只记 sha。
+    # ★闭环：该词已上线 → saved 表同步为 live，从「待开发/开发中」出队。
+    term = str((state.get("picked") or {}).get("term") or state.get("term") or "")
+    if term:
+        term_state_service.after_push(term)
     return {"stage": "push", "sha": str(result.get("sha") or "")}
 
 

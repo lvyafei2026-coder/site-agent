@@ -88,6 +88,23 @@ def test_valid_excluded_keeps_reason_only():
         [{"term": "tax", "reason": "无站"}]
 
 
+def test_plan_syncs_landed_terms_to_wip(monkeypatch):
+    """落 planned 行的词同步进热词状态闭环；台账写失败的词不带上。"""
+    written = _capture(monkeypatch)
+    seen = []
+    monkeypatch.setattr(planning_mod.term_state_service, "after_plan",
+                        lambda terms: seen.extend(terms))
+    monkeypatch.setattr(planning_mod, "complete_json", _json({
+        "items": [{"term": "blackout", "site": "clocksgoback"},
+                  {"term": "full moon", "site": "clocksgoback"}],
+        "excluded": [],
+    }))
+
+    planning_service.plan({"get_hotwords": {"ok": True, "result": {}}})
+    assert seen == ["blackout", "full moon"]
+    assert len(written) == 2
+
+
 def test_plan_shows_model_prose_without_saving(monkeypatch):
     """模型把正文塞在 content 里没给数组：正文照出，但明确标注未落台账。"""
     written = _capture(monkeypatch)
