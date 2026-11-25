@@ -23,12 +23,11 @@ import time
 
 from src.app.config import SITES
 from src.app.enums import PageStatus, PromptTask
-from src.app.llm.completion import complete_text
+from src.app.llm.completion import complete_json, complete_text
 from src.app.observability.langsmith import traceable
 from src.app.services.page_build_service import slugify
 from src.app.services.prompt_service import prompt_service
 from src.app.tools.ledger_tools import LedgerOps
-from src.app.utils.json_text import parse_json
 from src.app.utils.logger import get_logger
 from src.app.utils.text import clip_with_count
 
@@ -97,17 +96,16 @@ class PlanningService:
         system = prompt_service.load_prompt(
             PromptTask.WORD_PLAN_PAGE.value,
             version=versions.get(PromptTask.WORD_PLAN_PAGE.value))
-        raw = complete_text(system, _compact_payload(results),
-                            warn_event="plan_pages_failed")
-        if not raw:
-            return ""
-        data = parse_json(raw)
+        payload = _compact_payload(results)
+        # ★必须走 complete_json：这份提示词的产出要被程序解析后写台账，纯文本补全
+        #   下模型会自由发挥成 markdown，落库就断了。拿不到 JSON 才退回纯文本问一次，
+        #   至少把报告给人看（这一轮不写库，建页线回退池顺序）。
+        data, _failed, _retryable = complete_json(
+            system, payload, warn_event="plan_pages_failed")
         if data is None:
-            # 模型没按 JSON 输出（只在换提示词/版本期间可能出现）：报告照常展示，
-            # 但这一轮没有可落库的结构化入选词，建页线只能回退待开发池顺序。
-            return raw
+            return complete_text(system, payload, warn_event="plan_pages_failed") or ""
         items = valid_items(data.get("items"))
-        report = str(data.get("report") or "").strip() or raw
+        report = str(data.get("report") or "").strip()
         if not items:
             return report
         saved = self.save_plan(items)
