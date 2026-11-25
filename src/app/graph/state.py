@@ -203,6 +203,9 @@ class HotwordLoopState(TypedDict, total=False):
     summary: dict[str, Any]
 
 
+HOTWORD_LIMIT_MAX = 100   # 一轮最多逐词分析多少个；入口模型默认值与 state 收口共用
+
+
 def initial_hotword_state(limit: int = 100,
                           prompt_version: Optional[str] = None,
                           evidence: tuple[str, ...] = (),
@@ -215,7 +218,7 @@ def initial_hotword_state(limit: int = 100,
     graph/hotword_graph.py（那里同时决定图怎么连线），这里只负责把通道初始化好。
     """
     return {
-        "limit": max(1, min(int(limit or 100), 100)),
+        "limit": max(1, min(int(limit or HOTWORD_LIMIT_MAX), HOTWORD_LIMIT_MAX)),
         "prompt_version": prompt_version,
         "degrade": DegradeState(),
         "evidence": evidence,

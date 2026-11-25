@@ -5,7 +5,7 @@
 """进程入口：`python -m src.app.main` 起 uvicorn，所有业务都走 HTTP。
 
     POST /run        常规线主图
-    POST /hotwords   热词逐词循环图（前端按需触发，无常驻线程）
+    POST /hotwords   热词逐词循环图（入口立即返回，后台线程跑；进度走 GET /hotwords/status）
 
 本模块只有 serve() 一件事，不带「单跑一轮」的第二个入口——那条路早先只为
 `langgraph.json` 的 CLI 服务，线上从不走它，留着只会让入口有两套语义。

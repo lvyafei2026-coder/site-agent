@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.app.graph.state import HotwordLoopState
+from src.app.observability.hotword_progress import hotword_progress
 
 
 def collect_word(state: HotwordLoopState) -> dict[str, Any]:
@@ -23,8 +24,10 @@ def collect_word(state: HotwordLoopState) -> dict[str, Any]:
     if write_errors:
         msg = "KV 写入失败：" + "、".join(write_errors)
         word["error"] = "；".join(x for x in (word["error"], msg) if x)
+    results = list(state.get("results") or []) + [word]
+    hotword_progress.report(results)    # 页面轮询的那份进度；不在后台轮里是空操作
     return {
-        "results": list(state.get("results") or []) + [word],
+        "results": results,
         "loop_count": state.get("loop_count", 0) + 1,
         "word": {},
         "body": {},
