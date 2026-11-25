@@ -21,7 +21,7 @@ from src.app.llm.provider import content_from_response, get_llm
 from src.app.observability.langsmith import tracing_enabled
 # base.py 是纯叶子（只依赖标准库 / pydantic / enums），这里取异常分类不会引回环
 from src.app.tools.base import is_retryable_error
-from src.app.utils.json_text import parse_json, strip_fences
+from src.app.utils.json_text import parse_json, strip_fences, unwrap_envelope
 from src.app.utils.llm_io import thinking_kwargs
 from src.app.utils.logger import get_logger
 from src.app.utils.text import clip_with_count
@@ -112,6 +112,10 @@ def complete_json(prompt: str, text: str, warn_event: str) -> tuple[dict | None,
             logger.warning("llm_nonjson_response",
                            extra={"warn_event": warn_event, "head": clip_with_count(content, 400)})
             return None, False, False
+        # 网关偶尔把整份答案塞进 {"type","content"} 再套一层：在这里统一剥掉，
+        # 各业务只面对自己那套字段，不必各自兼容外壳形态。
+        data = unwrap_envelope(data)
+        logger.info("llm_unwrapped_result", extra={"keys": list(data.keys())})
         return data, False, False
     except Exception as exc:  # noqa: BLE001 - LLM 不可用不影响整轮
         logger.warning(warn_event, extra={"error": str(exc)[:200]})

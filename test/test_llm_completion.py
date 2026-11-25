@@ -10,6 +10,7 @@
 - 返回形态异常不再被误判成「故障」（failed 不应被置 True）。
 """
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -186,3 +187,27 @@ def test_complete_network_error_is_retryable(with_key, monkeypatch):
     assert data is None
     assert failed is True
     assert retryable is True
+
+
+# ---- 网关套壳：{"type": "text", "content": "<内层 JSON>"} ----
+
+def test_complete_unwraps_content_envelope(with_key, monkeypatch):
+    inner = json.dumps({"items": [{"term": "blackout", "site": "clocksgoback"}]},
+                       ensure_ascii=False)
+    monkeypatch.setattr(llm_mod, "get_llm", lambda: _FakeClient(
+        json.dumps({"type": "text", "content": inner}, ensure_ascii=False)))
+
+    data, failed, _ = complete_json("sys", "user", "warn_event")
+    assert data == {"items": [{"term": "blackout", "site": "clocksgoback"}]}
+    assert failed is False
+
+
+def test_complete_unwraps_double_encoded_envelope(with_key, monkeypatch):
+    """content 里又是一段带转义的 JSON 字符串（二次编码）也要拆到底。"""
+    inner = json.dumps({"excluded": [{"term": "tax", "reason": "无站"}]}, ensure_ascii=False)
+    double = json.dumps(inner, ensure_ascii=False)
+    monkeypatch.setattr(llm_mod, "get_llm", lambda: _FakeClient(
+        json.dumps({"type": "text", "content": double}, ensure_ascii=False)))
+
+    data, _, _ = complete_json("sys", "user", "warn_event")
+    assert data == {"excluded": [{"term": "tax", "reason": "无站"}]}

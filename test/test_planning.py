@@ -4,8 +4,6 @@
 
 """排产服务的落库契约：入选词必须变成 planned 台账行，不然建页线拿不到活。"""
 
-import json
-
 import src.app.services.planning_service as planning_mod
 from src.app.services.planning_service import (
     planning_service, render_report, valid_excluded, valid_items,
@@ -90,18 +88,16 @@ def test_valid_excluded_keeps_reason_only():
         [{"term": "tax", "reason": "无站"}]
 
 
-def test_plan_unwraps_content_envelope(monkeypatch):
-    """模型把结果塞进 {"type","content"} 再套一层时，拆开照常落库。"""
+def test_plan_shows_model_prose_without_saving(monkeypatch):
+    """模型把正文塞在 content 里没给数组：正文照出，但明确标注未落台账。"""
     written = _capture(monkeypatch)
-    inner = json.dumps({"items": [{"term": "blackout", "site": "clocksgoback",
-                                   "priority": "高", "reason": "停电"}],
-                        "excluded": []}, ensure_ascii=False)
-    monkeypatch.setattr(planning_mod, "complete_json",
-                        _json({"type": "text", "content": inner}))
+    monkeypatch.setattr(planning_mod, "complete_json", _json(
+        {"type": "text", "content": "## 本轮排产\n建议先做 blackout"}))
 
     out = planning_service.plan({})
-    assert "已写入台账 1/1 条" in out
-    assert [r["keyword"] for r in _rows(written)] == ["blackout"]
+    assert "建议先做 blackout" in out
+    assert "未落台账" in out
+    assert written == []
 
 
 def test_plan_ignores_model_written_report(monkeypatch):

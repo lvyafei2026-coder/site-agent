@@ -44,3 +44,32 @@ def parse_json(text: str) -> dict | None:
         except json.JSONDecodeError:
             return None
     return data if isinstance(data, dict) else None
+
+
+def unwrap_envelope(data: dict, depth: int = 3) -> dict:
+    """剥掉 {"type": "text", "content": "<内层 JSON>"} 这类外壳。
+
+    实测 OpenAI 兼容网关会把结构化答案再包一层，且 content 常常是二次编码
+    （字符串里又是一段带转义的 JSON）。判定只看形态：顶层 content 是字符串
+    且能解析成 dict 才算壳——业务数据里的 content 是正文文本，解析不成 dict，
+    不会被误拆。最多剥 depth 层，剥不动就原样返回，由上层按其真实字段报告。
+    """
+    for _ in range(depth):
+        inner = data.get("content")
+        parsed = _as_dict(inner) if isinstance(inner, str) else None
+        if parsed is None:
+            return data
+        data = parsed
+    return data
+
+
+def _as_dict(text: str) -> dict | None:
+    """字符串 → dict；容忍二次编码（解析出来还是 JSON 字符串）。"""
+    parsed = parse_json(text)
+    if parsed is not None:
+        return parsed
+    try:
+        inner = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return parse_json(inner) if isinstance(inner, str) else None

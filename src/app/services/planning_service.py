@@ -30,7 +30,6 @@ from src.app.observability.langsmith import traceable
 from src.app.services.page_build_service import slugify
 from src.app.services.prompt_service import prompt_service
 from src.app.tools.ledger_tools import LedgerOps
-from src.app.utils.json_text import parse_json
 from src.app.utils.logger import get_logger
 from src.app.utils.text import clip_with_count
 
@@ -139,19 +138,13 @@ def _pick_list(data: dict, key: str) -> object:
     return []
 
 
-def unwrap(data: dict) -> dict:
-    """拆掉 {"type": ..., "content": "<json 或文本>"} 这层外壳。
-
-    实测 json_object 模式下模型会把整份结果塞进 content 字符串里再套一层；
-    只拆一层，拆不出可读结构就原样返回（上层按字段名如实报告）。
-    """
-    if "items" in data or "excluded" in data:
-        return data
-    inner = data.get("content")
-    if not isinstance(inner, str):
-        return data
-    parsed = parse_json(inner)
-    return parsed if isinstance(parsed, dict) else data
+def _prose(data: dict) -> str:
+    """模型没给结构化数组时，把它塞在 content / report 里的正文捞出来给人看。"""
+    for key in ("content", "report"):
+        text = data.get(key)
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+    return ""
 
 
 class PlanningService:
@@ -169,13 +162,17 @@ class PlanningService:
             system, payload, warn_event="plan_pages_failed")
         if data is None:
             return complete_text(system, payload, warn_event="plan_pages_failed") or ""
-        data = unwrap(data)
         items = valid_items(_pick_list(data, "items"))
         excluded = valid_excluded(_pick_list(data, "excluded"))
         if not items and not excluded:
-            # 拿到 JSON 但没有可用条目：把顶层字段名写进报告，否则「无可排产词」看不出
-            # 到底是池子空了还是模型没按约定出结构（两者的处理方式完全不同）。
+            # 拿到 JSON 却没有可用条目，三种原因处理方式完全不同：池子空了、模型没按
+            # 约定出结构、入选词的站名全对不上。所以报告要把「模型到底返回了什么」
+            # 如实带出来，否则一句「无可排产词」看不出该修提示词还是该补词。
             log.warning("排产输出缺 items/excluded，本轮不落库：%s", sorted(data)[:10])
+            prose = _prose(data)
+            if prose:
+                return (f"{prose}\n\n> 模型未按约定给出 items/excluded，以上正文"
+                        "**未落台账**，建页线本轮取不到词。")
             return ("## 本轮排产\n\n本轮无可排产词。\n\n"
                     f"> 模型返回字段：{', '.join(sorted(data)[:8]) or '空'}"
                     "（未取到 items/excluded）。")
