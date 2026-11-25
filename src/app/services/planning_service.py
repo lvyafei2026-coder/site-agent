@@ -16,6 +16,8 @@
   建页成功后 git_push 按 (site,slug) 覆盖成 deployed，自动出队。
 ★报告由代码渲染（render_report），模型只给结构化 items / excluded：报告与落库
   必须是同一批数据，让模型分两处各写一遍迟早对不上。
+★无匹配站点的排除词另出一节「建议新站」：按站名即子域名的契约派生候选
+  （slugify(term) + FLEET_DOMAIN），供人工确认后建站；本轮不建站、不写库。
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from __future__ import annotations
 import json
 import time
 
-from src.app.config import SITES
+from src.app.config import FLEET_DOMAIN, SITES
 from src.app.enums import PageStatus, PromptTask
 from src.app.llm.completion import complete_json, complete_text
 from src.app.observability.langsmith import traceable
@@ -107,21 +109,87 @@ def valid_excluded(raw: object) -> list[dict]:
     return out
 
 
-def render_report(items: list[dict], excluded: list[dict]) -> str:
-    """把入选/排除渲染成固定 markdown。
+def valid_new_sites(raw: object) -> list[dict]:
+    """解析模型可选给的建站提案；站名必须是合法子域名且不在现有站群里。
+
+    提示词真源在 D1 的 word_plan_page task，随时可在 /rules/prompts 加一版让它
+    给出 new_sites（含 term/name/brand/reason）；这里只认结构、不认措辞。
+    name 缺失或不合法时丢弃该提案，回退到按词派生。
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        term = str(item.get("term") or "").strip()
+        name = slugify(str(item.get("name") or ""))
+        if not term or not name or name in SITES:
+            continue
+        out.append({"term": term, "name": name,
+                    "brand": str(item.get("brand") or "").strip() or term.title(),
+                    "reason": str(item.get("reason") or "").strip()})
+    return out
+
+
+def suggest_new_sites(excluded: list[dict], proposals: list[dict] | None = None) -> list[dict]:
+    """把「无匹配站点」的排除词派生成候选新站（只建议，不建站、不写库、不改状态）。
+
+    站名沿用站群契约：name 即子域名 = slugify(词)，域名 = <name>.<FLEET_DOMAIN>，
+    与 launch_new_site / sites.json 的命名完全一致，确认后可直接照单建站。
+    模型提案按 term 覆盖默认派生（站名由 valid_new_sites 统一校验过）；
+    已在站群清单里的名字跳过（避免建议一个已存在的站）；同名去重。
+    """
+    by_term = {p["term"]: p for p in (proposals or [])}
+    out: list[dict] = []
+    seen: set[str] = set()
+    for ex in excluded:
+        term = str(ex.get("term") or "").strip()
+        if not term:
+            continue
+        proposal = by_term.get(term)
+        if proposal:
+            name, brand = proposal["name"], proposal["brand"]
+            reason = proposal["reason"] or str(ex.get("reason") or "").strip()
+        else:
+            name = slugify(term)
+            brand = term.title()
+            reason = str(ex.get("reason") or "").strip()
+        if not name or name in SITES or name in seen:
+            continue
+        seen.add(name)
+        out.append({"term": term, "name": name, "domain": f"{name}.{FLEET_DOMAIN}",
+                    "brand": brand, "reason": reason})
+    return out
+
+
+def render_report(items: list[dict], excluded: list[dict],
+                  new_sites: list[dict] | None = None) -> str:
+    """把入选/排除/建议新站渲染成固定 markdown。
 
     ★报告由代码渲染而不是要模型写：报告与落台账的必须是同一批数据，模型分两处
-    各写一遍迟早对不上（报告说 A、落库是 B）。模型只需给结构化的两个数组。
+    各写一遍迟早对不上（报告说 A、落库是 B）。模型只需给结构化的数组。
+    ★建议新站默认由 excluded 按站名契约派生，不依赖提示词多给字段；模型若按新版
+      提示词给了 new_sites，则按其提案覆盖（站名仍由 valid_new_sites 校验）。
     """
-    if not items:
-        return "## 本轮排产\n\n本轮无可排产词。"
-    lines = ["## 本轮排产（按优先级）", "",
-             "| 优先级 | 词 | 目标站点 | 理由 |", "|---|---|---|---|"]
-    lines += [f"| {it['priority'] or '—'} | {it['term']} | {it['site']} | "
-              f"{it['reason'] or '—'} |" for it in items]
+    has_plan = bool(items)
+    lines = (["## 本轮排产（按优先级）", "",
+              "| 优先级 | 词 | 目标站点 | 理由 |", "|---|---|---|---|"]
+             if has_plan else ["## 本轮排产", "", "本轮无可排产词。"])
+    if has_plan:
+        lines += [f"| {it['priority'] or '—'} | {it['term']} | {it['site']} | "
+                  f"{it['reason'] or '—'} |" for it in items]
     if excluded:
         lines += ["", "### 本轮排除"]
         lines += [f"- **{ex['term']}** — {ex['reason'] or '未给原因'}" for ex in excluded]
+    suggestions = suggest_new_sites(excluded, new_sites)
+    if suggestions:
+        lines += ["", "### 建议新站（待确认，本轮未建站）", "",
+                  "| 词 | 建议站名 | 品牌 | 建议域名 | 理由 |", "|---|---|---|---|---|"]
+        lines += [f"| {s['term']} | {s['name']} | {s['brand']} | {s['domain']} | "
+                  f"{s['reason'] or '—'} |" for s in suggestions]
+        lines += ["", "> 候选站名按「站名即子域名」规则生成，确认后走建站工具上线；"
+                  "本轮不建站、不写台账、不改变这些词的状态。"]
     return "\n".join(lines)
 
 
@@ -165,6 +233,7 @@ class PlanningService:
             return complete_text(system, payload, warn_event="plan_pages_failed") or ""
         items = valid_items(_pick_list(data, "items"))
         excluded = valid_excluded(_pick_list(data, "excluded"))
+        new_sites = valid_new_sites(_pick_list(data, "new_sites"))
         if not items and not excluded:
             # 拿到 JSON 却没有可用条目，三种原因处理方式完全不同：池子空了、模型没按
             # 约定出结构、入选词的站名全对不上。所以报告要把「模型到底返回了什么」
@@ -177,7 +246,7 @@ class PlanningService:
             return ("## 本轮排产\n\n本轮无可排产词。\n\n"
                     f"> 模型返回字段：{', '.join(sorted(data)[:8]) or '空'}"
                     "（未取到 items/excluded）。")
-        report = render_report(items, excluded)
+        report = render_report(items, excluded, new_sites)
         if not items:
             return report
         saved = self.save_plan(items)
