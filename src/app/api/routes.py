@@ -68,6 +68,7 @@ def hotwords(request: HotwordsRequest) -> dict:
 class PageRequest(BaseModel):
     term: str = ""                        # 空 = 自动取下一条带分析正文的 todo 词
     confirm: bool = False                 # False = dry-run 只预览，不写任何数据
+    planned_site: str = ""                # 排产台账给的目标站；空 = 由建页线现判
 
 
 @api.post("/page")

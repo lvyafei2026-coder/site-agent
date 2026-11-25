@@ -96,6 +96,14 @@ def _site_from_rule(term: str) -> str:
     return ""
 
 
+def valid_site(name: str) -> str:
+    """台账或调用方给的站点名，只认已登记的子站；非法一律当「没给」（回退现场归类）。
+
+    排产与建页是两条线，台账里可能留着改过名/删掉的站，不能拿它直接去渲染。
+    """
+    return name if name in SITES else ""
+
+
 def classify_site(term: str, text: str = "") -> dict[str, Any]:
     """把热词归类到已有子站。LLM（extraction 的 target_site）优先，规则兜底。
 

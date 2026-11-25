@@ -70,7 +70,7 @@ def test_page_line_shares_one_mechanism():
     assert callable(graph.build_page_graph) and callable(graph.run_page_build)
     s = initial_page_build_state("free invoice generator", confirm=True)
     assert s["term"] == "free invoice generator" and s["confirm"] is True
-    assert s["status_filter"] == "todo" and s["stage"] == "plan"
+    assert s["planned_site"] == "" and s["status_filter"] == "todo" and s["stage"] == "plan"
 
 
 def test_http_page_entry(fake, fake_kv, monkeypatch):
@@ -84,6 +84,10 @@ def test_http_page_entry(fake, fake_kv, monkeypatch):
     assert body["ok"] is True and body["dryRun"] is True
     assert body["stage"] == "plan" and body["site"] == "invoices"
     assert "sha" not in body and "url" not in body
+    # 从台账点单：词 + 排产站一起传，站点不再由 LLM 重判
+    pinned = client.post("/page", json={"term": "free invoice generator",
+                                        "planned_site": "clocksgoback"}).json()
+    assert pinned["site"] == "clocksgoback" and pinned["classifyBy"] == "plan"
     assert client.post("/page", json={}).status_code == 200   # 全缺省也是合法 dry-run
 
 
@@ -216,3 +220,21 @@ def test_run_page_build_empty_pool(fake, fake_kv, monkeypatch):
     out = graph.run_page_build("", confirm=True)
     assert out["ok"] is True and out["stage"] == "plan"
     assert "待开发池" in out["error"] and out["todoPool"] == 0
+
+
+def test_run_page_build_uses_planned_site_over_llm(fake, fake_kv, monkeypatch):
+    """从台账点单时带上的排产站优先：LLM 想判 invoices，也不许改投。"""
+    _stub_extract(monkeypatch, _SITE_OK)          # LLM 会说 invoices
+    _seed_todo(fake_kv, "free invoice generator")
+    out = graph.run_page_build("free invoice generator", confirm=False,
+                               planned_site="clocksgoback")
+    assert out["site"] == "clocksgoback" and out["classifyBy"] == "plan"
+
+
+def test_run_page_build_ignores_unknown_planned_site(fake, fake_kv, monkeypatch):
+    """台账里留着已删站的旧行时，不能拿去渲染：当没给，回退现场归类。"""
+    _stub_extract(monkeypatch, _SITE_OK)
+    _seed_todo(fake_kv, "free invoice generator")
+    out = graph.run_page_build("free invoice generator", confirm=False,
+                               planned_site="gone-site")
+    assert out["site"] == "invoices" and out["classifyBy"] == "llm"

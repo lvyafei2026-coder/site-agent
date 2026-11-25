@@ -55,8 +55,9 @@ def get_page_graph():
     return build_page_graph()
 
 
-def _run_inputs(term: str = "", confirm: bool = False) -> dict[str, Any]:
-    return {"term": term, "confirm": confirm}
+def _run_inputs(term: str = "", confirm: bool = False,
+                planned_site: str = "") -> dict[str, Any]:
+    return {"term": term, "confirm": confirm, "plannedSite": planned_site}
 
 
 def _run_outputs(out: dict[str, Any]) -> dict[str, Any]:
@@ -98,20 +99,23 @@ def _summarize(state: PageBuildState) -> dict[str, Any]:
 
 @observed(TraceName.PAGE_RUN, kind="chain", inputs=_run_inputs,
           outputs=_run_outputs, tags=["site-agent", "page-run"], link="traceRun")
-def run_page_build(term: str = "", confirm: bool = False) -> dict[str, Any]:
+def run_page_build(term: str = "", confirm: bool = False,
+                   planned_site: str = "") -> dict[str, Any]:
     """跑一轮建页：一条待开发词 → 归类站点 → 渲染 → 推送 → 验活。
 
     term 为空 = 自动取下一条带分析正文的 todo 词；confirm=False 只出预览。
+    planned_site 是排产台账给的目标站：给了就用它，不再让 LLM 重判。
     """
     run_id = f"page-{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}"
-    initial = initial_page_build_state(term, confirm)
+    initial = initial_page_build_state(term, confirm, planned_site=planned_site)
     final, trace = run_traced(
         get_page_graph(),
         initial,
         config={
             "recursion_limit": 16,
             "tags": ["site-agent"],
-            "metadata": {"runId": run_id, "term": term or "", "confirm": confirm},
+            "metadata": {"runId": run_id, "term": term or "",
+                         "plannedSite": planned_site or "", "confirm": confirm},
         },
         snapshot=page_snapshot,
     )

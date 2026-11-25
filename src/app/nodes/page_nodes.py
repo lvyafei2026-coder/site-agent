@@ -30,8 +30,9 @@ def _pass_if_failed(state: dict[str, Any]) -> dict[str, Any] | None:
 def page_plan(state: dict[str, Any]) -> dict[str, Any]:
     """取一条带分析正文的词 → 定目标站点 → 解析出页面结构。
 
-    站点优先用排产计划给的那个（pick_word 从 planned 台账行带出来），没有计划才
-    当场 classify_site 判——排产已经判过站点，这里再判一次只会打架。
+    站点优先用排产计划给的那个（pick_word 从 planned 台账行带出来，或调用方随
+    词一起点名的 planned_site），没有计划才当场 classify_site 判——排产已经判过
+    站点，这里再判一次只会打架。
     三处短路：池里没有可建词 / 归不进任何已有站（建新站流程未实现）/ 解析不出节
     （仍会给出兜底单节，不短路）。confirm=False 时只出预览，由条件边收尾。
     """
@@ -40,7 +41,10 @@ def page_plan(state: dict[str, Any]) -> dict[str, Any]:
     if not picked:
         return {**out, "error": "待开发池里没有带分析正文的词（先在 /agent 跑「候选池分析」）"}
     page = page_build_service.parse_page(picked["term"], picked["text"])
-    planned_site = str(picked.get("site") or "")
+    # 站点来源优先级：排产台账给的那一行（pick_word 带出）→ 调用方点名（从台账点单时
+    # 只传词和站）→ 现场 classify。前两者都是「排产已判过」，不能再判一次。
+    planned_site = page_build_service.valid_site(
+        str(picked.get("site") or state.get("planned_site") or ""))
     cls = ({"site": planned_site, "by": ClassifyBy.PLAN.value} if planned_site
            else page_build_service.classify_site(picked["term"], picked["text"]))
     if not cls["site"]:

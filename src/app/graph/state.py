@@ -243,6 +243,7 @@ class PageBuildState(TypedDict, total=False):
     # ── 输入（运行入口注入）──
     term: str                # 要建的词；空串 = 自动取下一条带正文的 todo 词
     confirm: bool            # False = dry-run（只 plan，不渲染不推送）
+    planned_site: str        # 排产台账给的目标站；空串 = 让 plan 节点现判
     status_filter: str       # 取词的跟进状态，默认 todo
 
     # ── 节点间流转 ──
@@ -263,11 +264,17 @@ class PageBuildState(TypedDict, total=False):
 
 
 def initial_page_build_state(term: str = "", confirm: bool = False,
+                             planned_site: str = "",
                              status_filter: str = "todo") -> PageBuildState:
-    """构造建页线一轮的入口状态（与前两个工厂对称）。"""
+    """构造建页线一轮的入口状态（与前两个工厂对称）。
+
+    planned_site 只在「调用方从排产台账点单」时给：那一行已经定过站点，
+    plan 节点直接用，不再让 LLM 重判（排产与建页两边判出不同站就是事故）。
+    """
     return {
         "term": str(term or ""),
         "confirm": bool(confirm),
+        "planned_site": str(planned_site or ""),
         "status_filter": str(status_filter or "todo"),
         "picked": {},
         "ai_text": "",
