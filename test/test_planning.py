@@ -42,10 +42,12 @@ def test_plan_saves_planned_rows_and_renders_report(monkeypatch):
 
     assert "| 高 | blackout | clocksgoback | 停电查询 |" in out
     assert "**tax form** — 无匹配站点" in out
-    assert "已写入台账 2/2 条" in out
-    assert [r["keyword"] for r in _rows(written)] == ["blackout", "full moon"]
+    # 2 个入选 + 1 个建议新站（tax form）都进待建页
+    assert "已写入待建页 3/3 条 planned 行" in out
+    assert [r["keyword"] for r in _rows(written)] == ["blackout", "full moon", "tax form"]
     assert all(r["status"] == "planned" for r in _rows(written))
     assert _rows(written)[0]["site"] == "clocksgoback"
+    assert _rows(written)[2]["site"] == "tax-form"      # 建议新站用派生站名
 
 
 def test_plan_drops_unknown_site(monkeypatch):
@@ -167,11 +169,11 @@ def test_render_report_shows_new_site_section_even_without_items():
     assert "本轮无可排产词" in out
     assert "### 建议新站（待确认，本轮未建站）" in out
     assert "| medicare | Medicare | medicare.toolara.dev | 无匹配站点 |" in out
-    assert "本轮不建站、不写台账" in out
+    assert "已一并列入待建页" in out
 
 
-def test_plan_suggests_new_sites_without_side_effects(monkeypatch):
-    """全是排除词时：报告出建站清单，但不写台账、不改热词状态。"""
+def test_plan_suggests_new_sites_into_planned(monkeypatch):
+    """全是排除词时：建议新站也进待建页台账（站名=派生名），热词同步 wip。"""
     written = _capture(monkeypatch)
     seen = []
     monkeypatch.setattr(planning_mod.term_state_service, "after_plan",
@@ -183,8 +185,12 @@ def test_plan_suggests_new_sites_without_side_effects(monkeypatch):
     out = planning_service.plan({})
     assert "### 建议新站（待确认，本轮未建站）" in out
     assert "| medicare | Medicare | medicare.toolara.dev |" in out
-    assert written == []
-    assert seen == []
+    assert "已写入待建页 1/1 条 planned 行" in out
+    assert len(written) == 1
+    assert written[0]["row"] == {"site": "medicare", "keyword": "medicare",
+                                 "slug": "medicare", "status": "planned",
+                                 "created_at": written[0]["row"]["created_at"]}
+    assert seen == ["medicare"]
 
 
 def test_intent_from_analysis_picks_first_section():

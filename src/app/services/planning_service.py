@@ -227,8 +227,8 @@ def render_report(items: list[dict], excluded: list[dict],
         lines += [f"| {s['term']} | {s['name']} | {s['brand']} | {s['domain']} | "
                   f"{s['reason'] or '—'} | {term_intent(s['term']) or '—'} |"
                   for s in suggestions]
-        lines += ["", "> 候选站名按「站名即子域名」规则生成，确认后走建站工具上线；"
-                  "本轮不建站、不写台账、不改变这些词的状态。"]
+        lines += ["", "> 候选站名按「站名即子域名」规则生成，已一并列入待建页；"
+                  "站点还没建时先点「直接建站」建站，再回待建页预览上线。"]
     return "\n".join(lines)
 
 
@@ -285,40 +285,48 @@ class PlanningService:
             return ("## 本轮排产\n\n本轮无可排产词。\n\n"
                     f"> 模型返回字段：{', '.join(sorted(data)[:8]) or '空'}"
                     "（未取到 items/excluded）。")
+        suggestions = suggest_new_sites(excluded, new_sites)
         report = render_report(items, excluded, new_sites)
-        if not items:
+        if not items and not suggestions:
             return report
-        saved = self.save_plan(items)
+        saved, total = self.save_plan(items, suggestions)
         # 落库结果写进报告：排产的产出是「待建页清单」，写没写进去必须让人一眼看见，
         # 否则下一步建页线取不到词时无从判断是没排产还是没落库。
-        return (f"{report}\n\n> 已写入台账 {saved}/{len(items)} 条 planned 行"
-                f"（建页线按此顺序取词，建页成功后自动转 deployed）。")
+        return (f"{report}\n\n> 已写入待建页 {saved}/{total} 条 planned 行"
+                f"（入选 {len(items)} + 建议新站 {len(suggestions)}；"
+                f"建页线按此顺序取词，站点建好后可预览上线）。")
 
-    def save_plan(self, items: list[dict]) -> int:
-        """入选词按给定顺序写成 planned 台账行，返回实际落库条数。
+    def save_plan(self, items: list[dict],
+                  suggestions: list[dict] | None = None) -> tuple[int, int]:
+        """入选词 + 建议新站词按给定顺序写成 planned 台账行，返回 (落库数, 总数)。
 
+        ★建议新站也进待建页：站名即子域名（s['name']），和入选词同一张表同一状态，
+          这样「设为不做」才能在待建页统一删除；站点还没建时预览/上线会失败，属预期。
         (site, slug) 是 agent_pages 的唯一键：同一词同站重复排产只覆盖不重复，
         建页成功后 git_push 的 UPSERT 会把这行改成 deployed，pick_word 自然跳过。
         写入失败只记日志——排产报告照出，不因为台账不可写丢掉整轮结论。
         """
         now = int(time.time())
+        # 入选词按模型给的 site；建议新站用派生站名，两者都是 (site, term) 二元组
+        targets = [(it["site"], it["term"]) for it in items]
+        targets += [(s["name"], s["term"]) for s in (suggestions or [])]
         saved = 0
         landed: list[str] = []
-        for item in items:
-            row = {"site": item["site"], "keyword": item["term"],
-                   "slug": slugify(item["term"]),
+        for site, term in targets:
+            row = {"site": site, "keyword": term,
+                   "slug": slugify(term),
                    "status": PageStatus.PLANNED.value, "created_at": now}
             try:
                 _ledger.ledger_upsert("agent_pages", row)
             except Exception as exc:  # noqa: BLE001 - 台账不可写不能打断排产
-                log.warning("计划行写入失败 %s：%s", item["term"], str(exc)[:200])
+                log.warning("计划行写入失败 %s：%s", term, str(exc)[:200])
                 continue
             saved += 1
-            landed.append(item["term"])
-        # ★闭环：入选词已进待建页台账 → saved 表同步为 wip（开发中），
+            landed.append(term)
+        # ★闭环：入选词 + 建议新站词已进待建页台账 → saved 表同步为 wip（开发中），
         #   否则它们还挂在「待开发」池里，下次排产又会选中同一批词。
         term_state_service.after_plan(landed)
-        return saved
+        return saved, len(targets)
 
 
 planning_service = PlanningService()
