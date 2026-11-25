@@ -76,6 +76,11 @@ class WorkflowState(TypedDict, total=False):
     待开发池 × 近 30 天新页 × 历史复盘 → 选哪些词 / 落哪个站 / 排除原因；
     无 LLM key 或排产失败时为空串。build_output 把它并入 output 报告。"""
 
+    promotion_analysis: str
+    """processing 节点产出（plan_promo 专属）。确定性推广排期报告（markdown）：
+    近 30 天已上线页 × 上版排期去重 → 日期/渠道/目标链接，并已落 agent_reports(kind='plan')。
+    无已上线页或排期失败时为空串。build_output 把它并入 output 报告。"""
+
     tool_results: dict[str, Any]
     """processing 节点产出。{工具名: ToolOutput dict}，入口初始化为 {}；
     validation 节点据此判断「全部失败不算 is_valid」，WorkflowResult 统计成功/失败数。"""
@@ -142,7 +147,7 @@ class DegradeState:
       ・某步源不可用 → disabled.add(key)：后续词跳过这一步（省掉每词几发超时），照常走 LLM；
       ・LLM 失败      → 只累加次数供汇总，不中止。
 
-    源级故障是「出口 IP 不通」这类全局问题，让 20 个词各撞一遍超时毫无意义；
+    源级故障是「出口 IP 不通」这类全局问题，让一轮 100 个词各撞一遍超时毫无意义；
     跳过的是「取数」那一个节点，不是整词分析。
 
     key 就是步骤名（与 GraphNode 连线用的名单同一套），谁 disable 谁负责，不在这里表驱动。
@@ -198,19 +203,19 @@ class HotwordLoopState(TypedDict, total=False):
     summary: dict[str, Any]
 
 
-def initial_hotword_state(limit: int = 20,
+def initial_hotword_state(limit: int = 100,
                           prompt_version: Optional[str] = None,
                           evidence: tuple[str, ...] = (),
                           post: tuple[str, ...] = ()) -> HotwordLoopState:
     """构造热词线一轮的入口状态（与 initial_workflow_state 对称）。
 
-    limit 是最大循环次数，收口在 1-50。prompt_version 原样带上（可为 None）：
+    limit 是最大循环次数，收口在 1-100。prompt_version 原样带上（可为 None）：
     默认版本由 prompts.registry 结合 D1 的默认版本决定，不在这里提前拍死。
     evidence / post 是**已解析校验过的步骤名单**——名单与节点的对应关系在
     graph/hotword_graph.py（那里同时决定图怎么连线），这里只负责把通道初始化好。
     """
     return {
-        "limit": max(1, min(int(limit or 20), 50)),
+        "limit": max(1, min(int(limit or 100), 100)),
         "prompt_version": prompt_version,
         "degrade": DegradeState(),
         "evidence": evidence,

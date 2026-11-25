@@ -24,6 +24,7 @@ from src.app.services.extraction_service import extraction_service
 from src.app.services.metrics_service import metrics_service
 from src.app.services.outreach_service import outreach_service
 from src.app.services.planning_service import planning_service
+from src.app.services.promotion_planning_service import promotion_planning_service
 from src.app.services.tool_service import tool_service
 from src.app.tools.base import is_retryable_error
 
@@ -33,7 +34,7 @@ class ProcessingService:
             requested_tools: list[str] | None = None,
             tool_args: dict[str, dict] | None = None) -> dict:
         """返回 {extracted, results, fatal, error, metrics_analysis, metrics_notice,
-        outreach_result, planning_analysis}，由节点写回 state。"""
+        outreach_result, planning_analysis, promotion_analysis}，由节点写回 state。"""
         extracted = extraction_service.extract(text, intent, versions)
 
         # LLM 故障分类：已配置 key 但调用抛异常才计失败；明确非网络失败 → 短路。
@@ -96,10 +97,21 @@ class ProcessingService:
             except Exception:  # noqa: BLE001 - 排产失败不影响取数与出报告
                 planning_analysis = ""
 
+        # plan_promo 专属：三份取数（上版排期 / 近 30 天新页 / 待消费事件）→
+        # 确定性排期 + 落库 + 代码渲染报告。与 word_plan_page 一样：失败只空串，
+        # 不阻塞取数与出报告；落库是流程自动化的产物，不由 LLM 决定写不写。
+        promotion_analysis = ""
+        if intent == Intent.PLAN_PROMO.value and results and not fatal:
+            try:
+                promotion_analysis = promotion_planning_service.plan(results)
+            except Exception:  # noqa: BLE001 - 排期失败不影响取数与出报告
+                promotion_analysis = ""
+
         return {"extracted": extracted, "results": results, "fatal": fatal,
                 "error": error, "metrics_analysis": metrics_analysis,
                 "metrics_notice": metrics_notice, "outreach_result": outreach_result,
-                "planning_analysis": planning_analysis}
+                "planning_analysis": planning_analysis,
+                "promotion_analysis": promotion_analysis}
 
 
 processing_service = ProcessingService()

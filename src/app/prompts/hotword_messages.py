@@ -12,7 +12,7 @@ nodes/hotword_llm_node.py。
 
 ★为什么不调 services/prompt_service.py 那个带日志的入口：本模块在 prompts 包里，
   反向依赖 services 就把分层倒过来了（见 test_architecture.py）。这里用同包的
-  load_prompt，行为差别只少一条 prompt_loaded 日志，换来 lru_cache 后一批 20 词
+  load_prompt，行为差别只少一条 prompt_loaded 日志，换来 lru_cache 后一轮 100 词
   只读一次 D1 快照。
 """
 
@@ -56,7 +56,7 @@ def build_messages(body: dict[str, Any], *, prompt_version: Optional[str] = None
     """拼 system + user；**措辞全部来自 D1 的 hotwords 提示词**，这里只填数据。
 
     SERP 前 6 的「域名 — 标题」是 AI 辨形的主要线索。模板由 _prompt_pair() 按
-    prompt_version 一次性加载并缓存，20 个词只读一次。
+    prompt_version 一次性加载并缓存，一轮 100 词只读一次。
 
     ``examples`` 是人工判例反馈（见 wordlib.pick_examples）：仅当 user 模板含
     ``{examples_line}`` 占位符（v2+）时注入；v1 模板无此占位符则输出逐字不变。

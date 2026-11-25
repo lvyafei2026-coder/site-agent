@@ -24,6 +24,7 @@ def processing_node(state: WorkflowState) -> WorkflowState:
             [review_metrics 分析出正文时另写] metrics_analysis, metrics_notice
             [find_backlinks 走完起稿发布时另写] outreach_result
             [word_plan_page 排产出正文时另写] planning_analysis
+            [plan_promo 排出排期时另写] promotion_analysis
     """
     intent = state.get("intent", Intent.GENERAL.value)
     step = processing_service.run(
@@ -48,6 +49,8 @@ def processing_node(state: WorkflowState) -> WorkflowState:
         out["outreach_result"] = step["outreach_result"]
     if step["planning_analysis"]:
         out["planning_analysis"] = step["planning_analysis"]
+    if step["promotion_analysis"]:
+        out["promotion_analysis"] = step["promotion_analysis"]
     if step["fatal"]:
         out["processing_fatal"] = True
         out["error"] = step["error"]

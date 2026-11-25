@@ -22,6 +22,7 @@ class WorkflowResult(BaseModel):
     metrics_notice: dict = Field(default_factory=dict)
     outreach_result: dict = Field(default_factory=dict)
     planning_analysis: str = Field(default="")
+    promotion_analysis: str = Field(default="")
 
     @classmethod
     def from_state(cls, state: dict) -> "WorkflowResult":
@@ -41,6 +42,7 @@ class WorkflowResult(BaseModel):
             metrics_notice=state.get("metrics_notice", {}) or {},
             outreach_result=state.get("outreach_result", {}) or {},
             planning_analysis=state.get("planning_analysis", "") or "",
+            promotion_analysis=state.get("promotion_analysis", "") or "",
         )
 
     def render(self) -> str:
@@ -60,4 +62,6 @@ class WorkflowResult(BaseModel):
                     f"target={article.get('target_url', '')}"
         if self.planning_analysis:
             base += "\n\n" + self.planning_analysis
+        if self.promotion_analysis:
+            base += "\n\n" + self.promotion_analysis
         return base

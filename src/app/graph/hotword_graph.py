@@ -155,7 +155,7 @@ def get_hotword_graph(evidence: tuple[str, ...] = DEFAULT_EVIDENCE,
     return build_hotword_graph(evidence, post)
 
 
-def _run_inputs(limit: int = 20, prompt_version: Optional[str] = None,
+def _run_inputs(limit: int = 100, prompt_version: Optional[str] = None,
                 evidence: Optional[list[str]] = None,
                 post: Optional[list[str]] = None) -> dict[str, Any]:
     """根 span 的 inputs：本轮实际生效的步骤名单（None = 默认计划）。"""
@@ -177,13 +177,13 @@ def _run_outputs(out: dict[str, Any]) -> dict[str, Any]:
 
 @observed(TraceName.HOTWORD_RUN, kind="chain", inputs=_run_inputs,
           outputs=_run_outputs, tags=["site-agent", "hotword-run"], link="traceRun")
-def run_hotwords(limit: int = 20,
+def run_hotwords(limit: int = 100,
                  prompt_version: Optional[str] = None,
                  evidence: Optional[list[str]] = None,
                  post: Optional[list[str]] = None) -> dict[str, Any]:
     """跑一轮候选池分析：问 tool 逐词取 → 逐词跑子图 → 没有更多词或达上限就汇总收尾。
 
-    limit 是最大循环次数（1-50，由 state 工厂收口）。evidence / post 是步骤名单，
+    limit 是最大循环次数（1-100，由 state 工厂收口）。evidence / post 是步骤名单，
     只能取本文件两张表里的名字（None=默认计划，[]=该段不做）；名单非法或
     KV 候选池不可达时整轮失败，不写任何状态。
     每个词独立跑完、失败只落在该词 items[].error；源级故障只降级「取数」那一个节点。
@@ -203,7 +203,7 @@ def run_hotwords(limit: int = 20,
         initial["load_error"] = load_error
 
     # 每词 2 个 super-step（fetch_one + analyze_word），取尽那轮多 1 次 fetch，收尾再加汇总节点；
-    # limit 最大 50 → 最坏 2*50+3 = 103。给足上限，让 route_after_word 决定何时收尾。
+    # limit 最大 100 → 最坏 2*100+3 = 203。给足上限，让 route_after_word 决定何时收尾。
     final, trace = run_traced(
         get_hotword_graph(*plan),
         initial,

@@ -37,7 +37,7 @@ class WorkflowRequest(BaseModel):
 
 
 class HotwordsRequest(BaseModel):
-    limit: int = 20
+    limit: int = 100
     prompt_version: str | None = None
     evidence: list[str] | None = None    # 本轮补证据的步骤名单（None=默认）
     post: list[str] | None = None        # 本轮后置动作的步骤名单（None=默认）
@@ -57,7 +57,7 @@ def hotwords(request: HotwordsRequest) -> dict:
     """热词循环图：请求字段与 run_hotwords 签名一一对应，直接展开。
 
     返回图终态的汇总（ok / analyzed / failed / items / evidenceSteps …）+ trace + langsmith，
-    与 /run 同一套封装；limit 最大 50，由 state 工厂收口。
+    与 /run 同一套封装；limit 最大 100，由 state 工厂收口。
     evidence / post 只能取步骤白名单里的名字（serp / trend / write_result），
     不是任意工具名——这个入口不带强鉴权，不能让它变成不可逆写工具的旁路；
     名单非法时整轮 ok=False，不跑任何词。

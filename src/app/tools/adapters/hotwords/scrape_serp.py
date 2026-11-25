@@ -97,7 +97,7 @@ def _fetch_via_reader(q: str, limit: int, sess: Any, proxy: Optional[str]) -> di
 
 
 # ★直连被判定不通后，短时间内不再每个词都撞 4 次 6 秒 connect 超时。
-#   Render 出口全挂时每词要白等约 32 秒，20 词 ≈ 10 分钟，免费实例会被拖到请求超时。
+#   Render 出口全挂时每词要白等约 32 秒，100 词 ≈ 50 分钟，免费实例会被拖到请求超时。
 #   记住状态后同一批后续词直接走兜底出口；DIRECT_RETRY_SEC 到期会再探一次直连。
 #   进程内状态，重启即清零；只是性能优化，不影响结果口径与中止语义。
 DIRECT_RETRY_SEC = 300

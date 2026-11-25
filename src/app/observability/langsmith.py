@@ -252,7 +252,7 @@ def observed(name, *, kind: str = "chain", inputs=None, outputs=None,
 
         @observed(TraceName.HOTWORD_RUN, kind="chain", inputs=_run_inputs,
                   outputs=_run_outputs, link="traceRun")
-        def run_hotwords(limit=20, prompt_version=None): ...
+        def run_hotwords(limit=100, prompt_version=None): ...
 
     关键约定：
       - 父子关系靠 LangSmith contextvar 自动继承，切面**不传 parent**。

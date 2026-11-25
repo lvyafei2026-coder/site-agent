@@ -95,6 +95,22 @@ def test_word_plan_page_skips_plan_without_key(graph, fake, monkeypatch):
     assert "status=success" in r["output"]
 
 
+def test_plan_promo_schedules_and_saves(graph, fake):
+    """plan_promo 三份取数 → 确定性排期 → 落库 → 报告并进 output，全程不用 LLM。"""
+    fake.tables["agent_pages"].append(
+        {"site": "music", "slug": "when-is-full-moon", "keyword": "when is full moon",
+         "status": "deployed", "created_at": 1})
+    r = graph.invoke({"input_text": "安排本周推广", "intent": "plan_promo",
+                      "retry_count": 0, "messages": [], "tool_results": {}},
+                     config={"configurable": {"thread_id": "t-promo"}})
+    assert set(r["tool_results"]) == {"get_latest_plan", "get_page_inventory",
+                                      "get_pending_events"}
+    assert all(v["ok"] for v in r["tool_results"].values())
+    assert r.get("promotion_analysis") and "本轮推广排期" in r["output"]
+    plans = [x for x in fake.tables["agent_reports"] if x.get("kind") == "plan"]
+    assert plans and "when-is-full-moon" in plans[0]["actions"]
+
+
 def test_explicit_tools_override_intent(graph, fake):
     r = graph.invoke({"input_text": "hello", "intent": "general",
                       "requested_tools": ["get_latest_plan"],

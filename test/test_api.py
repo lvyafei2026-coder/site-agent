@@ -53,7 +53,7 @@ def test_hotwords_is_a_separate_entry(fake, monkeypatch):
 
     seen = {}
 
-    def fake_run(*, limit=20, prompt_version=None, evidence=None, post=None):
+    def fake_run(*, limit=100, prompt_version=None, evidence=None, post=None):
         seen.update(limit=limit, prompt_version=prompt_version,
                     evidence=evidence, post=post)
         return {"ok": True, "analyzed": 3, "failed": 0, "items": []}
