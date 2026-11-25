@@ -56,13 +56,16 @@ class Settings:
         if self.default_prompt_versions is None:
             # ★D1 读不到默认版本时的兜底版本号（不是提示词正文）。唯一真源在 radar-rules
             #   库的 prompt_defaults 表，由 /rules/prompts 页面维护；这里只作最后一次兜底。
+            # ★这里的版本号只在 D1 的 prompt_defaults 取不到时兜底；要跟着「结构化输出」
+            #   那一版走——word_plan_page 的 v1 要求 markdown 正文，拿它兜底会让排产解析
+            #   不到 items/excluded、一条 planned 行都写不进去。
             self.default_prompt_versions = {
                 PromptTask.INTENT.value: "v1", PromptTask.INTENT_USER.value: "v1",
                 PromptTask.EXTRACTION.value: "v1", PromptTask.EXTRACTION_USER.value: "v1",
                 PromptTask.HOTWORDS.value: "v2", PromptTask.HOTWORDS_USER.value: "v2",
                 PromptTask.REVIEW_METRICS.value: "v1",
-                PromptTask.PROMO_ARTICLE.value: "v1",
-                PromptTask.WORD_PLAN_PAGE.value: "v1",
+                PromptTask.PROMO_ARTICLE.value: "v2",
+                PromptTask.WORD_PLAN_PAGE.value: "v4",
             }
 
 

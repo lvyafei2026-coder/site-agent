@@ -38,7 +38,8 @@ class WorkflowState(TypedDict, total=False):
 
     prompt_versions: dict[str, str]
     """可选输入。按任务指定 prompt 版本，形如 {"intent": "v1", "extraction": "v1", "hotwords": "v2"}；
-    三个节点各取自己那份；缺省时回退 settings.default_prompt_versions（D1 无默认再回退此值）。"""
+    三个节点各取自己那份。**只放调用方真正指定的任务**，缺省留空——空即「用 D1 默认版本」
+    （registry 再回退 settings.default_prompt_versions）。不要把 config 的兜底表整体灌进来。"""
 
     requested_tools: list[str] | None
     """可选输入。显式指定本轮调用的工具名列表，覆盖 INTENT_TOOLS 默认集。
@@ -119,7 +120,11 @@ def initial_workflow_state(
         "input_text": input_text,
         "retry_count": 0,
         "messages": [],
-        "prompt_versions": dict(prompt_versions or settings.default_prompt_versions),
+        # ★不要在这里预填 settings.default_prompt_versions：一旦每个 task 都塞了版本号，
+        #   load_prompt 就把它当成「显式指定」，D1 prompt_defaults 里切换的默认版本永远
+        #   读不到（排产因此长期跑在要求 markdown 的 v1 上，落库直接断）。空 dict 表示
+        #   「本轮没指定」，由 registry 走「D1 默认 → config 兜底」。
+        "prompt_versions": dict(prompt_versions or {}),
         "tool_results": {},
         "requested_tools": tools,
         "tool_args": dict(tool_args or {}),

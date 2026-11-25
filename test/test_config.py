@@ -97,4 +97,5 @@ def test_initial_state_defaults():
     assert state["messages"] == []
     assert state["tool_results"] == {}
     assert state["requested_tools"] == ["get_flag"]
-    assert state["prompt_versions"] == settings.default_prompt_versions
+    # ★不能预填 config 的兜底版本表（否则 D1 里切的默认版本永远读不到）
+    assert state["prompt_versions"] == {}

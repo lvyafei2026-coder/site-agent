@@ -318,8 +318,12 @@ PROMPT_STUB_DATA = {
          "content": "review_metrics 站点表现分析桩：找出表现较好的站点并排名"},
         {"task": "promo_article", "version": "v1",
          "content": "promo_article 外链起稿桩：只输出 JSON {title,tags,target_url,draft}"},
+        {"task": "promo_article", "version": "v2",
+         "content": "promo_article 外链起稿桩 v2：英文正文 + 只输出 JSON"},
         {"task": "word_plan_page", "version": "v1",
          "content": "word_plan_page 排产桩：输出本轮排产方案（选词/落站/排除原因）"},
+        {"task": "word_plan_page", "version": "v4",
+         "content": "word_plan_page 排产桩 v4：只输出 JSON {items,excluded}"},
     ],
     "defaults": [
         {"task": "intent", "version": "v1"},
@@ -329,8 +333,8 @@ PROMPT_STUB_DATA = {
         {"task": "hotwords", "version": "v2"},
         {"task": "hotwords_user", "version": "v2"},
         {"task": "review_metrics", "version": "v1"},
-        {"task": "promo_article", "version": "v1"},
-        {"task": "word_plan_page", "version": "v1"},
+        {"task": "promo_article", "version": "v2"},
+        {"task": "word_plan_page", "version": "v4"},
     ],
 }
 

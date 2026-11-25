@@ -75,8 +75,10 @@ def test_word_plan_page_runs_llm_plan(graph, fake, monkeypatch):
                      config={"configurable": {"thread_id": "t-wcp"}})
     assert set(r["tool_results"]) == {"get_hotwords", "get_page_inventory", "get_reflections"}
     assert captured, "word_plan_page 应触发 planning_service.plan"
-    # 提示词来自 D1 prompts 表（桩由 conftest 注入），数据里带待开发词
-    assert "word_plan_page" in captured["system"] or "排产" in captured["system"]
+    # 提示词来自 D1 prompts 表（桩由 conftest 注入），且必须是 D1 的**默认版本**：
+    # 一旦有人把 config 的兜底版本表灌进 prompt_versions，这里会退回老版（要求 markdown
+    # 正文），排产解析不到 items/excluded、台账一条都写不进去。
+    assert "items" in captured["system"]
     assert "invoice" in captured["data"]
     assert r["planning_analysis"]
     assert "排产" in r["output"]

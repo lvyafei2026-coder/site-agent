@@ -22,7 +22,6 @@ import re
 from functools import lru_cache
 from typing import Any, Optional
 
-from src.app.config import settings
 from src.app.enums import PromptTask
 from src.app.prompts import load_prompt
 
@@ -33,9 +32,14 @@ MAX_TOKENS = 2000
 
 @lru_cache(maxsize=8)
 def _prompt_pair(version: Optional[str] = None) -> tuple[str, str]:
-    """返回 (system, user 模板)。version 由 /run 的 prompt_versions.hotwords 透传。"""
-    v = version or (settings.default_prompt_versions or {}).get(PromptTask.HOTWORDS.value, "v1")
-    return load_prompt(PromptTask.HOTWORDS.value, v), load_prompt(PromptTask.HOTWORDS_USER.value, v)
+    """返回 (system, user 模板)。version 由 /run 的 prompt_versions.hotwords 透传。
+
+    ★None 原样往下传，不要在本地先补成 settings 里的兜底版本：补成具体版本号就等于
+    「显式指定」，D1 prompt_defaults 切默认后本线还钉在旧版（registry 自己会按
+    「D1 默认 → config 兜底」解析）。
+    """
+    return (load_prompt(PromptTask.HOTWORDS.value, version),
+            load_prompt(PromptTask.HOTWORDS_USER.value, version))
 
 
 def examples_line(examples: list[dict[str, str]]) -> str:
