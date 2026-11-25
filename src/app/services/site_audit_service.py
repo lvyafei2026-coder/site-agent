@@ -134,7 +134,10 @@ def read_site(site_name: str) -> dict[str, Any]:
     pages: list[dict[str, Any]] = []
     style: dict[str, Any] = {}
     for path in sorted(public.glob("*.html")):
-        if path.name in {"404.html", "privacy.html", "terms.html"}:
+        # 只通读真正的内容页：embed.html 是给第三方站点嵌入的分享组件，
+        # 没有自己的正文，参与判重会把任意词的正文覆盖率顶到 100%，
+        # 产出「已覆盖该词」的假 enhance 结论。404/隐私/条款同理不是内容页。
+        if path.name in {"404.html", "embed.html", "privacy.html", "terms.html"}:
             continue
         try:
             html = path.read_text(encoding="utf-8", errors="replace")[:MAX_CHARS_PER_PAGE]
@@ -179,7 +182,7 @@ def audit(term: str, site_digest: dict[str, Any]) -> dict[str, Any]:
         if str(page.get("slug") or "") == target:
             return {"decision": AuditDecision.SKIP.value,
                     "reason": f"原站已有同 slug 页面 {target}.html（{page.get('title') or ''}），"
-                              "再建只会覆盖/重复；请改走增强原页",
+                              "再建只会覆盖/重复；本次不新增，如确需补充请在该页上做增量",
                     "matched": target, "score": 1.0, "confidence": "slug"}
     # 两个独立信号：标题相似度（判「这页建过了」）、正文覆盖率（判「正文已讲过这个词」）。
     # 正文用覆盖率而不是 Jaccard——原页通常长得多，Jaccard 对短词天然偏低。
@@ -199,7 +202,7 @@ def audit(term: str, site_digest: dict[str, Any]) -> dict[str, Any]:
     if len(q) >= MIN_TITLE_WORDS and title_score >= TITLE_OVERLAP:
         return {"decision": AuditDecision.SKIP.value,
                 "reason": (f"与已有页「{title_page.get('title') or '首页'}」标题相似度 "
-                           f"{title_score:.0%}——这词已经建过，请改走「增强原页」而不是新增"),
+                           f"{title_score:.0%}——这词已经建过，本次不新增，如确需补充请在该页上做增量"),
                 "matched": str(title_page.get("slug") or ""),
                 "score": round(title_score, 3), "confidence": "title"}
 

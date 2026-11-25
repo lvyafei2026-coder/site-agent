@@ -63,6 +63,18 @@ def test_read_site_extracts_pages_and_style(tmp_path, monkeypatch):
     assert digest["style"]["has_countdown"] is True
 
 
+def test_read_site_skips_embed_share_page(tmp_path, monkeypatch):
+    """embed 是第三方嵌入的分享组件，不是内容页——不能拿它判重/喂风格。"""
+    embed = """<html><head><title>Embed the Black Friday Countdown — Free Widget</title></head>
+    <body><iframe src="/"></iframe><p>Copy this embed code to your site.</p>
+    <p>is it black friday today black friday dates deals thanksgiving countdown</p></body></html>"""
+    _site(tmp_path, monkeypatch, {"embed.html": embed})
+    digest = services.site_audit_service.read_site("blackfriday")
+    assert [p["slug"] for p in digest["pages"]] == [""]
+    verdict = services.site_audit_service.audit("is it black friday today", digest)
+    assert verdict["decision"] == AuditDecision.ENHANCE  # 只剩首页正文的覆盖，而非 embed 的 100%
+
+
 def test_read_site_degrades_without_repo(tmp_path, monkeypatch):
     monkeypatch.setattr(services.site_audit_service, "ensure_repo",
                         lambda _site: tmp_path / "missing")
@@ -78,7 +90,7 @@ def test_audit_blocks_same_slug():
     verdict = services.site_audit_service.audit("Is It Black Friday Today", digest)
     assert verdict["decision"] == AuditDecision.SKIP
     assert verdict["confidence"] == "slug" and verdict["score"] == 1.0
-    assert "改走增强原页" in verdict["reason"]
+    assert "本次不新增" in verdict["reason"] and "做增量" in verdict["reason"]
 
 
 def test_audit_blocks_similar_title_and_allows_unrelated():
