@@ -231,7 +231,15 @@ def style_brief(site_digest: dict[str, Any], audit: dict[str, Any]) -> str:
     if not site_digest.get("ok"):
         return ""
     pages = site_digest.get("pages") or []
-    lines = [f"目标站点已上线 {len(pages)} 页，新增页必须与原站风格一致、不重复："]
+    # ★2026-11-25 黑五页事故的写作侧护栏：渲染器那边只继承品牌 header（不搬首页
+    # 锚点导航/倒计时状态位）；写手这边同步约束正文，别写出「见上方导航/见倒计时」
+    # 这类只在首页成立的跨页引用。两侧一起守，新页才是独立内容页。
+    lines = [
+        f"目标站点已上线 {len(pages)} 页，新增页必须与原站风格一致、不重复：",
+        "★新页是独立内容页：不要复用首页的章节锚点导航（如 #dates/#deals/#faq），"
+        "不要写依赖首页脚本的状态位（如倒计时 Loading），也不要用「见上方导航/见倒计时」"
+        "这类跨页引用；页头只作品牌标识，正文只讲本页主题。",
+    ]
     for page in pages[:12]:
         items = "; ".join((page.get("headings") or [])[:6]) or (page.get("description") or "")[:90]
         lines.append(f"- {page.get('slug') or '/'} 《{page.get('title')}》：{items[:160]}")

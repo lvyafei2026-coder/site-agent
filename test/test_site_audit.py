@@ -124,6 +124,12 @@ def test_style_brief_carries_existing_pages_and_writing_rule():
         digest, {"decision": AuditDecision.ENHANCE.value, "reason": "正文已覆盖"})
     assert "深色" in brief and "首页有倒计时" in brief
     assert "只写原站尚未覆盖" in brief and "FAQ" in brief
+    # ★黑五事故护栏：任何决策下都要告诉写手「新页独立、别写跨页引用」
+    assert "独立内容页" in brief and "跨页引用" in brief
+    # 新增（add）决策同样要带——这条约束与判重结论无关，是建页通用规则
+    added = services.site_audit_service.style_brief(
+        digest, {"decision": AuditDecision.ADD.value, "reason": "可新增"})
+    assert "独立内容页" in added and "锚点导航" in added
 
 
 def test_page_graph_runs_audit_between_plan_and_write(fake, fake_kv, monkeypatch):
