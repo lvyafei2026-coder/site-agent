@@ -37,9 +37,31 @@ def esc(text: str) -> str:
             .replace(">", "&gt;"))
 
 
-def _site_skin(work: Path, site: SiteConfig) -> dict[str, str]:
-    """从站点首页抽可继承的骨架：样式表链接、主题色、页头、页脚。
+def _header_brand(header_html: str, fallback: str) -> str:
+    """页头只继承品牌标识，不搬首页的业务导航与动态状态。
 
+    黑五页事故：原样拷首页 header 会把 `<nav><a href="#dates">…</a></nav>` 和
+    `<span id="headerStatus">Loading…</span>` 一起带过来——新页没有 #dates 章节、
+    也没引 countdown.js，于是导航点了没反应、状态永远停在 Loading…。
+    """
+    if not header_html:
+        return ""
+    logo = re.search(
+        r'<a\b[^>]*class=["\'][^"\']*\blogo\b[^"\']*["\'][^>]*>[\s\S]*?</a>',
+        header_html, flags=re.I)
+    brand = logo.group(0) if logo else ""
+    if not brand:
+        # 没有 logo 标记的站：取页头纯文本当品牌，不带任何锚点或 id 状态位
+        text = " ".join(re.sub(r"<[^>]+>", " ", header_html).split())
+        brand = f'<a href="/">{esc(text or fallback)}</a>'
+    return f'<header class="site-header"><div class="header-inner">{brand}</div></header>'
+
+
+def _site_skin(work: Path, site: SiteConfig) -> dict[str, str]:
+    """从站点首页抽可继承的骨架：样式表链接、主题色、品牌页头、页脚。
+
+    只继承「视觉骨架」（配色/字体/配色变量/品牌标识/页脚），不继承首页的业务模块：
+    锚点导航、倒计时状态位这类依赖首页章节与 JS 的东西一律不带到新页。
     失败一律返回空 dict → 回退通用模板；这是增强不是硬依赖，老站没有这些标记照样建页。
     """
     index = work / site.asset_dir / "index.html"
@@ -58,7 +80,7 @@ def _site_skin(work: Path, site: SiteConfig) -> dict[str, str]:
         "styles": "\n".join(dict.fromkeys(styles)),
         "theme": "\n".join(dict.fromkeys(theme)),
         "icon": "\n".join(dict.fromkeys(icon)),
-        "header": header.group(0) if header else "",
+        "header": _header_brand(header.group(0), site.brand) if header else "",
         "footer": footer.group(0) if footer else "",
     }
 

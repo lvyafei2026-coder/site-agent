@@ -26,7 +26,11 @@ INDEX = """<!DOCTYPE html>
 <link rel="stylesheet" href="/css/style.css">
 <link rel="icon" href="/favicon.png">
 </head><body>
-<header class="site-header"><a class="logo" href="/">BF Countdown</a></header>
+<header class="site-header"><div class="header-inner">
+<a class="logo" href="/"><span class="bf-mark">BF</span> BF Countdown</a>
+<nav><a href="#dates">Dates</a><a href="#deals">Deals</a><a href="#faq">FAQ</a></nav>
+<span class="header-status" id="headerStatus">Loading…</span>
+</div></header>
 <main class="wrap"><h1>When Is Black Friday?</h1>
 <p>Black Friday 2026 is on November 27. Deals start earlier every year.</p>
 <h2>FAQ</h2></main>
@@ -183,8 +187,12 @@ def test_render_inherits_site_stylesheet(tmp_path, monkeypatch):
     skin = renderer._site_skin(work, SITES["blackfriday"])
     assert "/css/style.css" in skin["styles"]
     assert "theme-color" in skin["theme"] and "site-header" in skin["header"]
+    # 页头只继承品牌：首页的 #dates/#deals 锚点导航与 Loading… 状态位不能跟过来
+    assert "logo" in skin["header"] and "BF Countdown" in skin["header"]
+    assert "href=\"#dates\"" not in skin["header"] and "Loading" not in skin["header"]
     out = renderer.render_page(SITES["blackfriday"],
                                {"slug": "test-page", "title": "Test", "description": "D",
                                 "h1": "Test", "intro": "i", "sections": [], "faq": []}, skin)
     assert 'rel="stylesheet"' in out and "site-header" in out
     assert 'application/ld+json' in out and "--ink" in out
+    assert 'href="#dates"' not in out and "Loading" not in out
