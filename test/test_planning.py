@@ -6,8 +6,8 @@
 
 import src.app.services.planning_service as planning_mod
 from src.app.services.planning_service import (
-    planning_service, render_report, suggest_new_sites,
-    valid_excluded, valid_items, valid_new_sites,
+    intent_from_analysis, planning_service, render_report, suggest_new_sites,
+    term_intent, valid_excluded, valid_items, valid_new_sites,
 )
 
 
@@ -185,6 +185,74 @@ def test_plan_suggests_new_sites_without_side_effects(monkeypatch):
     assert "| medicare | Medicare | medicare.toolara.dev |" in out
     assert written == []
     assert seen == []
+
+
+def test_intent_from_analysis_picks_first_section():
+    """从 8 小节分析稿里抽「词义与意图」正文，压成单行。"""
+    analysis = ("1) 词义与意图：判定今天是不是黑五，属日期类查询。\n\n"
+                "2) 建议站型：倒计时页。\n3) 结论：做")
+    assert intent_from_analysis(analysis) == "判定今天是不是黑五，属日期类查询。"
+
+
+def test_intent_from_analysis_tolerates_heading_wording():
+    """节标题措辞由 D1 维护，只认「词义 / 意图」词根，不逐字匹配。"""
+    assert intent_from_analysis("1) 用户词义与意图：查退货政策\n2) 结论：做") == "查退货政策"
+    assert intent_from_analysis("1) 建议站型：倒计时页\n2) 结论：做") == ""
+
+
+def test_intent_from_analysis_escapes_table_cells():
+    """换行/竖线会被压掉或换全角，避免切开 markdown 表格列。"""
+    got = intent_from_analysis("1) 词义与意图：A 词 | B 词\n接着第二行\n2) 结论：做")
+    assert "|" not in got and "｜" in got and "\n" not in got
+
+
+def test_intent_from_analysis_empty_when_no_section():
+    assert intent_from_analysis("") == ""
+    assert intent_from_analysis(None) == ""
+
+
+def test_term_intent_failopen_without_kv(monkeypatch):
+    """KV 未配置 / 读取异常时留空，不抛错、不阻塞排产报告。"""
+    class Off:
+        configured = False
+        def get_text(self, key):
+            raise AssertionError("未配置时不应发起读取")
+    monkeypatch.setattr(planning_mod, "get_kv", lambda: Off())
+    assert term_intent("medicare") == ""
+
+    class Broken:
+        configured = True
+        def get_text(self, key):
+            raise RuntimeError("KV down")
+    monkeypatch.setattr(planning_mod, "get_kv", lambda: Broken())
+    assert term_intent("medicare") == ""
+
+
+def test_term_intent_reads_analysis_from_kv(monkeypatch):
+    """按 term_key 拼 key 读 ai:v3 分析稿并抽词义节。"""
+    seen = []
+    class KV:
+        configured = True
+        def get_text(self, key):
+            seen.append(key)
+            return "1) 词义与意图：医保资格查询\n2) 结论：做"
+    monkeypatch.setattr(planning_mod, "get_kv", lambda: KV())
+    assert term_intent(" Medicare ") == "医保资格查询"
+    assert seen == ["ai:v3:medicare"]
+
+
+def test_render_report_shows_intent_column(monkeypatch):
+    """建议新站表格带「词义与意图」列，内容来自分析稿（读不到留空不影响列）。"""
+    monkeypatch.setattr(planning_mod, "term_intent",
+                        lambda term: "医保资格查询" if term == "medicare" else "")
+    out = render_report([], [
+        {"term": "medicare", "reason": "无匹配站点"},
+        {"term": "is market open today", "reason": "无匹配站点"},
+    ])
+    assert "| 词 | 建议站名 | 品牌 | 建议域名 | 理由 | 词义与意图 |" in out
+    assert "| medicare | medicare | Medicare | medicare.toolara.dev | 无匹配站点 | 医保资格查询 |" in out
+    assert ("| is market open today | is-market-open-today | Is Market Open Today | "
+            "is-market-open-today.toolara.dev | 无匹配站点 | — |") in out
 
 
 def test_plan_ignores_model_written_report(monkeypatch):

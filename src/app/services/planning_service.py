@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 
 from src.app.config import FLEET_DOMAIN, SITES
@@ -32,11 +33,15 @@ from src.app.observability.langsmith import traceable
 from src.app.services.page_build_service import slugify
 from src.app.services.prompt_service import prompt_service
 from src.app.services import term_state_service
+from src.app.tools.adapters.cloudflare.kv import AI_CACHE_PREFIX, get_kv, term_key
 from src.app.tools.ledger_tools import LedgerOps
 from src.app.utils.logger import get_logger
 from src.app.utils.text import clip_with_count
 
 MAX_PAYLOAD_CHARS = 8000
+# 分析稿按「数字) 标题：正文」分节；标题措辞由 D1 提示词维护，只认「词义/意图」词根。
+_INTENT_SECTION = re.compile(r"(?:^|\n)\s*\d+\)\s*([^\n：:]{1,20})[：:]\s*([\s\S]*?)(?=\n\s*\d+\)|$)")
+_INTENT_CHARS = 180
 
 log = get_logger(__name__)
 
@@ -163,6 +168,36 @@ def suggest_new_sites(excluded: list[dict], proposals: list[dict] | None = None)
     return out
 
 
+def intent_from_analysis(text: str) -> str:
+    """从逐词分析稿里抽出「词义与意图」节的正文（压成单行，供表格单元格用）。
+
+    分析稿 8 小节的标题措辞由 D1 提示词维护、随时可变，所以只认「词义 / 意图」
+    词根而不是逐字标题；找不到就留空（老词可能没分析稿），绝不阻塞排产报告。
+    """
+    body = str(text or "")
+    for match in _INTENT_SECTION.finditer(body):
+        heading, section = match.group(1), match.group(2)
+        if "词义" in heading or "意图" in heading:
+            # 表格单元格不能出现换行/竖线，否则会把 markdown 列切开
+            return re.sub(r"\s+", " ", section).replace("|", "｜").strip()[:_INTENT_CHARS]
+    return ""
+
+
+def term_intent(term: str) -> str:
+    """读该词的 ai:v3 分析稿，取「词义与意图」；KV 未配置/读取失败一律留空。
+
+    ★fail-open：这是报告里锦上添花的一列，读不到照常出报告，不能像写状态那样阻断。
+    """
+    kv = get_kv()
+    if not kv.configured:
+        return ""
+    try:
+        return intent_from_analysis(kv.get_text(AI_CACHE_PREFIX + term_key(term)) or "")
+    except Exception as exc:  # noqa: BLE001 - 分析稿读不到只影响一列，不打断排产
+        log.warning("分析稿读取失败 %s：%s", term, str(exc)[:120])
+        return ""
+
+
 def render_report(items: list[dict], excluded: list[dict],
                   new_sites: list[dict] | None = None) -> str:
     """把入选/排除/建议新站渲染成固定 markdown。
@@ -171,6 +206,8 @@ def render_report(items: list[dict], excluded: list[dict],
     各写一遍迟早对不上（报告说 A、落库是 B）。模型只需给结构化的数组。
     ★建议新站默认由 excluded 按站名契约派生，不依赖提示词多给字段；模型若按新版
       提示词给了 new_sites，则按其提案覆盖（站名仍由 valid_new_sites 校验）。
+    ★建议新站带「词义与意图」列：直接取该词 ai:v3 分析稿的第一节结论，让采用/建站
+      时有据可依；读不到分析稿留空，前端按列位解析得到空串也不影响两按钮。
     """
     has_plan = bool(items)
     lines = (["## 本轮排产（按优先级）", "",
@@ -185,9 +222,11 @@ def render_report(items: list[dict], excluded: list[dict],
     suggestions = suggest_new_sites(excluded, new_sites)
     if suggestions:
         lines += ["", "### 建议新站（待确认，本轮未建站）", "",
-                  "| 词 | 建议站名 | 品牌 | 建议域名 | 理由 |", "|---|---|---|---|---|"]
+                  "| 词 | 建议站名 | 品牌 | 建议域名 | 理由 | 词义与意图 |",
+                  "|---|---|---|---|---|---|"]
         lines += [f"| {s['term']} | {s['name']} | {s['brand']} | {s['domain']} | "
-                  f"{s['reason'] or '—'} |" for s in suggestions]
+                  f"{s['reason'] or '—'} | {term_intent(s['term']) or '—'} |"
+                  for s in suggestions]
         lines += ["", "> 候选站名按「站名即子域名」规则生成，确认后走建站工具上线；"
                   "本轮不建站、不写台账、不改变这些词的状态。"]
     return "\n".join(lines)
