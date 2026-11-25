@@ -4,6 +4,8 @@
 
 """排产服务的落库契约：入选词必须变成 planned 台账行，不然建页线拿不到活。"""
 
+import json
+
 import src.app.services.planning_service as planning_mod
 from src.app.services.planning_service import (
     planning_service, render_report, valid_excluded, valid_items,
@@ -86,3 +88,31 @@ def test_render_report_marks_empty_plan():
 def test_valid_excluded_keeps_reason_only():
     assert valid_excluded([{"term": " tax ", "reason": " 无站 "}, {"reason": "缺词"}]) == \
         [{"term": "tax", "reason": "无站"}]
+
+
+def test_plan_unwraps_content_envelope(monkeypatch):
+    """模型把结果塞进 {"type","content"} 再套一层时，拆开照常落库。"""
+    written = _capture(monkeypatch)
+    inner = json.dumps({"items": [{"term": "blackout", "site": "clocksgoback",
+                                   "priority": "高", "reason": "停电"}],
+                        "excluded": []}, ensure_ascii=False)
+    monkeypatch.setattr(planning_mod, "complete_json",
+                        _json({"type": "text", "content": inner}))
+
+    out = planning_service.plan({})
+    assert "已写入台账 1/1 条" in out
+    assert [r["keyword"] for r in _rows(written)] == ["blackout"]
+
+
+def test_plan_ignores_model_written_report(monkeypatch):
+    """模型自带 report 与 items 分叉时，报告以结构化数据为准，不采信自带正文。"""
+    _capture(monkeypatch)
+    monkeypatch.setattr(planning_mod, "complete_json", _json({
+        "report": "## 本轮排产\n本轮不改站群",
+        "items": [{"term": "blackout", "site": "clocksgoback"}],
+        "excluded": [],
+    }))
+
+    out = planning_service.plan({})
+    assert "本轮不改站群" not in out
+    assert "| blackout | clocksgoback |" in out

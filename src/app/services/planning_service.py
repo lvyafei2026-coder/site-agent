@@ -30,6 +30,7 @@ from src.app.observability.langsmith import traceable
 from src.app.services.page_build_service import slugify
 from src.app.services.prompt_service import prompt_service
 from src.app.tools.ledger_tools import LedgerOps
+from src.app.utils.json_text import parse_json
 from src.app.utils.logger import get_logger
 from src.app.utils.text import clip_with_count
 
@@ -138,6 +139,21 @@ def _pick_list(data: dict, key: str) -> object:
     return []
 
 
+def unwrap(data: dict) -> dict:
+    """拆掉 {"type": ..., "content": "<json 或文本>"} 这层外壳。
+
+    实测 json_object 模式下模型会把整份结果塞进 content 字符串里再套一层；
+    只拆一层，拆不出可读结构就原样返回（上层按字段名如实报告）。
+    """
+    if "items" in data or "excluded" in data:
+        return data
+    inner = data.get("content")
+    if not isinstance(inner, str):
+        return data
+    parsed = parse_json(inner)
+    return parsed if isinstance(parsed, dict) else data
+
+
 class PlanningService:
     @traceable(name="plan_pages")
     def plan(self, results: dict, versions: dict[str, str] | None = None) -> str:
@@ -153,6 +169,7 @@ class PlanningService:
             system, payload, warn_event="plan_pages_failed")
         if data is None:
             return complete_text(system, payload, warn_event="plan_pages_failed") or ""
+        data = unwrap(data)
         items = valid_items(_pick_list(data, "items"))
         excluded = valid_excluded(_pick_list(data, "excluded"))
         if not items and not excluded:
@@ -162,7 +179,7 @@ class PlanningService:
             return ("## 本轮排产\n\n本轮无可排产词。\n\n"
                     f"> 模型返回字段：{', '.join(sorted(data)[:8]) or '空'}"
                     "（未取到 items/excluded）。")
-        report = str(data.get("report") or "").strip() or render_report(items, excluded)
+        report = render_report(items, excluded)
         if not items:
             return report
         saved = self.save_plan(items)
