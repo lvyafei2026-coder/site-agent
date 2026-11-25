@@ -91,8 +91,8 @@ class FakeRuntime(PromotionOps):
         return [{"name": "Workers Builds: test", "status": "completed",
                  "conclusion": "success"}]
 
-    def live_page(self, site_name, slug, expect=""):
-        return {"ok": True, "url": f"https://{site_name}.example/{slug}.html?v=1"}
+    def live_page(self, site_name, slug, expect="", sha=""):
+        return {"ok": True, "url": f"https://{site_name}.example/{slug}?v=1"}
 
     def flag(self, key, default=None):
         value = self.kv.get(key, default)

@@ -37,12 +37,15 @@ class PublishingOps:
     def build_status(self, repo, sha):
         return publishing.check_runs(repo, sha)
 
-    def live_page(self, site_name, slug, expect=""):
+    def live_page(self, site_name, slug, expect="", sha=""):
         site = SITES.get(site_name)
         if not site:
             return {"ok": False, "detail": f"未知站点 {site_name}"}
+        # 给了 sha 就先等 CF 构建跑完（最多 180s）：刚推完就验活，必然撞上「还在构建」
+        build = (publishing.wait_build(site.repo, sha, timeout_sec=180) if sha
+                 else {"ok": None, "detail": "未给 sha，跳过等构建"})
         ok, detail = publishing.verify_live(site, slug, expect)
-        return {"ok": ok, "url": detail, "detail": detail}
+        return {"ok": ok, "url": detail, "detail": detail, "build": build.get("detail", "")}
 
     def render_files(self, site_name, page):
         return publishing.render_files(SITES[site_name], page)
@@ -98,7 +101,7 @@ class GetBuildStatusTool(RuntimeTool):
 
 
 class CheckLivePageTool(RuntimeTool):
-    """带随机参数穿透缓存，验证线上页面返回 200 且含预期标题。"""
+    """等构建 → 线上验活：先等该 sha 的 CF 构建跑完，再带随机参数打线上。"""
 
     tool_name = "check_live_page"
     method = "live_page"
@@ -107,6 +110,7 @@ class CheckLivePageTool(RuntimeTool):
         site_name: str = Field(..., description="SITES 里的站点名")
         slug: str = Field(..., description="页面 slug")
         expect: str = Field('', description="预期标题片段")
+        sha: str = Field('', description="刚推送的 commit sha；给了就先等构建完成")
 
 
 class RenderFilesTool(RuntimeTool):

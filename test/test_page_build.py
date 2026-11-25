@@ -16,11 +16,13 @@ from fastapi.testclient import TestClient
 
 from src.app import graph
 from src.app.api.routes import api
+from src.app.config import SITES
 from src.app.graph import page_graph
 from src.app.graph.state import initial_page_build_state
 from src.app.observability.trace import run_traced
 from src.app.services import page_build_service
 from src.app.services.extraction_service import extraction_service
+from src.app.tools.adapters.publishing import verification
 
 _BODY = (
     "Free invoice generator overview paragraph that is definitely longer "
@@ -201,7 +203,7 @@ def test_run_page_build_confirm_full_chain(fake, fake_kv, monkeypatch):
     out = graph.run_page_build("free invoice generator", confirm=True)
     assert out["ok"] is True and out["stage"] == "verify"
     assert out["sha"] == "deadbeef" and out["liveOk"] is True
-    assert out["url"].endswith("free-invoice-generator.html?v=1")
+    assert out["url"].endswith("free-invoice-generator?v=1")
     assert fake.counts["render_files"] == 1 and fake.counts["git_push"] == 1
 
 
@@ -238,3 +240,56 @@ def test_run_page_build_ignores_unknown_planned_site(fake, fake_kv, monkeypatch)
     out = graph.run_page_build("free invoice generator", confirm=False,
                                planned_site="gone-site")
     assert out["site"] == "invoices" and out["classifyBy"] == "llm"
+
+
+# ---- 验活（verify_live）：地址口径 + 构建/生效延迟 ----
+
+def _resp(code, text=""):
+    return type("R", (), {"status_code": code, "text": text})()
+
+
+def test_verify_live_prefers_canonical_url(monkeypatch):
+    """CF Workers 会把 /x.html 307 到 /x：先打规范地址，命中就不再试扩展名。"""
+    seen = []
+
+    def fake_get(url, timeout=20):
+        seen.append(url)
+        return _resp(200, "Is It Black Friday Today")
+
+    monkeypatch.setattr(verification.requests, "get", fake_get)
+    ok, url = verification.verify_live(SITES["blackfriday"], "is-it-black-friday-today",
+                                       "Is It Black Friday Today", attempts=1, delay_sec=0)
+    assert ok is True and ".html" not in url
+    assert url.startswith("https://blackfriday.toolara.dev/is-it-black-friday-today?v=")
+
+
+def test_verify_live_falls_back_to_html_and_retries(monkeypatch):
+    """只认扩展名的宿主：规范地址 404 后退 .html；构建未完成时按轮重试。"""
+    seen = []
+
+    def fake_get(url, timeout=20):
+        seen.append(url)
+        if ".html" in url:
+            return _resp(200, "Is It Black Friday Today")
+        return _resp(404)                       # 规范地址不存在
+
+    monkeypatch.setattr(verification.requests, "get", fake_get)
+    ok, url = verification.verify_live(SITES["blackfriday"], "is-it-black-friday-today",
+                                       "Is It Black Friday Today", attempts=1, delay_sec=0)
+    assert ok is True and ".html" in url
+    assert ".html" not in seen[0]               # 先试规范地址，再退扩展名
+
+
+def test_verify_live_reports_404_after_retries(monkeypatch):
+    """全 404：重试到上限后如实失败，detail 带状态码（别把「还在构建」说成成功）。"""
+    calls = {"n": 0}
+
+    def fake_get(url, timeout=20):
+        calls["n"] += 1
+        return _resp(404)
+
+    monkeypatch.setattr(verification.requests, "get", fake_get)
+    ok, detail = verification.verify_live(SITES["blackfriday"], "is-it-black-friday-today",
+                                          "", attempts=2, delay_sec=0)
+    assert ok is False and "404" in detail
+    assert calls["n"] == 4        # 每轮两个地址 × 两轮

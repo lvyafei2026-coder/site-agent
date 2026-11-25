@@ -91,7 +91,14 @@ def _summarize(state: PageBuildState) -> dict[str, Any]:
     if error:
         summary["error"] = error
     if state.get("confirm") and not error and stage == "verify":
-        summary["note"] = "页面已推送并验活，台账状态 deployed（verified 由下一次验活更新）"
+        if state.get("live_ok"):
+            summary["note"] = f"页面已推送并验活：{summary.get('url', '')}"
+        else:
+            # 推送成功 ≠ 上线成功：构建/边缘生效有延迟，或地址口径不对。
+            # 这里必须如实写，否则台账 deployed + note「已验活」会把 404 藏起来。
+            summary["note"] = ("页面已推送，但线上验活未通过："
+                               f"{summary.get('url', '')}（构建或边缘生效可能仍在进行，"
+                               "稍后重新验活确认；台账状态仍是 deployed）")
     elif not state.get("confirm") and not error:
         summary["note"] = "dry-run 预览：confirm=true 才会真正渲染并推送"
     return summary

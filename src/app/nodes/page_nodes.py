@@ -85,7 +85,9 @@ def page_verify(state: dict[str, Any]) -> dict[str, Any]:
     if skip is not None:
         return skip
     slug = (state.get("page") or {}).get("slug", "")
-    res = tool_service.execute_for_page("verify", site_name=state["site"], slug=slug)
+    # 带上 sha：verify 侧先等该 sha 的 CF 构建跑完再打线上，否则刚推完必然 404
+    res = tool_service.execute_for_page("verify", site_name=state["site"], slug=slug,
+                                       sha=state.get("sha") or "")
     result = res.get("result") or {}
     ok = bool(res.get("ok")) and result.get("ok") is not False
     return {"stage": "verify", "live_ok": ok, "url": str(result.get("url") or "")}
