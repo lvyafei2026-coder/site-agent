@@ -27,29 +27,32 @@ from typing import Any, Optional
 from langgraph.graph import END, START, StateGraph
 
 from src.app.enums import ContentSource, GraphNode, TraceName
-from src.app.graph.edges import (PAGE_PLAN_EDGE_MAP, PAGE_PUSH_EDGE_MAP,
-                                 PAGE_WRITE_EDGE_MAP, route_after_plan, route_after_push,
-                                 route_after_write)
+from src.app.graph.edges import (PAGE_AUDIT_EDGE_MAP, PAGE_PLAN_EDGE_MAP, PAGE_PUSH_EDGE_MAP,
+                                 PAGE_WRITE_EDGE_MAP, route_after_audit, route_after_plan,
+                                 route_after_push, route_after_write)
 from src.app.graph.state import PageBuildState, initial_page_build_state
-from src.app.nodes.page_nodes import page_plan, page_push, page_render, page_verify, page_write
+from src.app.nodes.page_nodes import (page_audit, page_plan, page_push, page_render,
+                                      page_verify, page_write)
 from src.app.observability.langsmith import observed, public_config
 from src.app.observability.trace import page_snapshot, run_traced
 from src.app.services.page_build_service import todo_pool_size
 
 
 def build_page_graph():
-    """固定串形：plan（取词+归类+解析）→ write（写正文）→ render → push → verify。
+    """固定串形：plan（取词+归类+解析）→ audit（通读原站判重）→ write → render → push → verify。
 
     无 checkpointer（一次跑完即弃）。
     """
     graph = StateGraph(PageBuildState)
-    for node, fn in ((GraphNode.PAGE_PLAN, page_plan), (GraphNode.PAGE_WRITE, page_write),
+    for node, fn in ((GraphNode.PAGE_PLAN, page_plan), (GraphNode.PAGE_AUDIT, page_audit),
+                     (GraphNode.PAGE_WRITE, page_write),
                      (GraphNode.PAGE_RENDER, page_render),
                      (GraphNode.PAGE_PUSH, page_push), (GraphNode.PAGE_VERIFY, page_verify)):
         graph.add_node(node, fn)
 
     graph.add_edge(START, GraphNode.PAGE_PLAN)
     graph.add_conditional_edges(GraphNode.PAGE_PLAN, route_after_plan, PAGE_PLAN_EDGE_MAP)
+    graph.add_conditional_edges(GraphNode.PAGE_AUDIT, route_after_audit, PAGE_AUDIT_EDGE_MAP)
     graph.add_conditional_edges(GraphNode.PAGE_WRITE, route_after_write, PAGE_WRITE_EDGE_MAP)
     graph.add_edge(GraphNode.PAGE_RENDER, GraphNode.PAGE_PUSH)
     graph.add_conditional_edges(GraphNode.PAGE_PUSH, route_after_push, PAGE_PUSH_EDGE_MAP)
@@ -64,14 +67,15 @@ def get_page_graph():
 
 
 def _run_inputs(term: str = "", confirm: bool = False,
-                planned_site: str = "") -> dict[str, Any]:
-    return {"term": term, "confirm": confirm, "plannedSite": planned_site}
+                planned_site: str = "", mode: str = "auto") -> dict[str, Any]:
+    return {"term": term, "confirm": confirm, "plannedSite": planned_site, "mode": mode}
 
 
 def _run_outputs(out: dict[str, Any]) -> dict[str, Any]:
     # run_page_build 的返回体是 summary 的平铺（外加 page/runId/trace），这里只挑业务键。
     keys = ("ok", "stage", "term", "site", "slug", "url", "liveOk", "classifyBy",
-            "contentBy", "todoPool", "error", "note")
+            "contentBy", "auditDecision", "auditReason", "auditMatch", "auditScore",
+            "mode", "todoPool", "error", "note")
     return {k: out[k] for k in keys if k in out}
 
 
@@ -81,13 +85,18 @@ def _summarize(state: PageBuildState) -> dict[str, Any]:
     error = state.get("error") or ""
     stage = state.get("stage") or "plan"
     summary: dict[str, Any] = {
-        # 写作阶段失败也算真失败：正文不合格时这一页根本没建，不能报成功。
-        "ok": not (error and stage in ("write", "render", "push", "verify")),
+        # 站情拦下 / 写作失败 / 后续工具失败都算真失败：这一页根本没建，不能报成功。
+        "ok": not (error and stage in ("audit", "write", "render", "push", "verify")),
         "stage": stage,
         "term": (state.get("picked") or {}).get("term") or state.get("term") or "",
         "site": state.get("site") or "",
         "classifyBy": state.get("classify_by") or "",
         "contentBy": state.get("content_by") or "",
+        "auditDecision": (state.get("site_audit") or {}).get("decision") or "",
+        "auditReason": (state.get("site_audit") or {}).get("reason") or "",
+        "auditMatch": (state.get("site_audit") or {}).get("matched") or "",
+        "auditScore": (state.get("site_audit") or {}).get("score"),
+        "mode": state.get("mode") or "auto",
         "slug": page.get("slug") or "",
         "todoPool": todo_pool_size(),
         "dryRun": not state.get("confirm"),
@@ -100,6 +109,9 @@ def _summarize(state: PageBuildState) -> dict[str, Any]:
         summary["liveOk"] = bool(state.get("live_ok"))
     if error:
         summary["error"] = error
+    if stage == "audit" and error:
+        summary["note"] = ("站情校验：原站已有同主题页面，本次不新增。"
+                           "如确需补充，请在该页上做增量而不是再建一页。")
     if state.get("confirm") and not error and stage == "verify":
         if state.get("live_ok"):
             summary["note"] = f"页面已推送并验活：{summary.get('url', '')}"
@@ -119,14 +131,15 @@ def _summarize(state: PageBuildState) -> dict[str, Any]:
 @observed(TraceName.PAGE_RUN, kind="chain", inputs=_run_inputs,
           outputs=_run_outputs, tags=["site-agent", "page-run"], link="traceRun")
 def run_page_build(term: str = "", confirm: bool = False,
-                   planned_site: str = "") -> dict[str, Any]:
-    """跑一轮建页：一条待开发词 → 归类站点 → 渲染 → 推送 → 验活。
+                   planned_site: str = "", mode: str = "auto") -> dict[str, Any]:
+    """跑一轮建页：一条待开发词 → 通读原站 → 渲染 → 推送 → 验活。
 
     term 为空 = 自动取下一条带分析正文的 todo 词；confirm=False 只出预览。
     planned_site 是排产台账给的目标站：给了就用它，不再让 LLM 重判。
+    mode=enhance 是人工确认后的增强模式：允许覆盖原站已有同 slug 页。
     """
     run_id = f"page-{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}"
-    initial = initial_page_build_state(term, confirm, planned_site=planned_site)
+    initial = initial_page_build_state(term, confirm, planned_site=planned_site, mode=mode)
     final, trace = run_traced(
         get_page_graph(),
         initial,
@@ -134,7 +147,8 @@ def run_page_build(term: str = "", confirm: bool = False,
             "recursion_limit": 16,
             "tags": ["site-agent"],
             "metadata": {"runId": run_id, "term": term or "",
-                         "plannedSite": planned_site or "", "confirm": confirm},
+                         "plannedSite": planned_site or "", "confirm": confirm,
+                         "mode": mode},
         },
         snapshot=page_snapshot,
     )

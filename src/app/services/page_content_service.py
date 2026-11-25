@@ -29,6 +29,7 @@ from src.app.utils.logger import get_logger
 log = get_logger(__name__)
 
 MAX_ANALYSIS_CHARS = 4000   # 分析稿进提示词的上限：8 小节正文，超长只会稀释写作要求
+MAX_SITE_BRIEF_CHARS = 2600 # 原站摘要上限：给写手"已有什么 + 风格"，不能盖过分析稿
 MAX_SECTIONS = 6
 MAX_SECTION_PARAS = 4
 MAX_FAQ = 6
@@ -134,12 +135,18 @@ def analysis_leak(page: dict[str, Any]) -> str:
     return ""
 
 
-def _payload(term: str, site_name: str, analysis: str) -> str:
+def _payload(term: str, site_name: str, analysis: str, site_brief: str = "") -> str:
     site = SITES[site_name]
+    # ★原站摘要并进 analysis 正文而不只是单独字段：D1 提示词只认识 analysis，
+    # 单开字段模型未必会读；拼进来它就得按"素材"处理，写出的页才不撞原站。
+    source = analysis[:MAX_ANALYSIS_CHARS]
+    if site_brief:
+        source = f"{source}\n\n[原站现状与写作约束]\n{site_brief[:MAX_SITE_BRIEF_CHARS]}"
     return json.dumps(
         {"term": term,
          "site": {"name": site.name, "brand": site.brand, "lang": site.lang},
-         "analysis": analysis[:MAX_ANALYSIS_CHARS]},
+         "analysis": source,
+         "site_brief": site_brief[:MAX_SITE_BRIEF_CHARS]},
         ensure_ascii=False,
     )
 
@@ -147,7 +154,8 @@ def _payload(term: str, site_name: str, analysis: str) -> str:
 class PageContentService:
     @traceable(name="write_page_content")
     def write(self, term: str, site_name: str, analysis: str,
-              versions: dict[str, str] | None = None) -> dict[str, Any] | None:
+              versions: dict[str, str] | None = None,
+              site_brief: str = "") -> dict[str, Any] | None:
         """按访客口吻重写正文；任何失败返回 None（上层回退解析稿）。
 
         不抛错：写作是增强步骤，LLM 不可用只应让这一页退化成草稿，不该让建页线
@@ -165,7 +173,7 @@ class PageContentService:
             log.warning("page_content 提示词加载失败：%s", str(exc)[:200])
             return None
         data, _failed, _retryable = complete_json(
-            system, _payload(term, site_name, str(analysis)),
+            system, _payload(term, site_name, str(analysis), site_brief),
             warn_event="page_content_failed")
         if not isinstance(data, dict):
             return None

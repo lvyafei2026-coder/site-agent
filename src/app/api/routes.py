@@ -69,6 +69,7 @@ class PageRequest(BaseModel):
     term: str = ""                        # 空 = 自动取下一条带分析正文的 todo 词
     confirm: bool = False                 # False = dry-run 只预览，不写任何数据
     planned_site: str = ""                # 排产台账给的目标站；空 = 由建页线现判
+    mode: str = "auto"                    # auto=自动校验判重；enhance=显式增强已有页（绕过同页拦截）
 
 
 @api.post("/page")

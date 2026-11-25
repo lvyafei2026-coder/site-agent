@@ -94,6 +94,15 @@ class GraphNode(StrEnum):
     PAGE_RENDER = "page_render"     # 渲染 HTML + sitemap（步骤名 render → render_files）
     PAGE_PUSH = "page_push"         # push 仓库（步骤名 push → git_push，成功即落台账）
     PAGE_VERIFY = "page_verify"     # 线上验活（步骤名 verify → check_live_page）
+    PAGE_AUDIT = "page_audit"       # 建页前通读原站：判重 + 定增强/新增 + 抽风格基调
+
+
+class AuditDecision(StrEnum):
+    """站情校验的结论（site_audit_service.audit）。StrEnum 与旧字符串全兼容。"""
+
+    ADD = "add"          # 原站没有同主题页，可新增
+    ENHANCE = "enhance"  # 已有页正文高度重合，新页只写缺口（增强而非重复）
+    SKIP = "skip"        # 已有页就是这个词，拦下新增，走增强原页
 
 
 class RouteTag(StrEnum):
@@ -123,6 +132,7 @@ class PageBuildStep(StrEnum):
     CLASSIFY = "classify"  # LLM 归类到已有子站（extraction 的 target_site + 规则兜底）
     BUILD = "build"      # 解析方案正文成页面结构（slug/title/sections/faq）
     WRITE = "write"      # 让 LLM 按访客口吻重写正文，并拦下仍是分析稿的内容
+    AUDIT = "audit"      # 通读原站判重：纯业务（读已 clone 的仓库），不经 registry
     RENDER = "render"    # render_files：渲染 + sitemap + git add
     PUSH = "push"        # git_push：推送触发构建（成功即落 agent_pages）
     VERIFY = "verify"    # check_live_page：线上验活，成功置 verified

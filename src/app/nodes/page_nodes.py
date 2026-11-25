@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""建页子图的五个节点（一文件装下：步骤少且严格串行，拆五个文件反而难读）。
+"""建页子图的六个节点（一文件装下：步骤少且严格串行，拆六个文件反而难读）。
 
     page_plan   取词 + 归类站点 + 解析方案正文 → 页面结构（纯业务，不走 registry）
+    page_audit  通读原站：判重 + 定增强/新增 + 抽风格基调（纯业务，读已 clone 仓库）
     page_write  分析稿 → 访客可读正文；仍是分析稿就在渲染前拦下
     page_render render_files：渲染 HTML + sitemap + git add（工具步骤 render）
     page_push   git_push：推送触发构建（工具步骤 push；成功后自动落 agent_pages）
@@ -18,9 +19,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.app.enums import ClassifyBy, ContentSource, PageBuildStep
+from src.app.enums import AuditDecision, ClassifyBy, ContentSource, PageBuildStep
 from src.app.services import page_build_service
 from src.app.services.page_content_service import analysis_leak, page_content_service
+from src.app.services.site_audit_service import audit as audit_site
+from src.app.services.site_audit_service import read_site, style_brief
 from src.app.services.tool_service import tool_service
 
 
@@ -58,6 +61,35 @@ def page_plan(state: dict[str, Any]) -> dict[str, Any]:
             "site": cls["site"], "classify_by": cls["by"]}
 
 
+def page_audit(state: dict[str, Any]) -> dict[str, Any]:
+    """通读原站：先看这站已经有什么，再决定新增 / 增强 / 拦下。
+
+    ★读的是目标站仓库里的 HTML（与渲染阶段同一份快照），不是线上抓——
+    这样预览与上线看到的是同一份"原站现状"。clone / 读失败都降级为「没读到」，
+    不阻塞建页，但 reason 会进结果面板。
+    """
+    skip = _pass_if_failed(state)
+    if skip is not None:
+        return skip
+    site_name = str(state.get("site") or "")
+    term = str((state.get("picked") or {}).get("term") or state.get("term") or "")
+    digest = read_site(site_name)
+    verdict = audit_site(term, digest)
+    out: dict[str, Any] = {
+        "stage": PageBuildStep.AUDIT.value,
+        "site_digest": digest,
+        "site_audit": verdict,
+    }
+    if verdict["decision"] == AuditDecision.SKIP.value:
+        # 显式增强模式：人工已经看过重复证据、确认要在原页上做增量，才放行覆盖。
+        if state.get("mode") == "enhance":
+            verdict = {**verdict, "decision": AuditDecision.ENHANCE.value,
+                       "reason": f"显式增强模式：{verdict['reason']}；本次在已有页上做增量"}
+            return {**out, "site_audit": verdict}
+        return {**out, "error": f"站情校验拦下：{verdict['reason']}"}
+    return out
+
+
 def page_write(state: dict[str, Any]) -> dict[str, Any]:
     """把分析稿改写成访客可读正文；写不成仍保留解析稿供预览，但含分析用语就拦下。
 
@@ -69,8 +101,10 @@ def page_write(state: dict[str, Any]) -> dict[str, Any]:
         return skip
     term = str((state.get("picked") or {}).get("term") or "")
     draft = dict(state.get("page") or {})
+    # 把原站"已有什么 + 风格基调 + 判重结论"塞进写作 payload（D1 提示词正文不改）
+    brief = style_brief(state.get("site_digest") or {}, state.get("site_audit") or {})
     written = page_content_service.write(
-        term, state["site"], state.get("ai_text") or "")
+        term, state["site"], state.get("ai_text") or "", site_brief=brief)
     page = {**draft, **written} if written else draft
     out: dict[str, Any] = {
         "stage": PageBuildStep.WRITE.value,

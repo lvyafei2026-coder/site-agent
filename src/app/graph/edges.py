@@ -108,6 +108,19 @@ def route_after_plan(state) -> str:
 
 
 PAGE_PLAN_EDGE_MAP = {
+    RouteTag.NEXT: GraphNode.PAGE_AUDIT,
+    RouteTag.STOP: END,
+}
+
+
+def route_after_audit(state) -> str:
+    """站情校验拦下（已有同主题页）→ 收尾；否则进写作。"""
+    if state.get("error"):
+        return RouteTag.STOP
+    return RouteTag.NEXT
+
+
+PAGE_AUDIT_EDGE_MAP = {
     RouteTag.NEXT: GraphNode.PAGE_WRITE,
     RouteTag.STOP: END,
 }

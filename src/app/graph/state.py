@@ -244,6 +244,7 @@ class PageBuildState(TypedDict, total=False):
     term: str                # 要建的词；空串 = 自动取下一条带正文的 todo 词
     confirm: bool            # False = dry-run（只 plan，不渲染不推送）
     planned_site: str        # 排产台账给的目标站；空串 = 让 plan 节点现判
+    mode: str                # auto=自动判重；enhance=显式增强已有页（人工确认后）
     status_filter: str       # 取词的跟进状态，默认 todo
 
     # ── 节点间流转 ──
@@ -252,6 +253,8 @@ class PageBuildState(TypedDict, total=False):
     site: str                # 目标站点名（空串 = 归不进已有站）
     classify_by: str         # plan / llm / rule / none（汇总里如实展示）
     content_by: str          # llm / draft（正文来源：写出来的还是沿用分析稿）
+    site_audit: dict         # 站情通读结果：add/enhance/skip + 匹配页 + 相似度
+    site_digest: dict        # 原站页面清单 + 风格基调（供写作与渲染继承）
     page: dict               # 解析出的页面结构
     work: str                # render_files 返回的本地仓库路径
     sha: str                 # git_push 返回的 commit sha
@@ -265,7 +268,7 @@ class PageBuildState(TypedDict, total=False):
 
 
 def initial_page_build_state(term: str = "", confirm: bool = False,
-                             planned_site: str = "",
+                             planned_site: str = "", mode: str = "auto",
                              status_filter: str = "todo") -> PageBuildState:
     """构造建页线一轮的入口状态（与前两个工厂对称）。
 
@@ -276,10 +279,13 @@ def initial_page_build_state(term: str = "", confirm: bool = False,
         "term": str(term or ""),
         "confirm": bool(confirm),
         "planned_site": str(planned_site or ""),
+        "mode": str(mode or "auto"),
         "status_filter": str(status_filter or "todo"),
         "picked": {},
         "ai_text": "",
         "content_by": "",
+        "site_audit": {},
+        "site_digest": {},
         "site": "",
         "classify_by": "",
         "page": {},
