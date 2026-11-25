@@ -66,6 +66,7 @@ class Settings:
                 PromptTask.REVIEW_METRICS.value: "v1",
                 PromptTask.PROMO_ARTICLE.value: "v2",
                 PromptTask.WORD_PLAN_PAGE.value: "v4",
+                PromptTask.PAGE_CONTENT.value: "v1",
             }
 
 

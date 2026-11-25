@@ -98,16 +98,29 @@ def route_after_llm(state: HotwordLoopState) -> str:
     return RouteTag.NEXT if state.get("ai") else RouteTag.COLLECT
 
 
-# ── 建页线（graph/page_graph.py）：plan 出预览/失败就停，push 落账后没失败才验活 ──
+# ── 建页线（graph/page_graph.py）：plan 失败就停；write 出正文，dry-run 到此为止 ──
 
 def route_after_plan(state) -> str:
-    """plan 失败 / 归类不出站点 / confirm=False（dry-run 预览）→ 直接收尾，不碰写工具。"""
-    if state.get("error") or not state.get("confirm"):
+    """plan 失败 / 归类不出站点 → 直接收尾；否则进写作（预览也要写出真正文）。"""
+    if state.get("error"):
         return RouteTag.STOP
     return RouteTag.NEXT
 
 
 PAGE_PLAN_EDGE_MAP = {
+    RouteTag.NEXT: GraphNode.PAGE_WRITE,
+    RouteTag.STOP: END,
+}
+
+
+def route_after_write(state) -> str:
+    """正文不合格 → 收尾（渲染前拦下）；confirm=False（dry-run）看完正文就结束。"""
+    if state.get("error") or not state.get("confirm"):
+        return RouteTag.STOP
+    return RouteTag.NEXT
+
+
+PAGE_WRITE_EDGE_MAP = {
     RouteTag.NEXT: GraphNode.PAGE_RENDER,
     RouteTag.STOP: END,
 }

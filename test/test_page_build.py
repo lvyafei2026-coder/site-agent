@@ -21,6 +21,7 @@ from src.app.graph import page_graph
 from src.app.graph.state import initial_page_build_state
 from src.app.observability.trace import run_traced
 from src.app.services import page_build_service
+from src.app.services import page_content_service as content_mod
 from src.app.services.extraction_service import extraction_service
 from src.app.tools.adapters.publishing import verification
 
@@ -59,7 +60,7 @@ def _seed_todo(fake_kv, term, with_body=True, status="todo"):
 def test_page_graph_is_a_third_distinct_line():
     """建页子图并列于另外两条线：节点集合独立、单例互不混用。"""
     page = {str(n) for n in graph.get_page_graph().get_graph().nodes}
-    assert {"page_plan", "page_render", "page_push", "page_verify"} <= page
+    assert {"page_plan", "page_write", "page_render", "page_push", "page_verify"} <= page
     assert "classify_intent" not in page and "fetch_one" not in page
     assert graph.get_page_graph() is not graph.get_normal_graph()
     assert graph.get_page_graph() is not graph.get_hotword_graph()
@@ -84,7 +85,7 @@ def test_http_page_entry(fake, fake_kv, monkeypatch):
     assert resp.status_code == 200
     body = resp.json()
     assert body["ok"] is True and body["dryRun"] is True
-    assert body["stage"] == "plan" and body["site"] == "invoices"
+    assert body["stage"] == "write" and body["site"] == "invoices"
     assert "sha" not in body and "url" not in body
     # 从台账点单：词 + 排产站一起传，站点不再由 LLM 重判
     pinned = client.post("/page", json={"term": "free invoice generator",
@@ -189,7 +190,7 @@ def test_run_page_build_dry_run_touches_nothing(fake, fake_kv, monkeypatch):
     _stub_extract(monkeypatch, _SITE_OK)
     _seed_todo(fake_kv, "free invoice generator")
     out = graph.run_page_build("", confirm=False)
-    assert out["ok"] is True and out["dryRun"] is True and out["stage"] == "plan"
+    assert out["ok"] is True and out["dryRun"] is True and out["stage"] == "write"
     assert out["site"] == "invoices" and out["classifyBy"] == "llm"
     assert out["page"]["slug"] == "free-invoice-generator"
     assert fake.counts["render_files"] == 0 and fake.counts["git_push"] == 0
@@ -293,3 +294,68 @@ def test_verify_live_reports_404_after_retries(monkeypatch):
                                           "", attempts=2, delay_sec=0)
     assert ok is False and "404" in detail
     assert calls["n"] == 4        # 每轮两个地址 × 两轮
+
+
+# ---- 正文写作（page_content）：分析稿 → 访客正文，渲染前拦分析元话语 ----
+
+def _llm_page():
+    return {
+        "title": "Is It Black Friday Today? Check the Date",
+        "description": "A quick answer to whether today is Black Friday and how the date is set.",
+        "h1": "Is It Black Friday Today?",
+        "intro": "Black Friday falls after Thanksgiving in the United States.",
+        "sections": [{"heading": "How the date works",
+                      "paragraphs": [" retailers open on the Friday after Thanksgiving.",
+                                      " The date moves with Thanksgiving each year."]}],
+        "faq": [{"q": "Is Black Friday a holiday?", "a": "It is not a federal holiday."}],
+    }
+
+
+def test_page_write_replaces_draft_with_written_copy(fake, fake_kv, monkeypatch):
+    """LLM 给正文时：只覆盖文案字段，slug 仍由词决定，汇总标 contentBy=llm。"""
+    _stub_extract(monkeypatch, _SITE_OK)
+    _seed_todo(fake_kv, "free invoice generator")
+    monkeypatch.setattr(content_mod, "complete_json",
+                        lambda *_args, **_kwargs: (_llm_page(), False, False))
+    out = graph.run_page_build("free invoice generator", confirm=False)
+    assert out["stage"] == "write" and out["contentBy"] == "llm"
+    assert out["page"]["title"] == _llm_page()["title"]
+    assert out["page"]["slug"] == "free-invoice-generator"
+    assert out["page"]["faq"] == _llm_page()["faq"]
+    assert fake.counts["render_files"] == 0
+    assert "正文已按访客口吻写好" in out["note"]
+
+
+def test_page_write_blocks_analysis_prose_before_render(fake, fake_kv, monkeypatch):
+    """写作没成功、解析稿仍是内部决策稿 → 在渲染前拦下，一个写工具都不碰。"""
+    _stub_extract(monkeypatch, _SITE_OK)
+    fake_kv.put_text("ai:v3:black friday today", (
+        "1) 词义与意图：判断今天是不是黑五。\n\n"
+        "2) 建议站型：倒计时 + 日期对照页，接住日期类长尾。"))
+    monkeypatch.setattr(content_mod, "complete_json",
+                        lambda *_args, **_kwargs: (None, False, False))
+    out = graph.run_page_build("black friday today", confirm=True)
+    assert out["ok"] is False and out["stage"] == "write"
+    assert "渲染前拦下" in out["error"]
+    assert fake.counts["render_files"] == 0 and fake.counts["git_push"] == 0
+
+
+def test_analysis_leak_checks_every_rendered_field():
+    """校验覆盖 title/intro/sections/faq，不能只查标题就放过正文里的分析话。"""
+    page = dict(_llm_page())
+    assert content_mod.analysis_leak(page) == ""
+    page["sections"][0]["paragraphs"].append("6) 变现：affiliate 为主，购物节流量带购买意图。")
+    assert content_mod.analysis_leak(page) == "变现："
+
+
+def test_normalize_page_drops_broken_sections_and_envelope():
+    """嵌套 page 外壳可拆；空节/空 FAQ 丢掉，结构仍能被 renderer 消费。"""
+    raw = {"page": {"title": "T", "sections": [
+        {"heading": "", "paragraphs": ["正文"]},
+        {"heading": "Works", "paragraphs": [" something valid here "]},
+    ], "faq": [{"q": "Q?", "a": ""}, {"question": "Q?", "answer": "A."}]}}
+    out = content_mod.normalize_page(raw, "term")
+    assert out is not None and "slug" not in out
+    assert [s["heading"] for s in out["sections"]] == ["Works"]
+    assert out["faq"] == [{"q": "Q?", "a": "A."}]
+    assert content_mod.normalize_page({"sections": []}, "term") is None

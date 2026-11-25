@@ -4,13 +4,14 @@
 
 """建页子图：装配 + 运行入口（与 normal_graph / hotword_graph 同构，第三条并列线）。
 
-    START → page_plan → route_after_plan ─┬─ page_render → page_push
-                                          │                 → route_after_push ─┬─ page_verify → END
-                                          └ END（预览 / 失败 / 归类不出站点）     └ END
+    START → page_plan → route_after_plan ─┬─ page_write → route_after_write ─┬─ page_render → page_push
+                                          │                                 │               → route_after_push ─┬─ page_verify → END
+                                          └ END（失败 / 归类不出站点）        └ END（正文不合格 / 预览）      └ END
 
-一次只建一页（词级批量由调用方多次触发）；confirm=False 是 dry-run——plan 出
-页面结构与目标站就收尾，一个写动作都不发生。push 成功后台账已由工具层自动
-UPSERT（publishing_tools.git_push），verify 只更新 live_ok，不再写 KV。
+一次只建一页（词级批量由调用方多次触发）；confirm=False 是 dry-run——plan 出页面
+结构与目标站、write 出真正文就收尾，一个写动作都不发生（正文不合格同样在此收尾）。
+push 成功后台账已由工具层自动 UPSERT（publishing_tools.git_push），verify 只更新
+live_ok，不再写 KV。
 
 依赖单向向下：graph → nodes → services → tools → adapters；节点不写工具名字面量，
 render / push / verify 的路由在 tool_service.PAGE_STEP_TOOLS。
@@ -25,24 +26,31 @@ from typing import Any, Optional
 
 from langgraph.graph import END, START, StateGraph
 
-from src.app.enums import GraphNode, TraceName
-from src.app.graph.edges import PAGE_PLAN_EDGE_MAP, PAGE_PUSH_EDGE_MAP, route_after_plan, route_after_push
+from src.app.enums import ContentSource, GraphNode, TraceName
+from src.app.graph.edges import (PAGE_PLAN_EDGE_MAP, PAGE_PUSH_EDGE_MAP,
+                                 PAGE_WRITE_EDGE_MAP, route_after_plan, route_after_push,
+                                 route_after_write)
 from src.app.graph.state import PageBuildState, initial_page_build_state
-from src.app.nodes.page_nodes import page_plan, page_push, page_render, page_verify
+from src.app.nodes.page_nodes import page_plan, page_push, page_render, page_verify, page_write
 from src.app.observability.langsmith import observed, public_config
 from src.app.observability.trace import page_snapshot, run_traced
 from src.app.services.page_build_service import todo_pool_size
 
 
 def build_page_graph():
-    """固定串形：plan（取词+归类+解析）→ render → push → verify。无 checkpointer（一次跑完即弃）。"""
+    """固定串形：plan（取词+归类+解析）→ write（写正文）→ render → push → verify。
+
+    无 checkpointer（一次跑完即弃）。
+    """
     graph = StateGraph(PageBuildState)
-    for node, fn in ((GraphNode.PAGE_PLAN, page_plan), (GraphNode.PAGE_RENDER, page_render),
+    for node, fn in ((GraphNode.PAGE_PLAN, page_plan), (GraphNode.PAGE_WRITE, page_write),
+                     (GraphNode.PAGE_RENDER, page_render),
                      (GraphNode.PAGE_PUSH, page_push), (GraphNode.PAGE_VERIFY, page_verify)):
         graph.add_node(node, fn)
 
     graph.add_edge(START, GraphNode.PAGE_PLAN)
     graph.add_conditional_edges(GraphNode.PAGE_PLAN, route_after_plan, PAGE_PLAN_EDGE_MAP)
+    graph.add_conditional_edges(GraphNode.PAGE_WRITE, route_after_write, PAGE_WRITE_EDGE_MAP)
     graph.add_edge(GraphNode.PAGE_RENDER, GraphNode.PAGE_PUSH)
     graph.add_conditional_edges(GraphNode.PAGE_PUSH, route_after_push, PAGE_PUSH_EDGE_MAP)
     graph.add_edge(GraphNode.PAGE_VERIFY, END)
@@ -63,7 +71,7 @@ def _run_inputs(term: str = "", confirm: bool = False,
 def _run_outputs(out: dict[str, Any]) -> dict[str, Any]:
     # run_page_build 的返回体是 summary 的平铺（外加 page/runId/trace），这里只挑业务键。
     keys = ("ok", "stage", "term", "site", "slug", "url", "liveOk", "classifyBy",
-            "todoPool", "error", "note")
+            "contentBy", "todoPool", "error", "note")
     return {k: out[k] for k in keys if k in out}
 
 
@@ -73,11 +81,13 @@ def _summarize(state: PageBuildState) -> dict[str, Any]:
     error = state.get("error") or ""
     stage = state.get("stage") or "plan"
     summary: dict[str, Any] = {
-        "ok": not (error and stage in ("render", "push", "verify")),
+        # 写作阶段失败也算真失败：正文不合格时这一页根本没建，不能报成功。
+        "ok": not (error and stage in ("write", "render", "push", "verify")),
         "stage": stage,
         "term": (state.get("picked") or {}).get("term") or state.get("term") or "",
         "site": state.get("site") or "",
         "classifyBy": state.get("classify_by") or "",
+        "contentBy": state.get("content_by") or "",
         "slug": page.get("slug") or "",
         "todoPool": todo_pool_size(),
         "dryRun": not state.get("confirm"),
@@ -100,7 +110,9 @@ def _summarize(state: PageBuildState) -> dict[str, Any]:
                                f"{summary.get('url', '')}（构建或边缘生效可能仍在进行，"
                                "稍后重新验活确认；台账状态仍是 deployed）")
     elif not state.get("confirm") and not error:
-        summary["note"] = "dry-run 预览：confirm=true 才会真正渲染并推送"
+        summary["note"] = ("dry-run 预览：正文已按访客口吻写好，confirm=true 才会真正渲染并推送"
+                           if state.get("content_by") == ContentSource.LLM.value else
+                           "dry-run 预览：正文沿用分析稿（写作未成功），confirm=true 前先修提示词")
     return summary
 
 

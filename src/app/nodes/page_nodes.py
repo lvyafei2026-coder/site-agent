@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""建页子图的四个节点（一文件装下：步骤少且严格串行，拆四个文件反而难读）。
+"""建页子图的五个节点（一文件装下：步骤少且严格串行，拆五个文件反而难读）。
 
     page_plan   取词 + 归类站点 + 解析方案正文 → 页面结构（纯业务，不走 registry）
+    page_write  分析稿 → 访客可读正文；仍是分析稿就在渲染前拦下
     page_render render_files：渲染 HTML + sitemap + git add（工具步骤 render）
     page_push   git_push：推送触发构建（工具步骤 push；成功后自动落 agent_pages）
     page_verify check_live_page：线上验活（工具步骤 verify）
@@ -17,8 +18,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.app.enums import ClassifyBy
+from src.app.enums import ClassifyBy, ContentSource, PageBuildStep
 from src.app.services import page_build_service
+from src.app.services.page_content_service import analysis_leak, page_content_service
 from src.app.services.tool_service import tool_service
 
 
@@ -54,6 +56,33 @@ def page_plan(state: dict[str, Any]) -> dict[str, Any]:
                           "需要走「建新站」流程（launch_new_site 工具，人工触发）")}
     return {**out, "picked": picked, "ai_text": picked["text"], "page": page,
             "site": cls["site"], "classify_by": cls["by"]}
+
+
+def page_write(state: dict[str, Any]) -> dict[str, Any]:
+    """把分析稿改写成访客可读正文；写不成仍保留解析稿供预览，但含分析用语就拦下。
+
+    ★为什么拦在渲染前：这种内容一旦推上线，就是「把内部决策稿给访客看」；而且推送
+      会覆盖同 slug 的历史文件，事后才发现只能再推一次。宁可这一轮明确失败。
+    """
+    skip = _pass_if_failed(state)
+    if skip is not None:
+        return skip
+    term = str((state.get("picked") or {}).get("term") or "")
+    draft = dict(state.get("page") or {})
+    written = page_content_service.write(
+        term, state["site"], state.get("ai_text") or "")
+    page = {**draft, **written} if written else draft
+    out: dict[str, Any] = {
+        "stage": PageBuildStep.WRITE.value,
+        "page": page,
+        "content_by": ContentSource.LLM.value if written else ContentSource.DRAFT.value,
+    }
+    leak = analysis_leak(page)
+    if leak:
+        return {**out, "error": (
+            f"页面正文没写成：解析稿里仍带内部分析用语「{leak}」，已在渲染前拦下。"
+            "去 /rules/prompts 确认 page_content 提示词可读、LLM 额度正常，再重试本轮。")}
+    return out
 
 
 def page_render(state: dict[str, Any]) -> dict[str, Any]:

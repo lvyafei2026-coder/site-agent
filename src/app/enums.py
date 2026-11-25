@@ -90,6 +90,7 @@ class GraphNode(StrEnum):
 
     # 建页子图（graph/page_graph.py）：一条待开发词 → 一页上线的固定串形流程
     PAGE_PLAN = "page_plan"         # 取词 + 归类站点 + 解析方案正文成页面结构
+    PAGE_WRITE = "page_write"       # 分析稿 → 访客可读正文（page_content 提示词）
     PAGE_RENDER = "page_render"     # 渲染 HTML + sitemap（步骤名 render → render_files）
     PAGE_PUSH = "page_push"         # push 仓库（步骤名 push → git_push，成功即落台账）
     PAGE_VERIFY = "page_verify"     # 线上验活（步骤名 verify → check_live_page）
@@ -114,13 +115,14 @@ class PageBuildStep(StrEnum):
     """建页子图的固定步骤（graph/page_graph.py），与 HotwordStep 同一口径：
 
     图连线（page_graph.py）、工具路由表（tool_service.PAGE_STEP_TOOLS）共用。
-    pick / classify / build 是纯业务（KV 读 + LLM 归类 + 解析方案正文），不经 registry；
-    render / push / verify 才是工具步骤。
+    pick / classify / build / write 是纯业务（KV 读 + LLM 归类 + 解析方案正文 + 写作正文），
+    不经 registry；render / push / verify 才是工具步骤。
     """
 
     PICK = "pick"        # 从 todo 池取一条词（连带 ai:v3 分析正文）
     CLASSIFY = "classify"  # LLM 归类到已有子站（extraction 的 target_site + 规则兜底）
     BUILD = "build"      # 解析方案正文成页面结构（slug/title/sections/faq）
+    WRITE = "write"      # 让 LLM 按访客口吻重写正文，并拦下仍是分析稿的内容
     RENDER = "render"    # render_files：渲染 + sitemap + git add
     PUSH = "push"        # git_push：推送触发构建（成功即落 agent_pages）
     VERIFY = "verify"    # check_live_page：线上验活，成功置 verified
@@ -302,6 +304,17 @@ class ClassifyBy(StrEnum):
     NONE = "none"  # 归不进任何已有站
 
 
+class ContentSource(StrEnum):
+    """建页正文的来源（运行态字段 state.content_by，不落表）。
+
+    决定「这一页的正文是写出来的还是直接抄的分析稿」——后者只允许出现在预览里当
+    兜底，一旦含内部分析用语就拦在渲染之前。
+    """
+
+    LLM = "llm"            # page_content 提示词按访客口吻重写
+    DRAFT = "draft"        # 没写成，沿用解析出的分析稿（渲染前另有校验）
+
+
 class BacklinkStatus(StrEnum):
     """agent_backlinks.status：外链台账状态。"""
 
@@ -383,3 +396,4 @@ class PromptTask(StrEnum):
     REVIEW_METRICS = "review_metrics"
     PROMO_ARTICLE = "promo_article"
     WORD_PLAN_PAGE = "word_plan_page"
+    PAGE_CONTENT = "page_content"

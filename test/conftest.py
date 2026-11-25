@@ -324,6 +324,8 @@ PROMPT_STUB_DATA = {
          "content": "word_plan_page 排产桩：输出本轮排产方案（选词/落站/排除原因）"},
         {"task": "word_plan_page", "version": "v4",
          "content": "word_plan_page 排产桩 v4：只输出 JSON {items,excluded}"},
+        {"task": "page_content", "version": "v1",
+         "content": "page_content 正文写作桩：分析稿→访客可读 JSON {title,description,h1,intro,sections,faq}"},
     ],
     "defaults": [
         {"task": "intent", "version": "v1"},
@@ -335,6 +337,7 @@ PROMPT_STUB_DATA = {
         {"task": "review_metrics", "version": "v1"},
         {"task": "promo_article", "version": "v2"},
         {"task": "word_plan_page", "version": "v4"},
+        {"task": "page_content", "version": "v1"},
     ],
 }
 
