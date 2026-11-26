@@ -6,12 +6,15 @@
 
 from __future__ import annotations
 
+import html as html_mod
 import json
 import re
 from pathlib import Path
 from typing import Any
 
 from src.app.config import TEMPLATE_DIR, SiteConfig
+
+from ..hosting.site_scaffold import PAGES_END, PAGES_START
 from .github_repo import ensure_repo, git, has_staged_changes
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,60}$")
@@ -33,6 +36,33 @@ _SKIN_CSS = """
 .agent-page p,.agent-page li{line-height:1.75;color:var(--ink-soft,var(--muted,#4b5563))}
 .agent-page a{color:var(--accent,#185fa5)}
 .agent-faq{border-top:1px solid var(--line,#e5e7eb);margin-top:40px;padding-top:8px}
+</style>
+"""
+
+# v2 骨架站（首页引了 /assets/site.css）的内页增强：只补内页专属布局，
+# 配色/字体/深浅模式全部继承全局 site.css，避免两处样式互相打架。
+_SKIN_CSS_V2 = """
+<style>
+.agent-page{max-width:860px;margin:0 auto;padding:0 20px 72px}
+.agent-page .crumbs{display:flex;gap:9px;align-items:center;padding:22px 0 0;color:var(--muted);font-size:.84rem}
+.agent-page .crumbs a{color:var(--muted)}
+.agent-page .lede{padding:30px 0 26px;border-bottom:1px solid var(--line);margin-bottom:30px}
+.agent-page .tag{display:inline-block;background:var(--accent-soft);color:var(--accent);border-radius:999px;padding:4px 12px;font-size:.72rem;font-weight:800;letter-spacing:.1em;text-transform:uppercase}
+.agent-page .lede h1{font-size:clamp(1.9rem,4vw,2.6rem);line-height:1.16;letter-spacing:-.03em;margin:14px 0 12px;color:var(--ink)}
+.agent-page .lede .intro{font-size:1.08rem;color:var(--ink-soft);max-width:720px;margin:0}
+.agent-page .toc{display:flex;flex-wrap:wrap;gap:10px 20px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 20px;margin:0 0 30px;font-size:.9rem}
+.agent-page .toc-title{font-weight:750;color:var(--ink)}
+.agent-page .section-card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius,18px);padding:24px 26px;margin:0 0 20px;box-shadow:var(--shadow,none)}
+.agent-page .section-card h2{font-size:1.32rem;letter-spacing:-.02em;margin:0 0 12px;color:var(--ink)}
+.agent-page .section-card p{margin:0 0 12px;color:var(--ink-soft)}
+.agent-page .section-card p:last-child{margin-bottom:0}
+.agent-page .faq-section{margin-top:44px}
+.agent-page .faq-head{font-size:1.5rem;letter-spacing:-.02em;margin:0 0 20px}
+.agent-page .faq-item{border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:12px;background:var(--card);padding:18px 22px;margin-bottom:14px}
+.agent-page .faq-item h3{font-size:1.02rem;margin:0 0 6px;color:var(--ink)}
+.agent-page .faq-item p{margin:0;color:var(--ink-soft)}
+.agent-page .back{margin-top:40px;font-size:.92rem}
+@media(max-width:640px){.agent-page .section-card{padding:20px 18px}.agent-page .lede{padding-top:24px}}
 </style>
 """
 
@@ -87,7 +117,38 @@ def _site_skin(work: Path, site: SiteConfig) -> dict[str, str]:
         "icon": "\n".join(dict.fromkeys(icon)),
         "header": _header_brand(header.group(0), site.brand) if header else "",
         "footer": footer.group(0) if footer else "",
+        # 新骨架站的标记：有全局 site.css 才启用卡片化内页，老站外观一律不动。
+        "enhanced": "/assets/site.css" in html,
     }
+
+
+def _enhanced_content(site: SiteConfig, page: dict[str, Any]) -> str:
+    """v2 骨架内容区：面包屑 + 导语 + 目录 + 卡片章节 + FAQ 卡片 + 返回首页。"""
+    h1 = esc(page.get("h1") or page["title"])
+    intro = esc(page.get("intro", ""))
+    toc, blocks = [], []
+    for i, sec in enumerate(page.get("sections", []), 1):
+        heading = esc(sec.get("heading", ""))
+        anchor = f"sec-{i}"
+        toc.append(f'<a href="#{anchor}">{heading}</a>')
+        paras = "".join(f"<p>{esc(p)}</p>" for p in sec.get("paragraphs", []))
+        blocks.append(f'<section class="section-card" id="{anchor}">'
+                      f'<h2>{heading}</h2>{paras}</section>')
+    toc_html = (f'<nav class="toc"><span class="toc-title">On this page</span>'
+                + "".join(toc) + "</nav>") if len(toc) > 1 else ""
+    faq_html = "".join(
+        f'<div class="faq-item"><h3>{esc(item["q"])}</h3><p>{esc(item["a"])}</p></div>'
+        for item in page.get("faq", [])
+    )
+    faq = (f'<section class="faq-section"><h2 class="faq-head">Frequently asked questions</h2>'
+           f'{faq_html}</section>') if faq_html else ""
+    return f"""
+  <nav class="crumbs"><a href="/">{esc(site.brand)}</a><span>/</span><span>{h1}</span></nav>
+  <div class="lede"><span class="tag">Guide</span><h1>{h1}</h1><p class="intro">{intro}</p></div>
+  {toc_html}
+  {''.join(blocks)}
+  {faq}
+  <p class="back"><a href="/">&larr; Back to {esc(site.brand)}</a></p>"""
 
 
 def _render_with_skin(site: SiteConfig, page: dict[str, Any], skin: dict[str, str]) -> str:
@@ -113,12 +174,19 @@ def _render_with_skin(site: SiteConfig, page: dict[str, Any], skin: dict[str, st
             ]},
         ],
     }, ensure_ascii=False)
+    enhanced = bool(skin.get("enhanced"))
     head_extra = "\n".join(x for x in (skin.get("theme"), skin.get("icon"),
-                                        skin.get("styles"), _SKIN_CSS) if x)
+                                        skin.get("styles"),
+                                        _SKIN_CSS_V2 if enhanced else _SKIN_CSS) if x)
     header = skin.get("header") or f'<header><a href="/">{esc(site.brand)}</a></header>'
     footer = skin.get("footer") or (
         f'<footer>{esc(site.brand)} · <a href="/privacy.html">Privacy</a> · '
         '<a href="/terms.html">Terms</a></footer>')
+    content = _enhanced_content(site, page) if enhanced else (
+        f'<h1>{esc(page.get("h1") or page["title"])}</h1>'
+        f'<p>{esc(page.get("intro", ""))}</p>'
+        f"{''.join(sections)}"
+        f'<section class="faq agent-faq"><h2>FAQ</h2>{faq_html}</section>')
     return f"""<!DOCTYPE html>
 <html lang="{esc(site.lang)}">
 <head>
@@ -135,11 +203,7 @@ def _render_with_skin(site: SiteConfig, page: dict[str, Any], skin: dict[str, st
 </head>
 <body>
 {header}
-<main class="wrap agent-page">
-  <h1>{esc(page.get('h1') or page['title'])}</h1>
-  <p>{esc(page.get('intro', ''))}</p>
-  {''.join(sections)}
-  <section class="faq agent-faq"><h2>FAQ</h2>{faq_html}</section>
+<main class="wrap agent-page">{content}
 </main>
 {footer}
 </body>
@@ -212,8 +276,50 @@ def _update_sitemap(work: Path, site: SiteConfig, slug: str) -> None:
     sitemap.write_text(text.replace("</urlset>", entry + "</urlset>"), encoding="utf-8")
 
 
+def _page_cards(work: Path, site: SiteConfig) -> str:
+    """从站点已有文章页生成首页卡片；标题/摘要从页面自己的 meta 读，不另建索引文件。"""
+    public = work / site.asset_dir
+    skip = {"index.html", "privacy.html", "terms.html", "404.html"}
+    cards = []
+    for f in sorted(public.glob("*.html")):
+        if f.name in skip:
+            continue
+        text = f.read_text(encoding="utf-8", errors="replace")
+        title = re.search(r"<title>([\s\S]*?)</title>", text, re.I)
+        desc = (re.search(r'<meta\s+name=["\']description["\'][^>]*content=["\'](.*?)["\']',
+                          text, re.I | re.S)
+                or re.search(r'<meta\s+[^>]*content=["\'](.*?)["\'][^>]*name=["\']description["\']',
+                             text, re.I | re.S))
+        t = esc(html_mod.unescape(title.group(1).strip())) if title else esc(f.stem.replace("-", " ").title())
+        d = esc(html_mod.unescape(desc.group(1).strip())) if desc else ""
+        cards.append(f'<a class="page-card" href="/{f.stem}"><span class="card-eyebrow">Guide</span>'
+                     f'<h3>{t}</h3><p>{d}</p></a>')
+    if not cards:
+        return ('<article class="page-card"><span class="card-eyebrow">Coming soon</span>'
+                '<h3>Guides are being written</h3>'
+                '<p>Published pages will appear here automatically.</p></article>')
+    return "\n      ".join(cards)
+
+
+def _refresh_index(work: Path, site: SiteConfig) -> None:
+    """只更新新骨架首页的文章卡片区；没有标记的站点首页一律不碰。"""
+    index = work / site.asset_dir / "index.html"
+    if not index.is_file():
+        return
+    html_text = index.read_text(encoding="utf-8", errors="replace")
+    if PAGES_START not in html_text or PAGES_END not in html_text:
+        return
+    pattern = re.escape(PAGES_START) + r"[\s\S]*?" + re.escape(PAGES_END)
+    cards = _page_cards(work, site)
+    updated = re.sub(pattern,
+                     lambda _m: f"{PAGES_START}\n      {cards}\n    {PAGES_END}",
+                     html_text, count=1)
+    if updated != html_text:
+        index.write_text(updated, encoding="utf-8")
+
+
 def render_files(site: SiteConfig, page: dict[str, Any]) -> dict[str, Any]:
-    """渲染 + 兜底 sitemap + git add。每一步由 tool 层单独幂等。"""
+    """渲染 + 兜底 sitemap + 首页卡片 + git add。每一步由 tool 层单独幂等。"""
     slug = page.get("slug", "")
     if not SLUG_RE.match(slug):
         raise RuntimeError(f"非法 slug: {slug!r}")
@@ -222,6 +328,7 @@ def render_files(site: SiteConfig, page: dict[str, Any]) -> dict[str, Any]:
     # 不再拿通用浅色模板硬塞进深色站（黑五页事故的第二个根因）。
     _write_page(work, site, page, _site_skin(work, site))
     _update_sitemap(work, site, slug)
+    _refresh_index(work, site)
     git(work, "add", "-A")
     return {"ok": True, "work": str(work), "slug": slug,
             "changed": has_staged_changes(work), "repo": site.repo,

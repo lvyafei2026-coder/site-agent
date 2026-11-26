@@ -22,7 +22,7 @@ from typing import Any
 
 import requests
 
-from src.app.config import CONTACT_EMAIL, REPO_DIR, SiteConfig, env
+from src.app.config import CONTACT_EMAIL, FLEET_DOMAIN, REPO_DIR, SiteConfig, env
 
 os_env = __import__("os").environ
 os_env.setdefault("GIT_TERMINAL_PROMPT", "0")
@@ -88,22 +88,98 @@ def _package_json(repo_name: str, description: str) -> str:
     }, indent=2, ensure_ascii=False) + "\n"
 
 
-def _index_html(site: SiteConfig) -> str:
+# 首页文章列表区块：renderer 建页后按这两个标记重建卡片，别的地方别动。
+PAGES_START = "<!-- AGENT_PAGES:START -->"
+PAGES_END = "<!-- AGENT_PAGES:END -->"
+
+# 新站全局样式：首页和后续生成的内页都引用它（renderer 从 index.html 抽 stylesheet 继承），
+# 一处定义整站统一。变量的命名沿用 --ink/--accent/--line，兼容 renderer 的旧 skin 兜底。
+SITE_CSS = """\
+:root{color-scheme:light dark;--bg:#f7f8fc;--card:#ffffff;--ink:#101828;--ink-soft:#475467;--muted:#667085;--line:#e6eaf2;--accent:#3b5bdb;--accent-soft:#eef2ff;--shadow:0 12px 32px rgba(16,24,40,.06);--radius:18px}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--ink);background:var(--bg)}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+.site-header{position:sticky;top:0;z-index:10;background:rgba(255,255,255,.9);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+.header-inner{max-width:960px;margin:0 auto;padding:14px 20px;display:flex;align-items:center;gap:14px}
+.logo{font-weight:750;letter-spacing:-.02em;font-size:1.08rem;color:var(--ink)}
+.logo:hover{text-decoration:none}
+.logo-dot{color:var(--accent)}
+.header-note{font-size:.8rem;color:var(--muted)}
+.wrap{max-width:960px;margin:0 auto;padding:0 20px}
+.hero{position:relative;overflow:hidden;margin-top:32px;padding:clamp(32px,6vw,64px);border:1px solid var(--line);border-radius:24px;background:linear-gradient(135deg,#eef2ff 0%,#fdf2f8 100%)}
+.hero:before{content:"";position:absolute;right:-70px;top:-90px;width:300px;height:300px;border-radius:50%;background:radial-gradient(circle,rgba(59,91,219,.18),transparent 70%)}
+.hero>*{position:relative}
+.eyebrow{display:inline-block;font-size:.7rem;font-weight:800;letter-spacing:.16em;color:var(--accent);text-transform:uppercase}
+.hero h1{font-size:clamp(2rem,5vw,3.1rem);line-height:1.12;letter-spacing:-.035em;margin:12px 0 14px}
+.hero p{max-width:640px;margin:0 0 26px;color:var(--ink-soft);font-size:1.05rem}
+.btn{display:inline-flex;align-items:center;gap:8px;background:var(--accent);color:#fff;padding:11px 19px;border-radius:999px;font-weight:650;font-size:.94rem;border:0}
+.btn:hover{text-decoration:none;filter:brightness(1.06)}
+.section{padding-top:52px}
+.section-head{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:20px}
+.section-head h2{margin:0;font-size:1.5rem;letter-spacing:-.02em}
+.section-sub{color:var(--muted);font-size:.92rem}
+.page-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:18px}
+.page-card{display:block;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:22px;box-shadow:var(--shadow);transition:transform .18s ease,border-color .18s ease}
+.page-card:hover{transform:translateY(-3px);border-color:var(--accent);text-decoration:none}
+.page-card h3{margin:7px 0 8px;font-size:1.08rem;line-height:1.4;color:var(--ink)}
+.page-card p{margin:0;color:var(--muted);font-size:.92rem;line-height:1.6}
+.card-eyebrow{font-size:.68rem;letter-spacing:.13em;text-transform:uppercase;color:var(--accent);font-weight:800}
+.about p{max-width:720px;color:var(--ink-soft)}
+.site-footer{border-top:1px solid var(--line);margin-top:72px;padding:28px 0 40px;color:var(--muted);font-size:.88rem}
+@media(max-width:640px){.hero{margin-top:20px;padding:28px 22px}.section{padding-top:38px}.page-grid{grid-template-columns:1fr}}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1420;--card:#171d2b;--ink:#e8ecf5;--ink-soft:#c2cad9;--muted:#98a2b8;--line:#2a3346;--accent:#8aa4ff;--accent-soft:#1d2742;--shadow:none}.site-header{background:rgba(15,20,32,.88)}.hero{background:linear-gradient(135deg,#1a2240,#241b38)}}
+"""
+
+
+def _index_html(site: SiteConfig, description: str = "") -> str:
     esc = lambda t: str(t).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    desc = esc(description or f"{site.brand} — practical guides from the Toolara toolbox.")
     return f"""<!DOCTYPE html>
 <html lang="{site.lang}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{esc(site.brand)}</title>
-<meta name="description" content="{esc(site.brand)} — free online tool on {site.host}.">
+<title>{esc(site.brand)} — Guides &amp; answers</title>
+<meta name="description" content="{desc}">
+<meta name="theme-color" content="#3b5bdb">
+<link rel="stylesheet" href="/assets/site.css">
 <link rel="canonical" href="https://{site.host}/">
 </head>
 <body>
-<main>
-  <h1>{esc(site.brand)}</h1>
-  <p>{esc(site.brand)} is part of the Toolara toolbox. Content pages will appear here.</p>
+<header class="site-header"><div class="header-inner">
+  <a href="/" class="logo">{esc(site.brand)}<span class="logo-dot">.</span></a>
+  <span class="header-note">Part of Toolara</span>
+</div></header>
+<main class="wrap">
+  <section class="hero">
+    <span class="eyebrow">Toolara guide</span>
+    <h1>{esc(site.brand)}</h1>
+    <p>{desc}</p>
+    <a class="btn" href="#guides">Browse guides &darr;</a>
+  </section>
+  <section class="section" id="guides">
+    <div class="section-head"><h2>Latest guides</h2>
+      <span class="section-sub">Clear, practical answers &mdash; no fluff.</span></div>
+    <div class="page-grid">
+{PAGES_START}
+      <article class="page-card"><span class="card-eyebrow">Coming soon</span>
+        <h3>Guides are being written</h3>
+        <p>Published pages will appear here automatically.</p></article>
+{PAGES_END}
+    </div>
+  </section>
+  <section class="section about">
+    <div class="section-head"><h2>About {esc(site.brand)}</h2></div>
+    <p>{esc(site.brand)} is part of the Toolara toolbox &mdash; a collection of free,
+    focused pages that explain one topic well. Each guide is written for readers who
+    want a straight answer without the noise.</p>
+  </section>
 </main>
+<footer class="site-footer"><div class="wrap">
+  {esc(site.brand)} &middot; Part of the <a href="https://{FLEET_DOMAIN}">Toolara toolbox</a>
+</div></footer>
 </body>
 </html>
 """
@@ -129,11 +205,13 @@ def write_scaffold(work: Path, site: SiteConfig, description: str) -> list[str]:
     files = {
         work / "wrangler.toml": _wrangler_toml(site.repo_name),
         work / "package.json": _package_json(site.repo_name, description),
-        public / "index.html": _index_html(site),
+        public / "index.html": _index_html(site, description),
+        public / "assets" / "site.css": SITE_CSS,
         public / "sitemap.xml": _sitemap_xml(site),
     }
     for path, text in files.items():
         if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text, encoding="utf-8")
             written.append(str(path.relative_to(work)))
     return written

@@ -379,3 +379,65 @@ def test_page_push_auto_registers_proxy_sitemap(fake, fake_kv, monkeypatch):
     out = page_nodes.page_push(state)
     assert out["sitemap"]["ok"] is True and out["sitemap"]["changed"] is True
     assert seen == [("clocksgoback", "next-full-moon")]
+
+
+def test_new_site_skin_renders_card_layout_and_lists_page_on_home(monkeypatch, tmp_path):
+    """v2 骨架：内页卡片化 + 首页自动列文章；占位提示让位给真实卡片。"""
+    from src.app.config import SiteConfig
+    from src.app.tools.adapters.hosting import site_scaffold
+    from src.app.tools.adapters.publishing import renderer
+
+    site = SiteConfig(name="beaver-moon", repo_name="beaver-moon",
+                      subdomain="beaver-moon", brand="Beaver Moon")
+    work = tmp_path / "beaver-moon"
+    public = work / "public"
+    public.mkdir(parents=True)
+    (public / "index.html").write_text(
+        site_scaffold._index_html(site, "November moon guide"), encoding="utf-8")
+    page = {
+        "slug": "beaver-moon", "title": "Beaver Moon Explained",
+        "description": "Why November's full moon has that name.",
+        "h1": "Beaver Moon Explained", "intro": "The short answer.",
+        "sections": [
+            {"heading": "What it is", "paragraphs": ["A full moon in November."]},
+            {"heading": "Why the name", "paragraphs": ["Beavers stocked dams."]},
+        ],
+        "faq": [{"q": "Is it a supermoon?", "a": "Not always."}],
+    }
+    monkeypatch.setenv("GH_ORG", "acme")
+    monkeypatch.setattr(renderer, "ensure_repo", lambda _s: work)
+    monkeypatch.setattr(renderer, "git", lambda *_a, **_k: None)
+    monkeypatch.setattr(renderer, "has_staged_changes", lambda _w: True)
+
+    out = renderer.render_files(site, page)
+    assert out["ok"] is True and out["slug"] == "beaver-moon"
+    html = (public / "beaver-moon.html").read_text(encoding="utf-8")
+    assert "/assets/site.css" in html and "section-card" in html
+    assert "faq-item" in html and "On this page" in html and 'href="/"' in html
+    home = (public / "index.html").read_text(encoding="utf-8")
+    assert 'href="/beaver-moon"' in home and "Beaver Moon Explained" in home
+    assert "Coming soon" not in home
+    assert site_scaffold.PAGES_START in home and site_scaffold.PAGES_END in home
+
+
+def test_old_site_skin_keeps_original_renderer(monkeypatch, tmp_path):
+    """没引 site.css 的老站：不加卡片布局，首页没有标记就不动。"""
+    from src.app.config import SiteConfig
+    from src.app.tools.adapters.publishing import renderer
+
+    site = SiteConfig(name="old", repo_name="old", subdomain="old", brand="Old")
+    work = tmp_path / "old"
+    public = work / "public"
+    public.mkdir(parents=True)
+    (public / "index.html").write_text('<html><body><header>Old</header></body></html>',
+                                       encoding="utf-8")
+    page = {"slug": "old-page", "title": "Old page", "description": "d", "intro": "i",
+            "sections": [], "faq": []}
+    monkeypatch.setenv("GH_ORG", "acme")
+    monkeypatch.setattr(renderer, "ensure_repo", lambda _s: work)
+    monkeypatch.setattr(renderer, "git", lambda *_a, **_k: None)
+    monkeypatch.setattr(renderer, "has_staged_changes", lambda _w: False)
+    renderer.render_files(site, page)
+    html = (public / "old-page.html").read_text(encoding="utf-8")
+    assert "agent-faq" in html and "section-card" not in html
+    assert (public / "index.html").read_text(encoding="utf-8").startswith("<html>")

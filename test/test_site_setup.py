@@ -133,7 +133,12 @@ def test_create_site_repo_scaffold_and_push(monkeypatch, tmp_path):
     assert (work / "wrangler.toml").read_text().startswith('name = "fresh-site-tool"')
     assert "[assets]" in (work / "wrangler.toml").read_text()
     assert json.loads((work / "package.json").read_text())["scripts"]["deploy"] == "wrangler deploy"
-    assert "<h1>" in (work / "public" / "index.html").read_text()
+    index = (work / "public" / "index.html").read_text()
+    assert "<h1>" in index and "Latest guides" in index and "Coming soon" in index
+    assert site_scaffold.PAGES_START in index and site_scaffold.PAGES_END in index
+    assert '/assets/site.css' in index
+    css = (work / "public" / "assets" / "site.css").read_text()
+    assert ":root{" in css and ".page-card{" in css and "prefers-color-scheme:dark" in css
     assert "freshsite.toolara.dev" in (work / "public" / "sitemap.xml").read_text()
 
 
@@ -157,7 +162,8 @@ def test_create_site_repo_existing_repo_and_existing_files(monkeypatch, tmp_path
     assert out == {"ok": True, "repo": "acme/fresh-site-tool",
                    "url": "https://github.com/acme/fresh-site-tool",
                    "created": False,
-                   "scaffold": ["package.json", str(Path("public") / "sitemap.xml")]}
+                   "scaffold": ["package.json", str(Path("public") / "assets" / "site.css"),
+                                str(Path("public") / "sitemap.xml")]}
     assert called["push"] is False
     assert (work / "wrangler.toml").read_text() == "name = \"mine\""   # 已有文件不覆盖
     assert (work / "public" / "index.html").read_text() == "keep me"
