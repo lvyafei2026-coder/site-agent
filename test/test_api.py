@@ -56,6 +56,10 @@ def test_analyze_reanalyzes_named_term(fake_kv, monkeypatch):
     key = kvk.term_key(term)
     fake_kv.put_json("saved", [{"key": key, "term": term, "status": "wip",
                                 "traffic": 1200, "hints": ["工具查询"]}])
+    # ★线上事故形态：这个词早先被 AI 判过不做，改判「做」时必须把不做记录一并清掉，
+    #   否则候选页默认隐藏判不做的词，状态再对也看不见。
+    fake_kv.put_json("rejected", [{"key": key, "term": term,
+                                   "reason": "AI 判定不做", "source": "ai"}])
     fake_kv.put_json(kvk.SERP_PREFIX + key,
                      {"engine": "duckduckgo", "items": [],
                       "competition": {"score": 1, "level": "low"}})
@@ -81,6 +85,8 @@ def test_analyze_reanalyzes_named_term(fake_kv, monkeypatch):
     # 正文覆盖旧方案，状态按新结论回写（与批量分析同一套 write_result）
     assert "结论：做" in fake_kv.get_text(kvk.AI_CACHE_PREFIX + key)
     assert fake_kv.get_json("saved")[0]["status"] == "todo"
+    # 改判互清：AI 的不做记录被清掉，这个词不会再被「隐藏判不做」藏起来
+    assert fake_kv.get_json("rejected", []) == []
     # ★专属收尾：新正文里的 Beaver Moon 命中 beaver-moon 别名 → 回写待建行 site
     assert data["siteRetarget"]["site"] == "beaver-moon"
     assert data["siteRetarget"]["changed"] is True
@@ -94,6 +100,56 @@ def test_analyze_unknown_term_reports_error(fake_kv, monkeypatch):
     monkeypatch.setattr(llm_io, "complete", lambda *a, **k: 1 / 0)   # 被调用就炸
     data = TestClient(api).post("/analyze", json={"term": "no such term"}).json()
     assert data["ok"] is False and "找不到" in data["error"] and data["items"] == []
+
+
+def _stub_retarget(monkeypatch):
+    """站点重判的两条外部 IO 都桩掉：归类 LLM 无结果（走别名规则）、D1 UPDATE 不落库。"""
+    from src.app.services import page_build_service as pbs
+    from src.app.services.extraction_service import extraction_service
+
+    monkeypatch.setattr(extraction_service, "extract",
+                        lambda text, intent, versions=None: {"target_site": ""})
+    monkeypatch.setattr(pbs.database, "execute", lambda sql, params: None)
+
+
+def test_analyze_skip_clears_pending_saved(fake_kv, monkeypatch):
+    """改判「不做」：saved 里未开工（saved/todo）的行被清，不做清单记 AI 来源。"""
+    from src.app.tools.adapters.cloudflare import kv as kvk
+    from src.app.utils import llm_io
+
+    term = "november full moon"
+    key = kvk.term_key(term)
+    fake_kv.put_json("saved", [{"key": key, "term": term, "status": "todo"}])
+    fake_kv.put_json(kvk.SERP_PREFIX + key, {"engine": "duckduckgo", "items": []})
+    fake_kv.put_json(kvk.TREND_PREFIX + key, {"points": [], "summary": {}})
+    monkeypatch.setattr(llm_io, "complete",
+                        lambda m, **_: ("7) 结论：不做\n8) 信号标签：无", "fake"))
+    _stub_retarget(monkeypatch)
+
+    data = TestClient(api).post("/analyze", json={"term": term}).json()
+    assert data["items"][0]["status"] == "rejected"
+    assert fake_kv.get_json("saved", []) == []
+    assert [r["source"] for r in fake_kv.get_json("rejected")] == ["ai"]
+
+
+def test_analyze_skip_keeps_started_saved(fake_kv, monkeypatch):
+    """改判「不做」不抹人工进度：wip/live/parked 的跟进行保留，只写不做清单。"""
+    from src.app.tools.adapters.cloudflare import kv as kvk
+    from src.app.utils import llm_io
+
+    term = "november full moon"
+    key = kvk.term_key(term)
+    fake_kv.put_json("saved", [{"key": key, "term": term, "status": "wip"}])
+    fake_kv.put_json(kvk.SERP_PREFIX + key, {"engine": "duckduckgo", "items": []})
+    fake_kv.put_json(kvk.TREND_PREFIX + key, {"points": [], "summary": {}})
+    monkeypatch.setattr(llm_io, "complete",
+                        lambda m, **_: ("7) 结论：不做\n8) 信号标签：无", "fake"))
+    _stub_retarget(monkeypatch)
+
+    data = TestClient(api).post("/analyze", json={"term": term}).json()
+    assert data["items"][0]["status"] == "rejected"
+    assert fake_kv.get_json("saved")[0]["status"] == "wip"
+    assert fake_kv.get_json("rejected")[0]["source"] == "ai"
 
 
 def _wait_hotwords_idle(timeout=5.0):

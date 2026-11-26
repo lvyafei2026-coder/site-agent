@@ -18,6 +18,10 @@
 ★正文先写：正文写失败就收手，绝不写状态——否则留下「有状态、没正文」的悬空词，
   select_pending 既不会重跑它，前端也看不到方案。
 ★「观望」与解析不出结论：只留正文和标签，状态保持未跟进（下次还会被取到）。
+★改判互清两表：判「做」写 saved 后清不做清单里的 AI 记录（人工标记不动）；
+  判「不做」写 rejected 后清跟进池里的 saved/todo 行（开工后的 wip/live/parked 不动）。
+  以前两边各写各的，改判后同词同时挂在 saved 与 rejected，候选页默认隐藏判不做的词，
+  状态再对也看不见。
 ★本层不打 tool span：span 由 tools/registry.py 的统一 tracer 建（tool:fetch_serp /
   tool:fetch_trend / tool:write_hotword_result）；写入明细与失败清单随结果返回，由编排层
   汇总进该词 error。
@@ -33,7 +37,10 @@ from src.app.tools.adapters.cloudflare.kv import (
     atomic_update, get_kv, term_key, AI_CACHE_PREFIX, SAVED_KEY, REJECTED_KEY, HINTS_KEY,
 )
 from src.app.utils.kv_shape import kv_dict, kv_list
-from .wordlib import set_hint_override, upsert_rejected, upsert_saved
+from .wordlib import (
+    remove_ai_rejected, remove_unstarted_saved, set_hint_override,
+    upsert_rejected, upsert_saved,
+)
 
 log = logging.getLogger(__name__)
 
@@ -118,6 +125,9 @@ def write_result(item: dict[str, Any], text: str, hints: Optional[list[str]],
             if writes.table(kv, REJECTED_KEY,
                             lambda arr: upsert_rejected(arr, payload), reader=kv_list):
                 out["status"] = "rejected"
+                # 改判互清：原来判「做」的词改判不做，从跟进池移除（开工后的状态不动）
+                writes.table(kv, SAVED_KEY,
+                             lambda arr: remove_unstarted_saved(arr, term), reader=kv_list)
         elif verdict == Verdict.DO.value:
             cand = {k: item.get(k) for k in _SAVED_CANDIDATE_FIELDS}
             payload = {**cand, "term": term, "status": CurationStatus.TODO.value,
@@ -125,6 +135,9 @@ def write_result(item: dict[str, Any], text: str, hints: Optional[list[str]],
             if writes.table(kv, SAVED_KEY,
                             lambda arr: upsert_saved(arr, payload), reader=kv_list):
                 out["status"] = CurationStatus.TODO.value
+                # 改判互清：原来判「不做」的词改判做，从不做清单移除（人工标记不动）
+                writes.table(kv, REJECTED_KEY,
+                             lambda arr: remove_ai_rejected(arr, term), reader=kv_list)
 
     out["writes"] = writes.records
     out["writeErrors"] = writes.failed

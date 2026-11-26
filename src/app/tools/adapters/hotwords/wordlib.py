@@ -316,3 +316,37 @@ def set_hint_override(map_: Optional[dict], term: str, hints: list) -> dict:
         if str(h) in HINT_NAMES
     ][:3]
     return out
+
+
+def remove_ai_rejected(list_: Optional[list], term: str) -> list:
+    """改判「做」后从不做清单移除该词；source=manual 的人工标记不动。
+
+    AI 改判不覆盖人工决定——人工判不做的词要走页面上的撤销才会回来。
+    """
+    key = term_key(term)
+    if not key:
+        return list_ if isinstance(list_, list) else []
+    return [
+        x for x in (list_ or [])
+        if not (isinstance(x, dict)
+                and term_key(x.get("key") or x.get("term")) == key
+                and x.get("source") != RejectSource.MANUAL.value)
+    ]
+
+
+def remove_unstarted_saved(list_: Optional[list], term: str) -> list:
+    """改判「不做」后从跟进池移除该词；只清 saved/todo。
+
+    已开工（wip）/ 已上线（live）/ 人工搁置（parked）不动：那是人工进度，不能被
+    一次 AI 改判抹掉；缺失或非法 status 按先收藏（saved）算，与页面口径一致。
+    """
+    key = term_key(term)
+    if not key:
+        return list_ if isinstance(list_, list) else []
+    return [
+        x for x in (list_ or [])
+        if not (isinstance(x, dict)
+                and term_key(x.get("key") or x.get("term")) == key
+                and str(x.get("status") or CurationStatus.SAVED.value) in (
+                    CurationStatus.SAVED.value, CurationStatus.TODO.value))
+    ]

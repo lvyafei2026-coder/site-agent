@@ -400,6 +400,38 @@ def test_set_hint_override_filters_names():
     assert m[wordlib.term_key("Foo")] == ["工具查询", "价格规格", "日程日期"]  # 只留 HINT_NAMES 内、最多 3
 
 
+def test_remove_ai_rejected_keeps_manual():
+    """改判「做」：清掉 AI 判的不做记录，人工标记（含其它词）不动。"""
+    arr = [{"key": "foo", "term": "Foo", "source": "ai"},
+           {"key": "foo2", "term": "Foo2", "source": "manual"},
+           {"key": "bar", "term": "Bar", "source": "ai"}]
+    out = wordlib.remove_ai_rejected(arr, "foo")
+    assert [x["term"] for x in out] == ["Foo2", "Bar"]
+    # 同词人工标记保留（其余 AI 行不受影响）
+    out = wordlib.remove_ai_rejected(arr, "foo2")
+    assert [x["term"] for x in out] == ["Foo", "Foo2", "Bar"]
+    # 兼容没有 key 字段的老行按 term 归一化匹配
+    assert wordlib.remove_ai_rejected([{"term": "FOO ", "source": "ai"}], "foo") == []
+
+
+def test_remove_unstarted_saved_only_clears_pending():
+    """改判「不做」：只清 saved/todo（含缺省 status），开工后的 wip/live/parked 与其它词不动。"""
+    arr = [{"key": "a", "term": "A", "status": "saved"},
+           {"key": "b", "term": "B", "status": "todo"},
+           {"key": "c", "term": "C", "status": "wip"},
+           {"key": "d", "term": "D", "status": "live"},
+           {"key": "e", "term": "E", "status": "parked"},
+           {"term": "F"},
+           {"key": "g", "term": "G", "status": "todo"}]
+    for term in ("A", "B", "F"):
+        out = wordlib.remove_unstarted_saved(arr, term)
+        assert len(out) == len(arr) - 1 and all(x.get("term") != term for x in out)
+    for term in ("C", "D", "E", "不存在"):
+        assert len(wordlib.remove_unstarted_saved(arr, term)) == len(arr)
+    out = wordlib.remove_unstarted_saved(arr, "G")
+    assert all(x.get("key") != "g" for x in out) and len(out) == len(arr) - 1
+
+
 # ---------------------------------------------------------------------------
 # wordlib.py（候选快照部分）：只读（直读 KV，不调 radar /api/candidates）
 # ---------------------------------------------------------------------------
