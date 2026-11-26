@@ -337,6 +337,77 @@ def test_attach_domain_creates_and_idempotent(site, monkeypatch):
     assert cf_deploy.attach_domain(site)["created"] is False
 
 
+def test_trigger_build_hits_top_level_workers_path(site, monkeypatch):
+    """触发 hook 是顶层 /workers/builds/deploy_hooks/{uuid}，不是 /builds/...（404 10404）。"""
+    calls = FakeCF({
+        ("GET", "https://api.cloudflare.com/client/v4/accounts/acct/builds/workers/"
+                "fresh-site-tool/deploy_hooks"):
+            [{"deploy_hook_uuid": "hook-1", "deploy_hook_name": "site-agent-auto"}],
+        ("POST", "https://api.cloudflare.com/client/v4/workers/builds/deploy_hooks/hook-1"):
+            {"build_id": "b1"},
+    })
+    monkeypatch.setattr(cf_deploy.builds, "request", calls.__call__)
+
+    assert cf_deploy.trigger_build("fresh-site-tool") == {"build_id": "b1"}
+    post = next(c for c in calls.calls if c[0] == "POST")
+    assert post[1] == ("https://api.cloudflare.com/client/v4/workers/builds/"
+                       "deploy_hooks/hook-1")
+
+
+def test_trigger_build_reports_http_error_with_body(site, monkeypatch):
+    import types
+
+    def fail(method, url, json):
+        return types.SimpleNamespace(status_code=404,
+                                     text='{"errors":[{"code":10404}]}')
+
+    calls = FakeCF({
+        ("GET", "https://api.cloudflare.com/client/v4/accounts/acct/builds/workers/"
+                "fresh-site-tool/deploy_hooks"):
+            [{"deploy_hook_uuid": "hook-1", "deploy_hook_name": "site-agent-auto"}],
+        ("POST", "https://api.cloudflare.com/client/v4/workers/builds/deploy_hooks/hook-1"):
+            fail,
+    })
+    monkeypatch.setattr(cf_deploy.builds, "request", calls.__call__)
+    with pytest.raises(RuntimeError, match="触发构建失败: HTTP 404"):
+        cf_deploy.trigger_build("fresh-site-tool")
+
+
+def test_attach_domain_triggers_build_on_100124_then_retries(site, monkeypatch):
+    """空壳 Worker 绑域先 100124 → 触发构建 → 下一轮绑域成功（不等真实 20 秒）。"""
+    import types
+
+    puts = {"n": 0}
+
+    def put(method, url, json):
+        puts["n"] += 1
+        if puts["n"] == 1:
+            body = {"success": False, "errors": [{"code": 100124, "message": "no deployment"}]}
+            status = 400
+        else:
+            body = {"success": True, "result": {"hostname": "freshsite.toolara.dev"}}
+            status = 200
+        return types.SimpleNamespace(status_code=status,
+                                     headers={"content-type": "application/json"},
+                                     json=lambda: body)
+
+    calls = FakeCF({
+        ("GET", "https://api.cloudflare.com/client/v4/accounts/acct/workers/domains"): [],
+        ("GET", "https://api.cloudflare.com/client/v4/zones"):
+            [{"id": "zone1", "name": "toolara.dev"}],
+        ("PUT", "https://api.cloudflare.com/client/v4/accounts/acct/workers/domains"): put,
+    })
+    monkeypatch.setattr(cf_deploy.workers, "request", calls.__call__)
+    triggered = []
+    monkeypatch.setattr(cf_deploy, "trigger_build",
+                        lambda name, branch: triggered.append((name, branch)) or {})
+    monkeypatch.setattr(cf_deploy.time, "sleep", lambda _: None)
+
+    out = cf_deploy.attach_domain(site)
+    assert out["ok"] is True and puts["n"] == 2
+    assert triggered == [("fresh-site-tool", "main")]
+
+
 # ---- 编排（四步全打桩）----
 
 def test_launch_new_site_chains_four_steps(monkeypatch):

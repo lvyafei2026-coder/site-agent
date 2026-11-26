@@ -176,9 +176,10 @@ def trigger_build(name: str, branch: str = "main") -> dict[str, Any]:
         hook = builds.result("POST", "builds", "workers", name, "deploy_hooks",
                              json={"branch": branch,
                                    "deploy_hook_name": "site-agent-auto"})
-    # 触发端点在账户前缀之外（/workers/builds/deploy_hooks/{uuid}）
-    resp = builds.request("POST", "builds", "deploy_hooks", hook["deploy_hook_uuid"],
-                          account_level=False)
+    # ★触发端点既不在 /accounts/{id} 下，也不是 /builds/deploy_hooks/{uuid}，
+    #   而是顶层 /workers/builds/deploy_hooks/{uuid}——少 workers 段会 10404 No route for that URI。
+    resp = builds.request("POST", "workers", "builds", "deploy_hooks",
+                          hook["deploy_hook_uuid"], account_level=False)
     if resp.status_code >= 300:
         raise RuntimeError(f"触发构建失败: HTTP {resp.status_code} {resp.text[:200]}")
     return resp.json().get("result") or {}
