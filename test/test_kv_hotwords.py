@@ -774,110 +774,69 @@ def test_fetch_interest_raises_source_unavailable(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 整表写入的并发安全：写后读回校验 + 有界重试（乐观并发，堵跨进程 lost update）
+# 整表写入的并发安全：进程内一把锁串行「读-改-写」，★不做写后读回重试
 # ---------------------------------------------------------------------------
 
-def test_business_equal_ignores_refreshed_timestamps():
-    """mutator 重放会刷新 updatedAt/at/ts；这些字段不该让读回校验误判成被覆盖。"""
-    a = [{"key": "t1", "status": "todo", "at": 1, "updatedAt": 100},
-         {"key": "t2", "status": "live", "at": 2, "updatedAt": 200}]
-    b = [{"key": "t1", "status": "todo", "at": 9, "updatedAt": 999},
-         {"key": "t2", "status": "live", "at": 8, "updatedAt": 888}]
-    assert kvmod._business_equal(a, b) is True
-    # 业务字段真不同 → 判不等
-    c = [{"key": "t1", "status": "wip", "at": 1, "updatedAt": 100},
-         {"key": "t2", "status": "live", "at": 2, "updatedAt": 200}]
-    assert kvmod._business_equal(a, c) is False
-    # 行数不同 → 判不等（对方新增了行，要重试合入）
-    assert kvmod._business_equal(a, a[:-1]) is False
-    # 嵌套 dict（hints / interest 表）
-    assert kvmod._business_equal({"t1": {"score": 3, "ts": 1}},
-                                 {"t1": {"score": 3, "ts": 7}}) is True
-
-
-def test_atomic_update_retry_merges_concurrent_overwrite(fake_kv):
-    """★回归：写完被另一进程整表覆盖 → 读回发现 → 以最新值重跑 mutator 合入，不丢对方的行。
-
-    模拟：mutator 要加 term-a；它在锁内写完后，另一个写者（如 console 人工写）把整表
-    覆盖成只有 term-b。没有读回校验就会把 term-b 丢掉；有校验则重试，最终两行都在。
-    """
-    key = "rejected"
-    fake_kv.put_json(key, [])
-    real_put = fake_kv.put_json
-    state = {"n": 0}
-
-    def put_with_rival(k, obj, ttl=None):
-        ok = real_put(k, obj, ttl=ttl)
-        state["n"] += 1
-        if state["n"] == 1:  # 首次写入后，模拟另一进程用它的快照整表覆盖
-            real_put(k, [{"key": "term-b", "term": "term-b",
-                          "reason": "rival", "source": "ai", "at": 1, "updatedAt": 1}])
-        return ok
-
-    fake_kv.put_json = put_with_rival
-    mutator = lambda arr: wordlib.upsert_rejected(
-        arr, {"term": "term-a", "reason": "mine", "source": "ai"})
-    ok, updated = kvmod.atomic_update(fake_kv, key, mutator, reader=kv_list)
-
-    assert ok is True
-    final = fake_kv.get_json(key, [])
-    assert {x["key"] for x in final} == {"term-a", "term-b"}
-    assert state["n"] >= 2  # 至少写了一次重试
-
-
-def test_atomic_update_no_retry_when_change_survives(fake_kv):
-    """读回值与写入值业务相等（只时间戳不同）→ 一次写成，不重试。"""
+def test_atomic_update_writes_exactly_once(fake_kv):
+    """一次 atomic_update 只 PUT 一次——没有读回、没有重试。"""
     fake_kv.put_json("saved", [])
     real_put = fake_kv.put_json
     calls = {"n": 0}
 
-    def put_bump_ts(k, obj, ttl=None):
+    def counting_put(k, obj, ttl=None):
         calls["n"] += 1
-        # 模拟存进去的副本带一个更新的时间戳（别的字段不变）
-        stamped = [{**x, "updatedAt": 99999} if isinstance(x, dict) else x for x in obj]
-        return real_put(k, stamped, ttl=ttl)
+        return real_put(k, obj, ttl=ttl)
 
-    fake_kv.put_json = put_bump_ts
+    fake_kv.put_json = counting_put
     mutator = lambda arr: wordlib.upsert_saved(
         arr, {"term": "t", "status": "todo"})
     ok, _ = kvmod.atomic_update(fake_kv, "saved", mutator, reader=kv_list)
-    assert ok is True
-    assert calls["n"] == 1
+    assert ok is True and calls["n"] == 1
 
 
-def test_atomic_update_stale_read_still_reports_success(fake_kv):
-    """★回归（november full moon 误报）：CF KV 最终一致，写成功但读回一直拿到旧值。
+def test_atomic_update_stale_get_never_triggers_rewrite(fake_kv):
+    """★回归（11-26 批量丢 5 词）：读回拿到旧副本时绝不基于它重写整表。
 
-    线上 saved / aihints 都已写入成功（GET 可见），但写后立刻读回命中旧副本，
-    没有自己的行。旧逻辑用「读回 == 写入值」判定，重试耗尽后返回 False，
-    页面报「KV 写入失败：aihints、saved」——假失败会诱导重复分析、重复写整表。
-    新逻辑：PUT 成功即算成功，读回未确认只 warn，不改返回值为失败。
+    旧逻辑把「读回没有我的行」判为被覆盖，拿旧表重跑 mutator 再写——那张旧表不含
+    别的词刚写成功的行，于是把人家覆盖掉。新逻辑压根不读回，旧副本无从干扰。
     """
-    fake_kv.put_json("saved", [])
+    fake_kv.put_json("rejected", [])
     real_put = fake_kv.put_json
+    puts: list[list] = []
+
+    def capture_put(k, obj, ttl=None):
+        puts.append([dict(x) for x in obj])
+        return real_put(k, obj, ttl=ttl)
+
+    fake_kv.put_json = capture_put
     real_get = fake_kv.get_json
+    # 模拟 CF KV 最终一致：写后读回恒定是写入前的空表，看不到自己的行
+    fake_kv.get_json = lambda k, default=None: ([] if k == "rejected"
+                                                 else real_get(k, default))
 
-    def stale_get(k, default=None):
-        # 读回恒定是写入前的旧表：模拟 KV 副本延迟，永远看不到自己的行
-        return [] if k == "saved" else real_get(k, default)
-
-    fake_kv.get_json = stale_get
-    mutator = lambda arr: wordlib.upsert_saved(
-        arr, {"term": "november full moon", "status": "todo"})
-    ok, updated = kvmod.atomic_update(fake_kv, "saved", mutator, reader=kv_list)
-
-    assert ok is True                      # 不再误报失败
-    assert updated[0]["term"] == "november full moon"
-    assert real_put  # PUT 确实发生过（写已落库）
+    mutator = lambda arr: wordlib.upsert_rejected(
+        arr, {"term": "only-one", "reason": "r", "source": "ai"})
+    ok, _ = kvmod.atomic_update(fake_kv, "rejected", mutator, reader=kv_list)
+    assert ok is True
+    assert len(puts) == 1                       # 只读-改-写一次，没有基于旧副本重试
+    assert [x["key"] for x in puts[0]] == ["only-one"]
 
 
-def test_change_landed_detects_my_row_plus_rival_rows():
-    """读回里有我的行、且别的写者又追加了行 → 幂等判定认「已落住」，不再重试。"""
-    rival = {"key": "t2", "term": "t2", "status": "live", "at": 1, "updatedAt": 100}
-    mine = {"key": "t1", "term": "t1", "status": "todo", "at": 2, "updatedAt": 200}
-    current = [rival]
-    updated = [mine, rival]  # upsert_saved 按 at 倒序
-    # 读回含我的行 + 别人的行 → 我的改动已落住
-    assert kvmod._change_landed([mine, rival], current, updated) is True
-    # 读回是旧表（没有我的行）→ 未确认，需重试
-    assert kvmod._change_landed([rival], current, updated) is False
+def test_atomic_update_parallel_writes_keep_all_rows(fake_kv):
+    """★回归：单进程并发写 10 个词，10 行都要在（不再交替丢失）。"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    key = "rejected"
+    fake_kv.put_json(key, [])
+
+    def add(i):
+        mutator = lambda arr: wordlib.upsert_rejected(
+            arr, {"term": f"term-{i}", "reason": "r", "source": "ai"})
+        return kvmod.atomic_update(fake_kv, key, mutator, reader=kv_list)[0]
+
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        results = list(ex.map(add, range(10)))
+
+    assert all(results)
+    final = fake_kv.get_json(key, [])
+    assert {x["key"] for x in final} == {f"term-{i}" for i in range(10)}

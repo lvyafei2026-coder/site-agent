@@ -51,19 +51,15 @@ SHARED_TABLE_KEYS: tuple[str, ...] = (
 # ★一把进程级 RLock 覆盖 5 张整表（不是每表一把）：跨表组合写入也要串行，
 #   否则「先写 saved、再写 aihints」之间仍可能被另一个 worker 插进来读旧值。
 #   用 RLock 而非 Lock：mutator 里若再调一次 atomic_update（回填等场景）不会自锁死。
-# ★进程内锁只挡本进程两条线程（后台定时线 + uvicorn 用户线）。Cloudflare KV 无 CAS，
-#   跨进程（Render 多实例 / console Workers 人工写）仍可能整表 lost update。
-#   为此 atomic_update 额外做「写后读回校验 + 有界重试」：写完 GET 回来，若发现自己的
-#   改动被别的写者覆盖，就基于读回的最新值重新跑 mutator 合入再写。这是乐观并发，
-#   不是分布式事务——极端同时写仍可能拼输，但批量分析漏写一批词的窗口被堵住了。
+# ★进程内锁只挡本进程两条线程（后台定时线 + uvicorn 用户线）——批量分析就是单进程
+#   线程池，这把锁把「读整表 → 改一项 → 写整表」全程串行，堵住同进程多词互相覆盖。
+#   ★绝不写后读回重试：Cloudflare KV 全球最终一致，PUT 200 之后立刻 GET 常拿到还没
+#   传播到本边缘的旧副本。旧逻辑把「读回没有我的行」当被覆盖，基于旧副本重跑 mutator
+#   再写整表——那张旧表不含别的词刚写成功的行，于是把人家整行覆盖掉。2026-11-26 批量
+#   analyze 10 词交替丢失 5 词就是这个机制。PUT 成功即写入成功；读回不可靠、不能当
+#   回滚依据。跨进程（Render 多实例 / console 人工写）的 CAS 在 KV 上无解，读回重试
+#   也解决不了，只会制造更多 lost update。
 _TABLE_LOCK = threading.RLock()
-
-# 读回校验时忽略的易变字段：mutator（upsert_* 等）每次重放都会刷新这些时间戳，
-# 若拿它们做相等比较会永远判「被覆盖」→ 无限重试。业务内容按其余字段判定。
-_VOLATILE_FIELDS = frozenset(("updatedAt", "at", "ts"))
-
-# 写后读回不一致时的最大重试次数（不含首次写）。0 = 只写一次不校验。
-_ATOMIC_MAX_RETRIES = 3
 
 _WS = re.compile(r"\s+")
 
@@ -258,68 +254,6 @@ def table_lock() -> threading.RLock:
     return _TABLE_LOCK
 
 
-def _business_equal(a: Any, b: Any) -> bool:
-    """比较两次整表值是否「业务相等」：递归忽略 mutator 每次都会刷新的时间戳字段。
-
-    upsert_* 每次重放都会写新的 updatedAt/at/ts，但业务字段（term / status / reason /
-    source / 标签等）不变。写后读回校验只看业务字段，才能区分「我的改动在」和
-    「被别的写者整表覆盖」。列表按原顺序逐项比（mutator 都按 at 排序，重放顺序稳定）。
-    """
-    if isinstance(a, dict) and isinstance(b, dict):
-        ka = {k: v for k, v in a.items() if k not in _VOLATILE_FIELDS}
-        kb = {k: v for k, v in b.items() if k not in _VOLATILE_FIELDS}
-        return ka.keys() == kb.keys() and all(_business_equal(ka[k], kb[k]) for k in ka)
-    if isinstance(a, list) and isinstance(b, list):
-        return len(a) == len(b) and all(_business_equal(x, y) for x, y in zip(a, b))
-    return a == b
-
-
-def _change_landed(verify: Any, current: Any, updated: Any) -> bool:
-    """读回的表里是否已经有我的改动——按「本次真正改动的项」逐项确认，不整表比相等。
-
-    Cloudflare KV 是全球最终一致的：写成功（PUT 200）后立刻读回，可能拿到旧值
-    （我的行还没出现），也可能拿到别的写者在我之后又追加了行的版本。这两种情况
-    用「读回值 == 本次写入值」判断都会误判成「被覆盖」。
-
-    做法：以写入前的 current 为基准，找出 updated 里业务上真正变了的项（行 / 键），
-    逐项看读回值 verify 是否已是写入后的内容：
-    - 读回含我的改动（哪怕还多了别人的行）→ True，落住了。
-    - 读回是旧值（我的项还是旧内容）→ False，需重试。
-    - 读回是被覆盖的版本（我的项没了）→ False，需重试合入。
-    ★不重跑 mutator：调用方的 mutator 可能带副作用（如 state_sync 用闭包带出
-      changes），重跑会把明细清空；这里只读三份快照，纯比较。
-    """
-    if isinstance(updated, dict) and isinstance(current, dict) and isinstance(verify, dict):
-        for k, v in updated.items():
-            if _business_equal(current.get(k), v):
-                continue
-            if not _business_equal(verify.get(k), v):
-                return False
-        # 本次删掉的键：读回里必须也已消失
-        for k in current:
-            if k not in updated and k in verify:
-                return False
-        return True
-    if isinstance(updated, list) and isinstance(current, list) and isinstance(verify, list):
-        def rows(xs: list) -> dict:
-            return {x.get("key"): x for x in xs if isinstance(x, dict) and x.get("key")}
-        cur, ver = rows(current), rows(verify)
-        for row in updated:
-            if not isinstance(row, dict) or not row.get("key"):
-                continue
-            k = row["key"]
-            if _business_equal(cur.get(k), row):
-                continue
-            if not _business_equal(ver.get(k), row):
-                return False
-        upd_keys = {x.get("key") for x in updated if isinstance(x, dict)}
-        for k in cur:
-            if k not in upd_keys and k in ver:
-                return False
-        return True
-    return _business_equal(verify, updated)
-
-
 def atomic_update(
     kv: Any,
     key: str,
@@ -328,57 +262,34 @@ def atomic_update(
     reader: Optional[Callable[[Any, str], Any]] = None,
     ttl: Optional[int] = None,
 ) -> tuple[bool, Any]:
-    """整表的「读 → 改 → 写 → 写后读回确认」乐观并发更新。
+    """整表的「读 → 改 → 写」原子更新，进程内全程持 _TABLE_LOCK 串行。
 
-    进程内用 _TABLE_LOCK 串行；写后再 GET 回来，用 `_change_landed`（幂等判定）
-    确认我的改动是否已在表里：
-      - 已落住 → 成功返回 (True, updated)。
-      - 没落住（读回是旧值 / 被别的进程整表覆盖）→ 以读回值为 current 重跑 mutator
-        （幂等 upsert，重放安全）再写，最多重试 _ATOMIC_MAX_RETRIES 次。
+    ★不做写后读回、不重试：Cloudflare KV 全球最终一致，PUT 200 后立刻 GET 常读到
+    还没传播过来的旧副本。任何基于「读回没看到我的改动」的回滚/重试，都会拿旧整表
+    覆盖掉别的词刚写成功的行（2026-11-26 批量 analyze 10 词交替丢 5 词的根因）。
+    PUT 成功即落库成功；ok=False 只表示 PUT 真失败（网络 / 凭据 / CF 5xx）。
 
-    ★返回 ok=False 只表示「PUT 真的没写进去」（网络错 / 凭据错 / CF 5xx），调用方
-    必须据此把该词记 error。写已成功但读回拿不到确认（KV 最终一致性、读回异常、
-    重试耗尽）一律返回 True + warn：数据已经落住，判失败只会造成「线上有数据、
-    页面报失败」的误报，还会诱导重复分析、重复写整表。
+    进程内锁串行化本进程所有整表写（批量线就是单进程线程池），这是这套无 CAS 存储
+    下唯一能守住的一致性边界。跨进程（Render 多实例 / console 人工写）无解，但不
+    该用有害的读回重试去「解决」——那只会制造更多 lost update。
 
-    Cloudflare KV 无 CAS，这是乐观并发而非分布式事务：重试每轮都基于读回的最新值
-    合入对方的行，堵住「批量分析写 state 表时被人工操作整表覆盖、漏掉一批词」的窗口。
     `reader` 注入形状兜底（list 用 kv_list、dict 用 kv_dict），防止形状漂移把脏数据
     当空表写回。`mutator` 应是纯函数：不要在里面做网络请求，否则持锁期间一次外部
     超时会卡住整批。
     """
     read = reader if reader is not None else (lambda k, kk: k.get_json(kk, {}) or {})
-    last_updated: Any = None
-    for attempt in range(_ATOMIC_MAX_RETRIES + 1):
-        with _TABLE_LOCK:
-            try:
-                current = read(kv, key)
-                updated = mutator(current)
-                last_updated = updated
-                ok = bool(kv.put_json(key, updated, ttl=ttl))
-            except Exception as exc:  # noqa: BLE001 - 任何一步失败都要变成「写失败」而不是中断整批
-                log.warning("KV 整表更新异常 key=%s: %s", key, exc)
-                return False, None
-            if not ok:
-                log.warning("KV 整表写入未成功 key=%s（put_json 返回 False）", key)
-                return False, None
-            try:
-                verify = read(kv, key)
-                landed = _change_landed(verify, current, updated)
-            except Exception as exc:  # noqa: BLE001
-                # 写已经成功，读回/判定异常只是「没确认」，绝不能当成写失败
-                log.warning("KV 写后读回确认失败 key=%s（写入已成功）: %s", key, exc)
-                return True, updated
-        if landed:
-            return True, updated
-        log.warning("KV 写后读回未确认 key=%s（可能是旧值或被覆盖），重试 %d/%d",
-                    key, attempt + 1, _ATOMIC_MAX_RETRIES)
-
-    # 重试耗尽：每一次 PUT 都成功，且每轮都基于读回的最新值重跑 mutator 合入了对方的行，
-    # 数据不会丢；只是 KV 最终一致性让读回一直没确认到自己的改动。按成功返回并留痕。
-    log.warning("KV 写后读回连续未确认 key=%s，重试 %d 次耗尽；写入均已成功，按成功处理",
-                key, _ATOMIC_MAX_RETRIES)
-    return True, last_updated
+    with _TABLE_LOCK:
+        try:
+            current = read(kv, key)
+            updated = mutator(current)
+            ok = bool(kv.put_json(key, updated, ttl=ttl))
+        except Exception as exc:  # noqa: BLE001 - 任何一步失败都要变成「写失败」而不是中断整批
+            log.warning("KV 整表更新异常 key=%s: %s", key, exc)
+            return False, None
+    if not ok:
+        log.warning("KV 整表写入未成功 key=%s（put_json 返回 False）", key)
+        return False, None
+    return True, updated
 
 
 # 模块级单例：生产路径从这里取，避免每批词重建客户端。
