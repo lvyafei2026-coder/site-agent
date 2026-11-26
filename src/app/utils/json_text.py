@@ -25,25 +25,85 @@ def strip_fences(text: str) -> str:
     return s
 
 
+def repair_json(text: str) -> str | None:
+    """补齐模型漏写的数组/对象闭合符（只动结构，不改内容）。
+
+    线上实例（page_content / deepseek-flash）：小节的正文数组末尾写成
+    ``"...already high."}``，少一个 ``]``，整段内容合法却整体解析失败。
+    扫描时维护括号栈：
+      - 数组里遇到 ``}`` 先补 ``]``，再按对象闭合处理；
+      - 文本尾还有未闭合的容器，按栈补齐；
+      - 字符串没闭合（多半被截断）或出现对不上的右括号，返回 None 不猜。
+    """
+    out: list[str] = []
+    stack: list[str] = []
+    in_str = False
+    esc = False
+    for ch in str(text or ""):
+        if in_str:
+            out.append(ch)
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+            continue
+        if ch in "{[":
+            stack.append(ch)
+            out.append(ch)
+            continue
+        if ch in "}]":
+            # 漏写闭合符的两种形态都补：数组里先出 }，或对象里先出 ]（FAQ 末条实测）。
+            opener = "{" if ch == "}" else "["
+            while stack and stack[-1] != opener:
+                out.append("]" if stack.pop() == "[" else "}")
+            if not stack:
+                return None
+            stack.pop()
+            out.append(ch)
+            continue
+        out.append(ch)
+    if in_str:
+        return None
+    while stack:
+        out.append("]" if stack.pop() == "[" else "}")
+    return "".join(out)
+
+
+def _loads_dict(text: str) -> dict | None:
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def parse_json(text: str) -> dict | None:
-    """把文本解析成 dict；容忍两种情况：
-    1) 被 ```json 围栏包裹；2) 散文里夹着一段 JSON（抽第一个 {…} 对象）。
+    """把文本解析成 dict；容忍三种情况：
+    1) 被 ```json 围栏包裹；2) 散文里夹着一段 JSON（抽第一个 {…} 对象）；
+    3) 结构上漏了闭合符（见 repair_json）。
 
     OpenAI 兼容服务偶尔忽略 response_format，返回散文/带说明文字而非纯 JSON；
     这里尽量「捞」出 JSON 对象，捞不到返回 None（上层走确定性回退）。
     """
     s = strip_fences(text or "").strip()
-    try:
-        data = json.loads(s)
-    except json.JSONDecodeError:
-        mobj = re.search(r"\{.*\}", s, re.DOTALL)
-        if not mobj:
-            return None
-        try:
-            data = json.loads(mobj.group(0))
-        except json.JSONDecodeError:
-            return None
-    return data if isinstance(data, dict) else None
+    data = _loads_dict(s)
+    if data is not None:
+        return data
+    repaired = repair_json(s)
+    if repaired is not None and repaired != s:
+        data = _loads_dict(repaired)
+        if data is not None:
+            return data
+    mobj = re.search(r"\{.*\}", s, re.DOTALL)
+    if not mobj:
+        return None
+    return _loads_dict(mobj.group(0))
 
 
 def unwrap_envelope(data: dict, depth: int = 3) -> dict:

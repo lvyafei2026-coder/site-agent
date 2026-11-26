@@ -86,6 +86,39 @@ def test_parse_json_html_error_returns_none():
     assert parse_json("<!DOCTYPE html><html>502</html>") is None
 
 
+# ---- parse_json：模型漏写闭合符的修复（2026-11-26 page_content 线上实例） ----
+
+def test_parse_json_repairs_missing_array_bracket():
+    """小节正文数组少了 ]（深探实测：4/5 个小节写成 "...text."}）→ 补 ] 后解析。"""
+    broken = ('{"sections":[{"heading":"A","paragraphs":["one."},'
+              '{"heading":"B","paragraphs":["two."}]}')
+    assert parse_json(broken) == {"sections": [
+        {"heading": "A", "paragraphs": ["one."]},
+        {"heading": "B", "paragraphs": ["two."]},
+    ]}
+
+
+def test_parse_json_repairs_missing_object_bracket():
+    """FAQ 末条少了 }（实测："...December."] ）→ 补 } 后解析。"""
+    broken = '{"faq":[{"q":"Q1","a":"A1"},{"q":"Q2","a":"A2"]}'
+    assert parse_json(broken) == {"faq": [
+        {"q": "Q1", "a": "A1"},
+        {"q": "Q2", "a": "A2"},
+    ]}
+
+
+def test_parse_json_repair_does_not_touch_valid_or_truncated():
+    valid = '{"a":[{"b":"}"}],"c":"["}'
+    assert parse_json(valid) == {"a": [{"b": "}"}], "c": "["}
+    # 字符串没闭合（截断）：不猜，返回 None 走上层降级
+    assert parse_json('{"a":"unterminated') is None
+
+
+def test_parse_json_repair_rejects_unbalanced_closers():
+    assert parse_json("{a:1}") is None
+    assert parse_json('{"a":1}}') is None
+
+
 def test_complete_nonjson_content_not_failed(with_key, monkeypatch):
     """调通了但模型返回非 JSON（散文/错误页）：按「未解析到结构化数据」降级，
     不置 failed（避免把内容形态问题误判成故障去短路到 ERROR）。"""
