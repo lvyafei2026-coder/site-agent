@@ -144,3 +144,43 @@ def test_registry_default_version_from_d1(monkeypatch):
     reg = PromptRegistry()
     # 不传版本：resolve_version 读 D1 默认 v2，再加载 D1 的 v2 正文
     assert reg.load("hotwords") == "D1 系统提示词 v2"
+
+
+def test_registry_single_version_fallback(monkeypatch):
+    """task 只有一个版本但默认版本指错（页面忘设默认 / 迁移没插默认行）→ 用唯一版本。
+
+    线上事故形态：page_content 只录了 v2，config 默认 v1，prompt_defaults 没这行，
+    旧逻辑直接抛错 → 建页写作必然失败、回退解析稿被拦。
+    """
+    data = {"prompts": [{"task": "page_content", "version": "v2", "content": "建页写作 v2"}],
+            "defaults": []}
+    store, _ = make_store(monkeypatch, data)
+    monkeypatch.setattr("src.app.prompts.registry.prompt_store", store)
+    monkeypatch.setattr(D1PromptStore, "configured", staticmethod(lambda: True))
+    reg = PromptRegistry()
+    assert reg.load("page_content") == "建页写作 v2"
+
+
+def test_registry_multi_version_without_valid_default_raises(monkeypatch):
+    """多版本且默认指向不存在的版本 → 不猜，仍明确抛错。"""
+    data = {"prompts": [{"task": "page_content", "version": "v2", "content": "a"},
+                        {"task": "page_content", "version": "v3", "content": "b"}],
+            "defaults": []}
+    store, _ = make_store(monkeypatch, data)
+    monkeypatch.setattr("src.app.prompts.registry.prompt_store", store)
+    monkeypatch.setattr(D1PromptStore, "configured", staticmethod(lambda: True))
+    reg = PromptRegistry()
+    with pytest.raises(RuntimeError, match="/rules/prompts"):
+        reg.load("page_content")
+
+
+def test_registry_never_falls_back_to_older_version(monkeypatch):
+    """只有更旧的版本时不自动用：word_plan_page 的 v1 是 markdown 版，格式不兼容。"""
+    data = {"prompts": [{"task": "word_plan_page", "version": "v1", "content": "markdown 版"}],
+            "defaults": []}
+    store, _ = make_store(monkeypatch, data)
+    monkeypatch.setattr("src.app.prompts.registry.prompt_store", store)
+    monkeypatch.setattr(D1PromptStore, "configured", staticmethod(lambda: True))
+    reg = PromptRegistry()
+    with pytest.raises(RuntimeError, match="/rules/prompts"):
+        reg.load("word_plan_page")
