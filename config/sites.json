@@ -200,6 +200,13 @@
       "repo": "testsite",
       "brand": "Test Site",
       "lang": "en"
+    },
+    {
+      "name": "beaver-moon",
+      "subdomain": "beaver-moon",
+      "repo": "beaver-moon",
+      "brand": "beaver-moon",
+      "lang": "en"
     }
   ]
 }
