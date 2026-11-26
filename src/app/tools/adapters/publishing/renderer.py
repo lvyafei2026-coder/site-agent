@@ -78,16 +78,27 @@ def _header_brand(header_html: str, fallback: str) -> str:
     黑五页事故：原样拷首页 header 会把 `<nav><a href="#dates">…</a></nav>` 和
     `<span id="headerStatus">Loading…</span>` 一起带过来——新页没有 #dates 章节、
     也没引 countdown.js，于是导航点了没反应、状态永远停在 Loading…。
+
+    品牌标记按常见类名匹配：`.logo` / `.site-brand` / `.brand`。
+    dc-pay 页事故：首页用 `.site-brand`，这里的旧版只认 `.logo`，兜底把整个
+    header 的纯文本（含 All tools + 8 种语言选项）拼成一个链接，新页页头变成
+    一坨挤在一起的文字。★没有品牌标记时不要吞整个 header——只取首个链接文字，
+    再退回 fallback，绝不能把 `<select>`/`<nav>` 的文本带进来。
     """
     if not header_html:
         return ""
-    logo = re.search(
-        r'<a\b[^>]*class=["\'][^"\']*\blogo\b[^"\']*["\'][^>]*>[\s\S]*?</a>',
-        header_html, flags=re.I)
-    brand = logo.group(0) if logo else ""
+    brand = ""
+    for cls in ("logo", "site-brand", "brand"):
+        m = re.search(
+            rf'<a\b[^>]*class=["\'][^"\']*\b{cls}\b[^"\']*["\'][^>]*>[\s\S]*?</a>',
+            header_html, flags=re.I)
+        if m:
+            brand = m.group(0)
+            break
     if not brand:
-        # 没有 logo 标记的站：取页头纯文本当品牌，不带任何锚点或 id 状态位
-        text = " ".join(re.sub(r"<[^>]+>", " ", header_html).split())
+        # 无品牌标记：只取页头首个 <a> 的文字，避免语言选项/导航文本混进来
+        first_link = re.search(r'<a\b[^>]*>([\s\S]*?)</a>', header_html, flags=re.I)
+        text = " ".join(re.sub(r"<[^>]+>", " ", first_link.group(1) if first_link else "").split())
         brand = f'<a href="/">{esc(text or fallback)}</a>'
     return f'<header class="site-header"><div class="header-inner">{brand}</div></header>'
 

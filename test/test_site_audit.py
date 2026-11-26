@@ -204,6 +204,37 @@ def test_render_inherits_site_stylesheet(tmp_path, monkeypatch):
     assert 'href="#dates"' not in out and "Loading" not in out
 
 
+def test_header_brand_recognizes_site_brand_and_drops_language_noise():
+    """★回归（dc-pay/payroll 页头一堆文字）：品牌是 .site-brand 不是 .logo。
+
+    旧版只认 .logo，兜底把整个 header 的纯文本（含 All tools + 各语言选项）
+    拼成一个链接，新文章页页头变成一坨挤在一起的文字。新版要精确取品牌链接，
+    且语言 select 的文字不能混进来。
+    """
+    header = '''<header class="site-header"><div class="site-header-inner">
+      <a class="site-brand" href="/"><span class="site-brand-mark">DC</span>
+        <span class="site-brand-name">DC Paycheck Calculator</span></a>
+      <nav class="site-nav">
+        <a class="site-nav-link" href="https://toolara.dev/">All tools</a>
+        <select id="langSelect"><option>English</option><option>简体中文</option>
+        <option>日本語</option></select>
+      </nav></div></header>'''
+    out = renderer._header_brand(header, "Fallback")
+    assert "DC Paycheck Calculator" in out
+    assert "site-brand" in out
+    assert "All tools" not in out and "简体中文" not in out and "English" not in out
+    assert "site-nav" not in out and "langSelect" not in out
+
+
+def test_header_brand_fallback_takes_first_link_only():
+    """无品牌标记时只取首个链接文字，不吞导航/状态文本。"""
+    header = ('<header><a href="/">My Brand</a>'
+              '<nav><a href="#x">Section</a></nav><span>Loading…</span></header>')
+    out = renderer._header_brand(header, "Fallback")
+    assert "My Brand" in out
+    assert "Section" not in out and "Loading" not in out
+
+
 def test_render_canonical_is_clean_url_without_html():
     """canonical / JSON-LD / 代理 sitemap 同一口径：CF 会把 .html 307 到规范地址。"""
     site = SITES["blackfriday"]
