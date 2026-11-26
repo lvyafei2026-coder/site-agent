@@ -811,3 +811,41 @@ def test_atomic_update_no_retry_when_change_survives(fake_kv):
     ok, _ = kvmod.atomic_update(fake_kv, "saved", mutator, reader=kv_list)
     assert ok is True
     assert calls["n"] == 1
+
+
+def test_atomic_update_stale_read_still_reports_success(fake_kv):
+    """★回归（november full moon 误报）：CF KV 最终一致，写成功但读回一直拿到旧值。
+
+    线上 saved / aihints 都已写入成功（GET 可见），但写后立刻读回命中旧副本，
+    没有自己的行。旧逻辑用「读回 == 写入值」判定，重试耗尽后返回 False，
+    页面报「KV 写入失败：aihints、saved」——假失败会诱导重复分析、重复写整表。
+    新逻辑：PUT 成功即算成功，读回未确认只 warn，不改返回值为失败。
+    """
+    fake_kv.put_json("saved", [])
+    real_put = fake_kv.put_json
+    real_get = fake_kv.get_json
+
+    def stale_get(k, default=None):
+        # 读回恒定是写入前的旧表：模拟 KV 副本延迟，永远看不到自己的行
+        return [] if k == "saved" else real_get(k, default)
+
+    fake_kv.get_json = stale_get
+    mutator = lambda arr: wordlib.upsert_saved(
+        arr, {"term": "november full moon", "status": "todo"})
+    ok, updated = kvmod.atomic_update(fake_kv, "saved", mutator, reader=kv_list)
+
+    assert ok is True                      # 不再误报失败
+    assert updated[0]["term"] == "november full moon"
+    assert real_put  # PUT 确实发生过（写已落库）
+
+
+def test_change_landed_detects_my_row_plus_rival_rows():
+    """读回里有我的行、且别的写者又追加了行 → 幂等判定认「已落住」，不再重试。"""
+    rival = {"key": "t2", "term": "t2", "status": "live", "at": 1, "updatedAt": 100}
+    mine = {"key": "t1", "term": "t1", "status": "todo", "at": 2, "updatedAt": 200}
+    current = [rival]
+    updated = [mine, rival]  # upsert_saved 按 at 倒序
+    # 读回含我的行 + 别人的行 → 我的改动已落住
+    assert kvmod._change_landed([mine, rival], current, updated) is True
+    # 读回是旧表（没有我的行）→ 未确认，需重试
+    assert kvmod._change_landed([rival], current, updated) is False
