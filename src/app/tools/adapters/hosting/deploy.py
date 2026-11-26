@@ -51,26 +51,34 @@ def worker_exists(name: str) -> bool:
 
 
 def create_worker(name: str) -> dict[str, Any]:
-    """幂等建 Worker（空壳，内容由 Workers Builds 从仓库部署）。返回 {name, tag}。"""
+    """幂等建 Worker（空壳，内容由 Workers Builds 从仓库部署）。返回 {name, tag}。
+
+    ★tag 就是 Worker 的 immutable id（32 位 hex），Builds API 的 script_tag 认它、不认名字。
+      新建时 POST 返回 workers_Worker 只有 id 没有 tag 字段，取 id；老 API 若还给 tag 也兼容。
+      这里绝不能返回空串——script_tag="" 会让连仓 POST builds/workers 报 12002 Invalid request body。
+    """
     if worker_exists(name):
         return {"ok": True, "created": False, "name": name, "tag": _worker_tag(name)}
     result = workers.result("POST", "workers", "workers", json={"name": name})
-    return {"ok": True, "created": True, "name": name, "tag": result.get("tag", "")}
+    tag = result.get("id") or result.get("tag") or ""
+    if not tag:
+        raise RuntimeError(f"Worker {name} 创建成功但没拿到 id/tag，无法连 Workers Builds")
+    return {"ok": True, "created": True, "name": name, "tag": tag}
 
 
 def _worker_tag(name: str) -> str:
+    # ★script tag = Worker 的 immutable id（32 位 hex）。scripts 列表项的 tag 字段就是它，
+    #   但列表项 id 是 Worker 名字、别拿错。空壳 Worker 不在 scripts 列表里，
+    #   GET workers/workers/{name} 的 result.id 同值，作为兜底。
     scripts = workers.result("GET", "workers", "scripts")
     for s in scripts:
-        if s.get("id") == name:
-            tag = s.get("tag", "")
-            if tag:
-                return tag
-    # 空壳 Worker 不在 scripts 列表里：GET workers/workers/{name} 的 id 就是 script tag
+        if s.get("id") == name and s.get("tag"):
+            return s["tag"]
     info = workers.result("GET", "workers", "workers", name)
-    tag = info.get("id", "")
+    tag = info.get("id", "") if isinstance(info, dict) else ""
     if tag:
         return tag
-    raise RuntimeError(f"Worker {name} 拿不到 tag（Workers Scripts Read）")
+    raise RuntimeError(f"Worker {name} 拿不到 id/tag（Workers Scripts Read），无法连 Workers Builds")
 
 
 def connect_build(site: SiteConfig) -> dict[str, Any]:

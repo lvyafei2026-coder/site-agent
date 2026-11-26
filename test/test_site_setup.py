@@ -205,12 +205,13 @@ def site(monkeypatch):
 
 def test_connect_build_full_flow(site, monkeypatch):
     monkeypatch.setattr(cf_deploy.workers, "request", FakeCF({
+        # scripts 列表项 id=名字、tag=immutable script id（Builds 的 script_tag 认后者）
         ("GET", "https://api.cloudflare.com/client/v4/accounts/acct/workers/scripts"):
             [{"id": "fresh-site-tool", "tag": "tag1"}],
         ("GET", "https://api.cloudflare.com/client/v4/accounts/acct/builds/tokens"):
             [{"build_token_uuid": "bt-1"}],
         ("POST", "https://api.cloudflare.com/client/v4/accounts/acct/workers/workers"):
-            {"id": "fresh-site-tool", "tag": "tag1"},
+            {"id": "fresh-site-tool"},
         ("POST", "https://api.cloudflare.com/client/v4/accounts/acct/builds/workers"):
             [{"script_tag": "tag1"}],
     }).__call__)
@@ -254,6 +255,56 @@ def test_connect_build_already_connected(site, monkeypatch):
     out = cf_deploy.connect_build(site)
     assert out == {"ok": True, "created": False, "worker": "fresh-site-tool",
                    "tag": "tag1", "repo": "fresh-site-tool"}
+
+
+def _cf_not_found(method, url, json):
+    import types
+    return types.SimpleNamespace(status_code=404,
+                                 headers={"content-type": "application/json"},
+                                 json=lambda: {"success": False, "result": None,
+                                               "errors": [{"code": 10007, "message": "not found"}]})
+
+
+def test_connect_build_new_worker_uses_id_as_script_tag(site, monkeypatch):
+    """全新站点：Worker 新建、不在 scripts 列表，POST 返回只有 id——script_tag 取它，不能空。"""
+    monkeypatch.setattr(cf_deploy.workers, "request", FakeCF({
+        ("GET", "https://api.cloudflare.com/client/v4/accounts/acct/workers/scripts"): [],
+        ("GET", "https://api.cloudflare.com/client/v4/accounts/acct/workers/workers/fresh-site-tool"):
+            _cf_not_found,  # worker_exists 的 probe：不存在 → 走新建分支
+        ("POST", "https://api.cloudflare.com/client/v4/accounts/acct/workers/workers"):
+            {"id": "0123456789abcdef0123456789abcdef", "name": "fresh-site-tool"},
+        ("GET", "https://api.cloudflare.com/client/v4/accounts/acct/builds/tokens"):
+            [{"build_token_uuid": "bt-1"}],
+    }).__call__)
+    builds_fake = FakeCF({
+        ("GET", "https://api.cloudflare.com/client/v4/accounts/acct/builds/workers/0123456789abcdef0123456789abcdef"):
+            None,
+        ("GET", "https://api.cloudflare.com/client/v4/accounts/acct/builds/tokens"):
+            [{"build_token_uuid": "bt-1"}],
+        ("POST", "https://api.cloudflare.com/client/v4/accounts/acct/builds/workers"):
+            {"script_tag": "0123456789abcdef0123456789abcdef"},
+    })
+    monkeypatch.setattr(cf_deploy.builds, "request", builds_fake.__call__)
+    monkeypatch.setattr(cf_deploy, "repo_info",
+                        lambda full: {"id": 7, "full_name": full,
+                                      "owner": {"id": 1, "login": "acme"}, "name": "fresh-site-tool"})
+
+    out = cf_deploy.connect_build(site)
+    post = next(c for c in builds_fake.calls if c[0] == "POST" and "builds/workers" in c[1])
+    assert out["created"] is True and out["tag"] == "0123456789abcdef0123456789abcdef"
+    assert post[2]["script_tag"] == "0123456789abcdef0123456789abcdef"  # 空串会 12002
+
+
+def test_create_worker_requires_id(site, monkeypatch):
+    """POST 建 Worker 若既无 id 也无 tag，fail-fast，别把空 tag 传给 Builds API。"""
+    monkeypatch.setattr(cf_deploy.workers, "request", FakeCF({
+        ("GET", "https://api.cloudflare.com/client/v4/accounts/acct/workers/scripts"): [],
+        ("GET", "https://api.cloudflare.com/client/v4/accounts/acct/workers/workers/fresh-site-tool"):
+            _cf_not_found,
+        ("POST", "https://api.cloudflare.com/client/v4/accounts/acct/workers/workers"): {"name": "fresh-site-tool"},
+    }).__call__)
+    with pytest.raises(RuntimeError, match="没拿到 id/tag"):
+        cf_deploy.create_worker("fresh-site-tool")
 
 
 def test_connect_build_without_user_token_fails_fast(site, monkeypatch):
