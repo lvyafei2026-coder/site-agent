@@ -155,14 +155,15 @@ class PageContentService:
     @traceable(name="write_page_content")
     def write(self, term: str, site_name: str, analysis: str,
               versions: dict[str, str] | None = None,
-              site_brief: str = "") -> dict[str, Any] | None:
-        """按访客口吻重写正文；任何失败返回 None（上层回退解析稿）。
+              site_brief: str = "") -> tuple[dict[str, Any] | None, str]:
+        """按访客口吻重写正文；失败返回 (None, 原因)，原因原样进建页失败信息。
 
         不抛错：写作是增强步骤，LLM 不可用只应让这一页退化成草稿，不该让建页线
-        整轮崩掉。草稿是否可渲染由 analysis_leak() 在节点里判定。
+        整轮崩掉。草稿是否可渲染由 analysis_leak() 在节点里判定；把失败原因带回
+        节点，是为了让「解析稿被拦下」时能直接说清是提示词、LLM 还是结构问题。
         """
         if not term or site_name not in SITES or not str(analysis or "").strip():
-            return None
+            return None, "词 / 站点 / 分析稿缺失"
         versions = versions or {}
         try:
             system = prompt_service.load_prompt(
@@ -171,13 +172,18 @@ class PageContentService:
         except RuntimeError as exc:
             # D1 还没建这个 task（或凭据失效）：当写作失败处理，回退解析稿由节点校验。
             log.warning("page_content 提示词加载失败：%s", str(exc)[:200])
-            return None
-        data, _failed, _retryable = complete_json(
+            return None, f"page_content 提示词读不到（{str(exc)[:160]}）"
+        data, failed, _retryable = complete_json(
             system, _payload(term, site_name, str(analysis), site_brief),
             warn_event="page_content_failed")
         if not isinstance(data, dict):
-            return None
-        return normalize_page(data, term)
+            if failed:
+                return None, "LLM 调用失败（额度 / 鉴权 / 网络，日志 warn_event=page_content_failed）"
+            return None, "LLM 没返回可解析的页面 JSON（日志 llm_nonjson_response）"
+        page = normalize_page(data, term)
+        if page is None:
+            return None, "LLM 输出的页面结构不合格（没有任何带正文的小节）"
+        return page, ""
 
 
 page_content_service = PageContentService()

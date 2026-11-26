@@ -103,7 +103,7 @@ def page_write(state: dict[str, Any]) -> dict[str, Any]:
     draft = dict(state.get("page") or {})
     # 把原站"已有什么 + 风格基调 + 判重结论"塞进写作 payload（D1 提示词正文不改）
     brief = style_brief(state.get("site_digest") or {}, state.get("site_audit") or {})
-    written = page_content_service.write(
+    written, why = page_content_service.write(
         term, state["site"], state.get("ai_text") or "", site_brief=brief)
     page = {**draft, **written} if written else draft
     out: dict[str, Any] = {
@@ -113,9 +113,14 @@ def page_write(state: dict[str, Any]) -> dict[str, Any]:
     }
     leak = analysis_leak(page)
     if leak:
+        if written:
+            return {**out, "error": (
+                f"页面正文没写成：LLM 改写稿里仍带内部分析用语「{leak}」，已在渲染前拦下。"
+                "重试本轮；若反复出现，去 /rules/prompts 强化 page_content 的禁用词约束。")}
         return {**out, "error": (
-            f"页面正文没写成：解析稿里仍带内部分析用语「{leak}」，已在渲染前拦下。"
-            "去 /rules/prompts 确认 page_content 提示词可读、LLM 额度正常，再重试本轮。")}
+            f"页面正文没写成：{why}，回退到解析稿后仍带内部分析用语「{leak}」，已在渲染前拦下。"
+            "去 /rules/prompts 确认 page_content 有正文且默认版本正确；"
+            "LLM 额度正常（/llm-quota）后重试本轮。")}
     return out
 
 

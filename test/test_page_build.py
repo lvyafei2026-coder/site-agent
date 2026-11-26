@@ -354,7 +354,47 @@ def test_page_write_blocks_analysis_prose_before_render(fake, fake_kv, monkeypat
     out = graph.run_page_build("black friday today", confirm=True)
     assert out["ok"] is False and out["stage"] == "write"
     assert "渲染前拦下" in out["error"]
+    # 失败信息要能区分「改写没产出」与「改写稿带内部用语」，先报出改写的失败原因
+    assert "回退到解析稿" in out["error"] and "LLM 没返回可解析" in out["error"]
     assert fake.counts["render_files"] == 0 and fake.counts["git_push"] == 0
+
+
+def test_page_write_reports_prompt_load_failure(fake, fake_kv, monkeypatch):
+    """page_content 提示词读不到时，失败信息直接点名，不用去日志里猜是哪一步。"""
+    _stub_extract(monkeypatch, _SITE_OK)
+    _seed_todo(fake_kv, "free invoice generator", with_body=False)
+    fake_kv.put_text("ai:v3:free invoice generator", (
+        "1) 词义与意图：给自由职业者开票。\n\n"
+        "A paragraph explaining what the tool does, long enough to pass the\n"
+        "paragraph length filter without any trouble at all.\n\n"
+        "2) 结论：做\n\n"
+        "Another paragraph with plenty of length so it counts as a real\n"
+        "content paragraph in the parsed page structure."))
+
+    class BrokenPrompts:
+        def load_prompt(self, *_args, **_kwargs):
+            raise RuntimeError("提示词 page_content/v1 无法从 D1 读取")
+
+    monkeypatch.setattr(content_mod, "prompt_service", BrokenPrompts())
+    out = graph.run_page_build("free invoice generator", confirm=True)
+    assert out["ok"] is False and out["stage"] == "write", out
+    assert "page_content 提示词读不到" in out["error"]
+    assert "回退到解析稿" in out["error"]
+    assert fake.counts["render_files"] == 0
+
+
+def test_page_write_blocks_written_copy_that_copied_analysis_words(fake, fake_kv, monkeypatch):
+    """LLM 写出来了、但把分析稿小标题抄进正文：同样拦下，消息指明是改写稿。"""
+    _stub_extract(monkeypatch, _SITE_OK)
+    _seed_todo(fake_kv, "free invoice generator")
+    page = _llm_page()
+    page["sections"][0]["heading"] = "词义与意图"
+    monkeypatch.setattr(content_mod, "complete_json",
+                        lambda *_args, **_kwargs: (page, False, False))
+    out = graph.run_page_build("free invoice generator", confirm=True)
+    assert out["ok"] is False and out["stage"] == "write" and out["contentBy"] == "llm"
+    assert "LLM 改写稿" in out["error"] and "词义与意图" in out["error"]
+    assert fake.counts["render_files"] == 0
 
 
 def test_analysis_leak_checks_every_rendered_field():
