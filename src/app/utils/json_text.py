@@ -25,21 +25,28 @@ def strip_fences(text: str) -> str:
     return s
 
 
-def repair_json(text: str) -> str | None:
-    """补齐模型漏写的数组/对象闭合符（只动结构，不改内容）。
+def _next_closer(text: str, start: int) -> str:
+    """跳过空白看下一个非空字符，只在判断「两个闭合符是否写反」时用。"""
+    for ch in text[start:]:
+        if not ch.isspace():
+            return ch
+    return ""
 
-    线上实例（page_content / deepseek-flash）：小节的正文数组末尾写成
-    ``"...already high."}``，少一个 ``]``，整段内容合法却整体解析失败。
-    扫描时维护括号栈：
-      - 数组里遇到 ``}`` 先补 ``]``，再按对象闭合处理；
-      - 文本尾还有未闭合的容器，按栈补齐；
-      - 字符串没闭合（多半被截断）或出现对不上的右括号，返回 None 不猜。
+
+def _scan_repair(text: str, drop_stray: bool) -> str | None:
+    """补齐闭合符；drop_stray 决定「闭合符与栈顶对不上」时是否直接丢掉。
+
+    写反和多写一个闭合符，扫描时看到的是同一个现象（``}"`` 紧跟着 ``]``），
+    区别只在后面还有没有多余的收尾：多写的那个该丢，写反的那个丢不得。
+    两种都试，能不能解析由 repair_json 统一判定。
     """
     out: list[str] = []
     stack: list[str] = []
     in_str = False
     esc = False
-    for ch in str(text or ""):
+    i = 0
+    while i < len(text):
+        ch = text[i]
         if in_str:
             out.append(ch)
             if esc:
@@ -48,31 +55,60 @@ def repair_json(text: str) -> str | None:
                 esc = True
             elif ch == '"':
                 in_str = False
+            i += 1
             continue
         if ch == '"':
             in_str = True
             out.append(ch)
+            i += 1
             continue
         if ch in "{[":
             stack.append(ch)
             out.append(ch)
+            i += 1
             continue
         if ch in "}]":
-            # 漏写闭合符的两种形态都补：数组里先出 }，或对象里先出 ]（FAQ 末条实测）。
             opener = "{" if ch == "}" else "["
+            partner = "]" if ch == "}" else "}"
+            if (drop_stray and stack and stack[-1] != opener
+                    and _next_closer(text, i + 1) == partner):
+                i += 1
+                continue
+            # 漏写闭合符的两种形态都补：数组里先出 }，或对象里先出 ]（FAQ 末条实测）。
             while stack and stack[-1] != opener:
                 out.append("]" if stack.pop() == "[" else "}")
             if not stack:
                 return None
             stack.pop()
             out.append(ch)
+            i += 1
             continue
         out.append(ch)
+        i += 1
     if in_str:
         return None
     while stack:
         out.append("]" if stack.pop() == "[" else "}")
     return "".join(out)
+
+
+def repair_json(text: str) -> str | None:
+    """补齐模型漏写/错写的数组、对象闭合符（只动结构，不改内容）。
+
+    线上实例（page_content / deepseek-flash），模型写长 JSON 时三种坏法都出现过：
+    1) 漏写闭合符：小节正文数组末尾写成 ``"...already high."}``（少 ``]``），
+       FAQ 末条写成 ``"...December."]``（少 ``}``）；
+    2) 闭合符顺序颠倒：``"...good."}],`` 应为 ``"]}``；
+    3) 颠倒且多写一个：``"...exposures."}]},`` 里开头的 ``}`` 是多的。
+    先按「只补不删」修，修不出可解析结果再按「丢掉多余的闭合符」修；只返回能真正
+    解析成 dict 的结果，都修不好返回 None，绝不把半成品交给上层。
+    """
+    s = str(text or "")
+    for drop_stray in (False, True):
+        candidate = _scan_repair(s, drop_stray)
+        if candidate is not None and _loads_dict(candidate) is not None:
+            return candidate
+    return None
 
 
 def _loads_dict(text: str) -> dict | None:

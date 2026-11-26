@@ -107,6 +107,36 @@ def test_parse_json_repairs_missing_object_bracket():
     ]}
 
 
+def test_parse_json_repairs_swapped_closers():
+    """闭合符写反："...good."}], 应为 "..."]}；补一层后整份可解析（第 5 节实测）。"""
+    broken = ('{"sections":[{"heading":"A","paragraphs":["one."},'
+              '{"heading":"B","paragraphs":["two."}],'
+              '"faq":[{"q":"Q1","a":"A1"}]}')
+    assert parse_json(broken) == {
+        "sections": [
+            {"heading": "A", "paragraphs": ["one."]},
+            {"heading": "B", "paragraphs": ["two."]},
+        ],
+        "faq": [{"q": "Q1", "a": "A1"}],
+    }
+
+
+def test_parse_json_repairs_swapped_closer_with_extra_brace():
+    """写反且多一个：...exposures."}]}, → 需要丢掉多余的 } 才可解析（2026-11-26 实例）。"""
+    broken = ('{"sections":[{"heading":"A","paragraphs":["one."},'
+              '{"heading":"B","paragraphs":["two."}]},'
+              '{"heading":"Frequently Asked Questions","paragraphs":[]}],'
+              '"faq":[{"q":"Q1","a":"A1"}]}')
+    assert parse_json(broken) == {
+        "sections": [
+            {"heading": "A", "paragraphs": ["one."]},
+            {"heading": "B", "paragraphs": ["two."]},
+            {"heading": "Frequently Asked Questions", "paragraphs": []},
+        ],
+        "faq": [{"q": "Q1", "a": "A1"}],
+    }
+
+
 def test_parse_json_repair_does_not_touch_valid_or_truncated():
     valid = '{"a":[{"b":"}"}],"c":"["}'
     assert parse_json(valid) == {"a": [{"b": "}"}], "c": "["}
