@@ -55,6 +55,11 @@ LIMIT 1000
         "UPDATE agent_events SET status = 'consumed', consumed_at = ?, thread_id = ? "
         "WHERE event_key = ?"
     )
+    # 重新分析命中已有站后，把该词待建行的目标站改过去（site+slug 唯一键，这里按词定位，
+    # 只动 planned 行；目标站已在清单里、slug 不变，所以不会撞已 deployed 的同名页）。
+    RETARGET_PLANNED_SITE = (
+        "UPDATE agent_pages SET site = ? WHERE keyword = ? AND status = 'planned'"
+    )
 
 
 @dataclass(frozen=True, slots=True)

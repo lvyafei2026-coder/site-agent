@@ -57,6 +57,7 @@ from src.app.nodes.hotword_trend_node import gather_trend
 from src.app.nodes.hotword_write_node import write_result
 from src.app.observability.langsmith import observed, public_config
 from src.app.observability.trace import hotword_snapshot, run_traced
+from src.app.services.page_build_service import retarget_planned_site
 
 StepNode = tuple[GraphNode, Callable[[HotwordLoopState], dict[str, Any]]]
 
@@ -283,5 +284,9 @@ def run_term_analysis(term: str,
         },
         snapshot=hotword_snapshot,
     )
+    # ★点名重新分析专属收尾：用新正文重判目标站，命中已有站就改该词待建行的 site。
+    #   批量线（run_hotwords）不调这一步——那批词还没有 planned 行。fail-soft，
+    #   归类/回写失败只进 siteRetarget.reason，不影响本轮分析结论。
+    retarget = retarget_planned_site(term)
     return {**final["summary"], "runId": run_id, "trace": trace,
-            "langsmith": public_config()}
+            "siteRetarget": retarget, "langsmith": public_config()}

@@ -139,6 +139,23 @@ def test_classify_site_llm_first_rule_fallback(monkeypatch):
     assert out == {"site": "", "by": "rule"}     # 规则也没命中 → 空站点
 
 
+def test_classify_site_rule_matches_semantic_aliases(monkeypatch):
+    """语义别名整串命中：beaver-moon 接住 november full moon，但单词 moon 不误伤别的站。"""
+    _stub_extract(monkeypatch, {"target_site": ""})
+    # LLM 没给 → 走规则；别名 "november full moon" 整串命中 beaver-moon
+    out = page_build_service.classify_site("november full moon", _BODY)
+    assert out == {"site": "beaver-moon", "by": "rule"}
+
+    # 别名作为 LLM 清单的一部分送出去（模型也能看到语义，不只站名面值）
+    seen = {}
+    def capture(text, intent, versions=None):
+        seen["text"] = text
+        return {"target_site": "beaver-moon"}
+    monkeypatch.setattr(extraction_service, "extract", capture)
+    page_build_service.classify_site("november full moon", _BODY)
+    assert "别名" in seen["text"] and "november full moon" in seen["text"]
+
+
 # ---- 取词（pick_word）----
 
 def test_pick_word_explicit_and_auto(fake, fake_kv, monkeypatch):

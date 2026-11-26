@@ -63,6 +63,16 @@ def test_analyze_reanalyzes_named_term(fake_kv, monkeypatch):
     fake_kv.put_text(kvk.AI_CACHE_PREFIX + key, "旧方案正文")   # 已分析过也要能重跑
     monkeypatch.setattr(llm_io, "complete",
                         lambda m, **_: ("7) 结论：做\n8) 信号标签：工具查询", "fake"))
+    # D1 写桩掉，只验调用参数；归类 LLM 桩成「无结果」→ 由别名规则兜底命中。
+    from src.app.services import page_build_service as pbs
+    from src.app.services.extraction_service import extraction_service
+    from src.app.tools.adapters.cloudflare.sql import Sql
+
+    monkeypatch.setattr(extraction_service, "extract",
+                        lambda text, intent, versions=None: {"target_site": ""})
+    updates = []
+    monkeypatch.setattr(pbs.database, "execute",
+                        lambda sql, params: updates.append((sql, params)))
 
     data = TestClient(api).post("/analyze", json={"term": term}).json()
     assert data["ok"] is True and data["fetched"] == 1 and data["analyzed"] == 1
@@ -71,6 +81,10 @@ def test_analyze_reanalyzes_named_term(fake_kv, monkeypatch):
     # 正文覆盖旧方案，状态按新结论回写（与批量分析同一套 write_result）
     assert "结论：做" in fake_kv.get_text(kvk.AI_CACHE_PREFIX + key)
     assert fake_kv.get_json("saved")[0]["status"] == "todo"
+    # ★专属收尾：新正文里的 Beaver Moon 命中 beaver-moon 别名 → 回写待建行 site
+    assert data["siteRetarget"]["site"] == "beaver-moon"
+    assert data["siteRetarget"]["changed"] is True
+    assert updates == [(Sql.RETARGET_PLANNED_SITE, ["beaver-moon", term])]
 
 
 def test_analyze_unknown_term_reports_error(fake_kv, monkeypatch):

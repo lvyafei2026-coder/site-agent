@@ -23,7 +23,7 @@ from src.app.enums import ClassifyBy, CurationStatus, Intent, PageQueryMode
 from src.app.services.extraction_service import extraction_service
 from src.app.tools.adapters.cloudflare import database
 from src.app.tools.adapters.cloudflare.kv import AI_CACHE_PREFIX, SAVED_KEY, get_kv, term_key
-from src.app.tools.adapters.cloudflare.sql import PAGE_QUERIES
+from src.app.tools.adapters.cloudflare.sql import PAGE_QUERIES, Sql
 from src.app.utils.kv_shape import kv_list
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -86,12 +86,19 @@ def parse_page(term: str, text: str) -> dict[str, Any]:
 
 
 def _site_from_rule(term: str) -> str:
-    """规则兜底：热词命中站点名 / brand 词根就归它（LLM 不可用或归错时用）。"""
+    """规则兜底：热词命中站点名 / brand 词根 / 语义别名就归它（LLM 不可用或归错时用）。
+
+    ★别名按整串短语匹配（term_key 后整串 in）：beaver-moon 的别名 "november full moon"
+      能整串命中该词；单词级 "moon"/"full" 不拆开做 token，否则会误伤 clocksgoback
+      的 full moon 页。站点名/brand 仍按原词根匹配（≥4 字符），兼容既有归类。
+    """
     t = term_key(term)
     for site in SITES.values():
         tokens = {term_key(site.name), *term_key(site.brand).split()}
         tokens = {x for x in tokens if len(x) >= 4}
         if any(tok and tok in t for tok in tokens):
+            return site.name
+        if any(term_key(alias) in t for alias in site.aliases if term_key(alias)):
             return site.name
     return ""
 
@@ -110,7 +117,11 @@ def classify_site(term: str, text: str = "") -> dict[str, Any]:
     返回 {site, by}：site 为空串 = 归不进任何已有站 → 走「建新站」（本轮跳过）。
     LLM 的输入是站点清单 + 热词 + 方案摘要，不是用户原始请求——归类只看这三样。
     """
-    sites_line = "；".join(f"{s.name}({s.brand})" for s in SITES.values())
+    # brand 是访客可见站名，别名是归类线索（如 beaver-moon 接 november full moon）。
+    # 两者一起给 LLM，避免它只按站名面值判断、把语义相近的词误判成「无匹配站」。
+    sites_line = "；".join(
+        f"{s.name}({s.brand}{'；别名：' + '、'.join(s.aliases) if s.aliases else ''})"
+        for s in SITES.values())
     brief = re.sub(r"\s+", " ", str(text or ""))[:300]
     # ★措辞不得复刻 D1 里受管模板的行（test_prompts 守卫）：这段是发给
     #   extraction 的归类请求，不是提示词模板——字段名换成自有叫法。
@@ -167,6 +178,47 @@ def pick_word(term: Optional[str] = None) -> Optional[dict[str, Any]]:
         if text:
             return {"term": t, "text": text}
     return None
+
+
+def retarget_planned_site(term: str, text: str = "") -> dict[str, Any]:
+    """重新分析后重判目标站：命中已有站就改该词待建行的 site。
+
+    ★只在「点名重新分析」（POST /analyze）的收尾调用，批量候选池分析不碰台账——
+      那批词还没有 planned 行，改了也是空操作。
+
+    判定复用 classify_site（规则别名 + LLM 清单），正文优先用本次分析新写的 ai:v3；
+    没传就从 KV 读。结果分三种：
+      - 命中已有站且与台账不同 → UPDATE agent_pages，返回 {changed:True, site, by}
+      - 命中但和台账一样 → {changed:False, site, by}（幂等，不写）
+      - 判不出站（无匹配）→ {changed:False, site:"", by}，保留原新建站行
+
+    fail-soft：归类/D1 写失败都不抛给 analyze 主流程——重判是增强，不能让一条词
+    的分析整轮报失败；错误进 reason 由前端展示。
+    """
+    out: dict[str, Any] = {"changed": False, "site": "", "by": ClassifyBy.NONE.value,
+                           "term": term}
+    try:
+        body = text or get_kv().get_text(AI_CACHE_PREFIX + term_key(term)) or ""
+        cls = classify_site(term, body)
+    except Exception as exc:  # noqa: BLE001 - 归类失败不打断 analyze
+        out["reason"] = f"站点重判失败：{str(exc)[:120]}"
+        log.warning("站点重判归类异常 %s：%s", term, str(exc)[:120])
+        return out
+    site = str(cls.get("site") or "")
+    out["by"] = str(cls.get("by") or ClassifyBy.NONE.value)
+    if not site:                      # 仍判无匹配 → 保持原来的新建站行
+        out["reason"] = "未匹配到已有站，保留新建站方案"
+        return out
+    out["site"] = site
+    try:
+        # UPDATE 只动 planned 行；若该词不在待建台账（如从候选池点名分析）影响 0 行，
+        # 仍把判定结果返回给前端参考，不报错。
+        database.execute(Sql.RETARGET_PLANNED_SITE, [site, term])
+        out["changed"] = True
+    except Exception as exc:  # noqa: BLE001 - D1 写失败不打断 analyze
+        out["reason"] = f"目标站回写失败：{str(exc)[:120]}"
+        log.warning("待建行目标站回写失败 %s→%s：%s", term, site, str(exc)[:120])
+    return out
 
 
 def todo_pool_size() -> int:

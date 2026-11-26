@@ -92,6 +92,11 @@ class SiteConfig:
     branch: str = "main"
     daily_limit: int = 5
     asset_dir: str = "public"
+    # 语义别名：只喂给站点归类（规则短语匹配 + LLM 清单），不参与 brand 展示/渲染。
+    # brand 是访客可见的站点名（用于 title/logo/footer），别名是「哪些词该归到本站」的
+    # 内部线索——一个站的内部叫法和它能接住的热词往往是两回事（beaver-moon 接
+    # november full moon），拆开才不会为了归类把页面标题改坏。
+    aliases: tuple[str, ...] = ()
 
     @property
     def host(self) -> str:
@@ -128,6 +133,7 @@ def load_sites(path: Path = SITES_FILE) -> dict[str, SiteConfig]:
             branch=item.get("branch", "main"),
             daily_limit=int(item.get("daily_limit", 5)),
             asset_dir=item.get("asset_dir") or "public",
+            aliases=tuple(item.get("aliases") or ()),
         )
         for item in raw["sites"]
     ]

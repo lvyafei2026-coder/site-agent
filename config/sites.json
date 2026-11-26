@@ -206,7 +206,16 @@
       "subdomain": "beaver-moon",
       "repo": "beaver-moon",
       "brand": "beaver-moon",
-      "lang": "en"
+      "lang": "en",
+      "aliases": [
+        "beaver moon",
+        "november full moon",
+        "full moon",
+        "harvest moon",
+        "supermoon",
+        "moon phase",
+        "lunar calendar"
+      ]
     }
   ]
 }
