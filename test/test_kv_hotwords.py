@@ -22,6 +22,7 @@ from src.app.tools.adapters.cloudflare import kv as kvmod
 from src.app.tools.adapters.hotwords import scrape_serp as ss
 from src.app.tools.adapters.hotwords import scrape_trend as st
 from src.app.tools.adapters.hotwords import wordlib
+from src.app.utils.kv_shape import kv_list
 from src.app.utils.source_errors import SourceUnavailable
 
 
@@ -738,3 +739,75 @@ def test_fetch_interest_raises_source_unavailable(monkeypatch):
         fetch_interest("some term", session=_DownSession())
     assert ei.value.source == "google-trends"
     assert "连不上" in str(ei.value)
+
+
+# ---------------------------------------------------------------------------
+# 整表写入的并发安全：写后读回校验 + 有界重试（乐观并发，堵跨进程 lost update）
+# ---------------------------------------------------------------------------
+
+def test_business_equal_ignores_refreshed_timestamps():
+    """mutator 重放会刷新 updatedAt/at/ts；这些字段不该让读回校验误判成被覆盖。"""
+    a = [{"key": "t1", "status": "todo", "at": 1, "updatedAt": 100},
+         {"key": "t2", "status": "live", "at": 2, "updatedAt": 200}]
+    b = [{"key": "t1", "status": "todo", "at": 9, "updatedAt": 999},
+         {"key": "t2", "status": "live", "at": 8, "updatedAt": 888}]
+    assert kvmod._business_equal(a, b) is True
+    # 业务字段真不同 → 判不等
+    c = [{"key": "t1", "status": "wip", "at": 1, "updatedAt": 100},
+         {"key": "t2", "status": "live", "at": 2, "updatedAt": 200}]
+    assert kvmod._business_equal(a, c) is False
+    # 行数不同 → 判不等（对方新增了行，要重试合入）
+    assert kvmod._business_equal(a, a[:-1]) is False
+    # 嵌套 dict（hints / interest 表）
+    assert kvmod._business_equal({"t1": {"score": 3, "ts": 1}},
+                                 {"t1": {"score": 3, "ts": 7}}) is True
+
+
+def test_atomic_update_retry_merges_concurrent_overwrite(fake_kv):
+    """★回归：写完被另一进程整表覆盖 → 读回发现 → 以最新值重跑 mutator 合入，不丢对方的行。
+
+    模拟：mutator 要加 term-a；它在锁内写完后，另一个写者（如 console 人工写）把整表
+    覆盖成只有 term-b。没有读回校验就会把 term-b 丢掉；有校验则重试，最终两行都在。
+    """
+    key = "rejected"
+    fake_kv.put_json(key, [])
+    real_put = fake_kv.put_json
+    state = {"n": 0}
+
+    def put_with_rival(k, obj, ttl=None):
+        ok = real_put(k, obj, ttl=ttl)
+        state["n"] += 1
+        if state["n"] == 1:  # 首次写入后，模拟另一进程用它的快照整表覆盖
+            real_put(k, [{"key": "term-b", "term": "term-b",
+                          "reason": "rival", "source": "ai", "at": 1, "updatedAt": 1}])
+        return ok
+
+    fake_kv.put_json = put_with_rival
+    mutator = lambda arr: wordlib.upsert_rejected(
+        arr, {"term": "term-a", "reason": "mine", "source": "ai"})
+    ok, updated = kvmod.atomic_update(fake_kv, key, mutator, reader=kv_list)
+
+    assert ok is True
+    final = fake_kv.get_json(key, [])
+    assert {x["key"] for x in final} == {"term-a", "term-b"}
+    assert state["n"] >= 2  # 至少写了一次重试
+
+
+def test_atomic_update_no_retry_when_change_survives(fake_kv):
+    """读回值与写入值业务相等（只时间戳不同）→ 一次写成，不重试。"""
+    fake_kv.put_json("saved", [])
+    real_put = fake_kv.put_json
+    calls = {"n": 0}
+
+    def put_bump_ts(k, obj, ttl=None):
+        calls["n"] += 1
+        # 模拟存进去的副本带一个更新的时间戳（别的字段不变）
+        stamped = [{**x, "updatedAt": 99999} if isinstance(x, dict) else x for x in obj]
+        return real_put(k, stamped, ttl=ttl)
+
+    fake_kv.put_json = put_bump_ts
+    mutator = lambda arr: wordlib.upsert_saved(
+        arr, {"term": "t", "status": "todo"})
+    ok, _ = kvmod.atomic_update(fake_kv, "saved", mutator, reader=kv_list)
+    assert ok is True
+    assert calls["n"] == 1

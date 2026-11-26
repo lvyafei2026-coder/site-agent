@@ -51,10 +51,19 @@ SHARED_TABLE_KEYS: tuple[str, ...] = (
 # ★一把进程级 RLock 覆盖 5 张整表（不是每表一把）：跨表组合写入也要串行，
 #   否则「先写 saved、再写 aihints」之间仍可能被另一个 worker 插进来读旧值。
 #   用 RLock 而非 Lock：mutator 里若再调一次 atomic_update（回填等场景）不会自锁死。
-# ★边界：这把锁只保证**本进程内** 4 个 batch worker 不互相覆盖。Cloudflare KV 无 CAS、
-#   最终一致，跨进程（Render 多实例）/ console 人工同时写仍可能 lost update；
-#   后者靠「写失败记进 items[].error + 人工排查」兜底，别把锁当成分布式事务。
+# ★进程内锁只挡本进程两条线程（后台定时线 + uvicorn 用户线）。Cloudflare KV 无 CAS，
+#   跨进程（Render 多实例 / console Workers 人工写）仍可能整表 lost update。
+#   为此 atomic_update 额外做「写后读回校验 + 有界重试」：写完 GET 回来，若发现自己的
+#   改动被别的写者覆盖，就基于读回的最新值重新跑 mutator 合入再写。这是乐观并发，
+#   不是分布式事务——极端同时写仍可能拼输，但批量分析漏写一批词的窗口被堵住了。
 _TABLE_LOCK = threading.RLock()
+
+# 读回校验时忽略的易变字段：mutator（upsert_* 等）每次重放都会刷新这些时间戳，
+# 若拿它们做相等比较会永远判「被覆盖」→ 无限重试。业务内容按其余字段判定。
+_VOLATILE_FIELDS = frozenset(("updatedAt", "at", "ts"))
+
+# 写后读回不一致时的最大重试次数（不含首次写）。0 = 只写一次不校验。
+_ATOMIC_MAX_RETRIES = 3
 
 _WS = re.compile(r"\s+")
 
@@ -249,6 +258,22 @@ def table_lock() -> threading.RLock:
     return _TABLE_LOCK
 
 
+def _business_equal(a: Any, b: Any) -> bool:
+    """比较两次整表值是否「业务相等」：递归忽略 mutator 每次都会刷新的时间戳字段。
+
+    upsert_* 每次重放都会写新的 updatedAt/at/ts，但业务字段（term / status / reason /
+    source / 标签等）不变。写后读回校验只看业务字段，才能区分「我的改动在」和
+    「被别的写者整表覆盖」。列表按原顺序逐项比（mutator 都按 at 排序，重放顺序稳定）。
+    """
+    if isinstance(a, dict) and isinstance(b, dict):
+        ka = {k: v for k, v in a.items() if k not in _VOLATILE_FIELDS}
+        kb = {k: v for k, v in b.items() if k not in _VOLATILE_FIELDS}
+        return ka.keys() == kb.keys() and all(_business_equal(ka[k], kb[k]) for k in ka)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_business_equal(x, y) for x, y in zip(a, b))
+    return a == b
+
+
 def atomic_update(
     kv: Any,
     key: str,
@@ -257,27 +282,52 @@ def atomic_update(
     reader: Optional[Callable[[Any, str], Any]] = None,
     ttl: Optional[int] = None,
 ) -> tuple[bool, Any]:
-    """把整表的「读 → 改 → 写 → 校验返回值」包成一次原子操作。
+    """整表的「读 → 改 → 写 → 写后读回校验」乐观并发更新。
 
-    返回 `(ok, updated)`：
-      ok=False 表示读/改/写任一步抛异常，或 put_json 返回了假值（凭据失效 / 5xx /
-      序列化失败）。调用方必须据此把该词记为 error，不能默认写入成功。
+    进程内用 _TABLE_LOCK 串行；写后再 GET 回来，与本次想写入的值做「业务相等」比较：
+      - 相等 → 改动落住了，成功返回 (True, updated)。
+      - 不等 → 说明读回期间有别的进程（Render 另一实例 / console 人工写）覆盖了整表。
+        以读回的最新值为 current 重新跑 mutator（幂等 upsert，重放安全）再写，
+        最多重试 _ATOMIC_MAX_RETRIES 次；期间放行锁让对方写完，避免互锁空转。
 
-    `reader` 允许调用方注入形状兜底（期望 list 就是 kv_list、dict 就是 kv_dict），
-    避免形状漂移时把脏数据当成空表再写回去。`mutator` 应当是纯函数：不要在锁内
-    做网络请求，否则整批 worker 会被一次外部超时全部卡住。
+    Cloudflare KV 无 CAS，这是乐观并发而非分布式事务：极端同时写仍可能拼输，
+    但「批量分析写 state 表时被人工操作整表覆盖、漏掉一批词」的窗口被堵住。
+    返回 `(ok, updated)`：ok=False 表示读/改/写/重试全程都没能把改动落住，
+    调用方必须据此把该词记为 error，不能默认成功。
+
+    `reader` 注入形状兜底（list 用 kv_list、dict 用 kv_dict），防止形状漂移把脏数据
+    当空表写回。`mutator` 应是纯函数：不要在里面做网络请求，否则持锁期间一次外部
+    超时会卡住整批。
     """
-    with _TABLE_LOCK:
-        try:
-            current = reader(kv, key) if reader is not None else (kv.get_json(key, {}) or {})
-            updated = mutator(current)
-            ok = bool(kv.put_json(key, updated, ttl=ttl))
-        except Exception as exc:  # noqa: BLE001 - 任何一步失败都要变成「写失败」而不是中断整批
-            log.warning("KV 整表更新异常 key=%s: %s", key, exc)
-            return False, None
-        if not ok:
-            log.warning("KV 整表写入未成功 key=%s（put_json 返回 False）", key)
-        return ok, updated
+    read = reader if reader is not None else (lambda k, kk: k.get_json(kk, {}) or {})
+    last_updated: Any = None
+    for attempt in range(_ATOMIC_MAX_RETRIES + 1):
+        with _TABLE_LOCK:
+            try:
+                current = read(kv, key)
+                updated = mutator(current)
+                last_updated = updated
+                ok = bool(kv.put_json(key, updated, ttl=ttl))
+            except Exception as exc:  # noqa: BLE001 - 任何一步失败都要变成「写失败」而不是中断整批
+                log.warning("KV 整表更新异常 key=%s: %s", key, exc)
+                return False, None
+            if not ok:
+                log.warning("KV 整表写入未成功 key=%s（put_json 返回 False）", key)
+                return False, None
+            try:
+                verify = read(kv, key)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("KV 写后读回校验失败 key=%s: %s", key, exc)
+                return False, updated
+        if _business_equal(verify, updated):
+            return True, updated
+        log.warning("KV 写后读回发现被覆盖 key=%s，重试 %d/%d",
+                    key, attempt + 1, _ATOMIC_MAX_RETRIES)
+
+    # 重试耗尽：每次写入都已合入当时读到的对方的行，对方数据没丢；
+    # 但我的改动始终没能“读回确认落住”，返回失败让调用方记 error、该词下次重跑。
+    log.warning("KV 整表更新重试耗尽 key=%s，未确认落住", key)
+    return False, last_updated
 
 
 # 模块级单例：生产路径从这里取，避免每批词重建客户端。

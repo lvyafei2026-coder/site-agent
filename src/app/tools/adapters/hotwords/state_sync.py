@@ -113,15 +113,22 @@ def sync(rows: Optional[list[dict]] = None) -> dict:
     """
     source = read_ledger() if rows is None else rows
     kv = get_kv()
-    saved = kv_list(kv, SAVED_KEY)
-    new_saved, changes = project(source, saved)
-    if not changes:
+    current = kv_list(kv, SAVED_KEY)
+    _, pre_changes = project(source, current)
+    if not pre_changes:
         return {"ok": True, "updated": 0, "changes": []}
-    # mutator 不再读网络：用锁内的读结果校验形状，写入已经算好的整表。
-    ok, _ = atomic_update(
-        kv, SAVED_KEY, lambda _cur: new_saved,
-        reader=lambda _kv, _key: saved,
-    )
+
+    # ★并发安全：project 必须放进 mutator、基于锁内读到的最新 saved 重算，
+    #   不能用锁外快照写死。否则写后读回发现被别的进程覆盖时，重试只会把同一份
+    #   旧表再写回去，照样丢对方的行。changes 用闭包带出最后一次重算的明细。
+    changes: list[dict] = []
+
+    def mutator(fresh: list[dict]) -> list[dict]:
+        new_saved, diff = project(source, fresh)
+        changes[:] = diff
+        return new_saved
+
+    ok, _ = atomic_update(kv, SAVED_KEY, mutator, reader=kv_list)
     if not ok:
         return {"ok": False, "updated": 0, "changes": changes, "error": "KV 写入失败"}
     return {"ok": True, "updated": len(changes), "changes": changes}
