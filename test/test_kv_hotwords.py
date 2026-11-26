@@ -685,6 +685,53 @@ def test_fetch_serp_fast_path_falls_through_when_reader_also_down(monkeypatch):
     assert "Reader 中转也连不上" in str(ei.value)
 
 
+JINA_MD = """Title: beaver moon at DuckDuckGo
+
+## [Full Beaver Moon](https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.almanac.com%2Ffull%2Dmoon&rut=abc)
+
+[![Image 1](https://external-content.duckduckgo.com/ip3/x.ico)](https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.almanac.com%2Ffull%2Dmoon&rut=abc)
+
+[摘要行不算结果](https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.almanac.com%2Ffull%2Dmoon&rut=abc)
+
+## [Where to watch](https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.space.com%2Fmoon&rut=def)
+"""
+
+
+def test_parse_jina_markdown_results():
+    """Reader 正常模式的 markdown 只取 ## 结果行，uddg 解码后与 parse_ddg 同口径。"""
+    items = ss.parse_jina_markdown(JINA_MD, 10)
+    assert [x["domain"] for x in items] == ["almanac.com", "space.com"]
+    assert items[0]["title"] == "Full Beaver Moon"
+    assert items[0]["url"] == "https://www.almanac.com/full-moon"
+
+
+def test_reader_challenge_falls_back_to_markdown(monkeypatch):
+    """线上实证：原文模式带回 DDG 202 challenge，正常 markdown 模式能拿到真结果。"""
+    from types import SimpleNamespace
+
+    import requests as rq
+
+    monkeypatch.setattr(ss.time, "sleep", lambda s: None)
+    monkeypatch.setattr(ss, "SERP_FALLBACK_READER", True)
+    calls: list[dict] = []
+
+    class FakeSession:
+        def get(self, url, **kwargs):
+            if "r.jina.ai" not in url:
+                raise rq.exceptions.ConnectTimeout("direct down")
+            calls.append(kwargs.get("headers", {}))
+            if len(calls) == 1:
+                return SimpleNamespace(status_code=202,
+                                       text="<title>DuckDuckGo</title> are you a robot")
+            return SimpleNamespace(status_code=200, text=JINA_MD)
+
+    out = fetch_serp("beaver moon", session=FakeSession())
+    assert out["via"] == "reader"
+    assert [x["domain"] for x in out["items"]] == ["almanac.com", "space.com"]
+    assert len(calls) == 2
+    assert "x-respond-with" in calls[0] and "x-respond-with" not in calls[1]
+
+
 def test_fetch_interest_raises_source_unavailable(monkeypatch):
     monkeypatch.setattr(st.time, "sleep", lambda s: None)
     with pytest.raises(SourceUnavailable) as ei:

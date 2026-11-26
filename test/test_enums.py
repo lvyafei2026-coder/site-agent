@@ -62,7 +62,7 @@ def test_every_member_has_docstring_note():
 @pytest.mark.parametrize("cls,expected", [
     (Intent, {"word_plan_page", "plan_promo", "find_backlinks", "review_metrics",
               "analyze_hotwords", "general"}),
-    (HotwordStep, {"fetch", "examples", "serp", "trend", "write_result"}),
+    (HotwordStep, {"fetch", "resolve", "examples", "serp", "trend", "write_result"}),
     (CandidateStatus, {"doing", "live"}),
     (CurationStatus, {"saved", "todo", "wip", "live", "parked"}),
     (Verdict, {"做", "观望", "不做", "未定"}),

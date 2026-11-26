@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""30 个 BaseTool 子类：注册、Pydantic 契约、执行结果形状。"""
+"""33 个 BaseTool 子类：注册、Pydantic 契约、执行结果形状。"""
 
 from pydantic import BaseModel
 
@@ -10,16 +10,17 @@ from src.app.tools.base import BaseTool, RuntimeTool, ToolOutput, is_retryable_e
 from src.app.tools.registry import tool_registry
 
 
-def test_registry_has_32_tools():
-    assert len(tool_registry.names()) == 32
-    assert len(set(tool_registry.names())) == 32
+def test_registry_has_33_tools():
+    assert len(tool_registry.names()) == 33
+    assert len(set(tool_registry.names())) == 33
 
 
 def test_kind_split():
     # write = git_push / wait_build（空提交重推）/ publish_devto_article / send_notice / launch_new_site
     # 热词线的 fetch_serp / fetch_trend / write_hotword_result 都写共享 KV，
     # 但都是幂等 upsert / 缓存回写 → ledger，不是不可逆的 write。
-    assert len(tool_registry.by_kind("read")) == 15
+    # resolve_term 只读 KV → read。
+    assert len(tool_registry.by_kind("read")) == 16
     assert len(tool_registry.by_kind("ledger")) == 12
     assert len(tool_registry.by_kind("write")) == 5
 

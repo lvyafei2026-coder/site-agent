@@ -10,6 +10,7 @@ agent 直接读这份共享数据，不调 radar 的 App 接口）：
                     （updatedMs / geosOk / raw / failed）：判断「有没有新热词」看
                     meta.updatedMs，不能看 candidates 是否非空——累计词库几乎永远非空。
     select_pending  取下一个未跟进的词（saved / rejected / tags / ai:v3: 取并集后跳过）。
+    candidate_by_term  按词名回取一条候选形状的词条（点名重新分析，不做剔除）。
     read_examples   读人工「不做」标记，挑出可喂回 AI 的判例（挑选规则就在本文件的
                     pick_examples：rejected 表的形状与字段口径都归这层）。
 
@@ -160,6 +161,26 @@ def pick_examples(rejected: list, limit: int = EXAMPLE_LIMIT) -> list[dict[str, 
     return out
 
 
+def _project(c: dict[str, Any]) -> dict[str, Any]:
+    """候选 / 收藏 / 不做行 → 统一的候选条目形状。
+
+    取词（select_pending）与点名分析（candidate_by_term）共用这一处投影：
+    下游节点只认这个形状，三张表的字段差异（如 saved 带 status）不往下漏。
+    """
+    return {
+        "key": term_key(c.get("key") or c.get("term")),
+        "term": str(c.get("term") or "")[:120],
+        "related": [str(x) for x in (c.get("related") or [])][:6],
+        "hints": [str(x) for x in (c.get("hints") or [])][:6],
+        "geos": [str(x) for x in (c.get("geos") or [])][:16],
+        "geoCount": int(c.get("geoCount") or (len(c.get("geos") or []))),
+        "traffic": int(c.get("traffic") or 0),
+        "count": int(c.get("count") or 1),
+        "score": int(c.get("score") or 0),
+        "src": str(c.get("src") or "trends"),
+    }
+
+
 def select_pending(seen: set[str]) -> dict[str, Any] | None:
     """取「下一个」未跟进的热词；没有就返回 None。
 
@@ -195,18 +216,25 @@ def select_pending(seen: set[str]) -> dict[str, Any] | None:
         key = term_key(c.get("key") or c.get("term"))
         if key in curated or key in analyzed or key in seen:
             continue
-        return {
-            "key": key,
-            "term": str(c.get("term") or "")[:120],
-            "related": [str(x) for x in (c.get("related") or [])][:6],
-            "hints": [str(x) for x in (c.get("hints") or [])][:6],
-            "geos": [str(x) for x in (c.get("geos") or [])][:16],
-            "geoCount": int(c.get("geoCount") or (len(c.get("geos") or []))),
-            "traffic": int(c.get("traffic") or 0),
-            "count": int(c.get("count") or 1),
-            "score": int(c.get("score") or 0),
-            "src": str(c.get("src") or "trends"),
-        }
+        return _project(c)
+    return None
+
+
+def candidate_by_term(term: str) -> dict[str, Any] | None:
+    """按词名回取一条候选形状的词条；三张表都没有就返回 None。
+
+    「重新分析」点名的是网页上已经存在的词（待建页 / 收藏 / 不做清单），所以查找顺序
+    是 saved → rejected → candidates，且**不做** select_pending 的剔除——重新分析
+    本来就要覆盖已有正文与状态。
+    """
+    key = term_key(str(term or ""))
+    if not key:
+        return None
+    kv = get_kv()
+    for row in kv_list(kv, SAVED_KEY) + kv_list(kv, REJECTED_KEY) + kv_list(kv, CANDIDATES_KEY):
+        if isinstance(row, dict) and row.get("term") \
+                and term_key(row.get("key") or row.get("term")) == key:
+            return _project(row)
     return None
 
 

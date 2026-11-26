@@ -73,6 +73,7 @@ from src.app.tools.hotwords_tools import (
     HotwordsOps,
     NextCandidateTool,
     ReadExamplesTool,
+    ResolveTermTool,
     SyncTermStatusTool,
     WriteHotwordResultTool,
 )
@@ -132,6 +133,7 @@ TOOL_CLASSES = (
     WritePromoSlotTool,
     GetHotwordsTool,
     NextCandidateTool,
+    ResolveTermTool,
     ReadExamplesTool,
     FetchSerpTool,
     FetchTrendTool,

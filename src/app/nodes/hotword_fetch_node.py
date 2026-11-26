@@ -7,12 +7,15 @@
     START → fetch_one → route_after_fetch ─┬─ analyze_word（逐词子图）→ 回环 / 收尾
                                           └─ build_summary → END（取尽 / 名单非法）
 
+prepare_term 是同文件的**点名取词**变体（POST /analyze）：按词名回取那一个词，
+只跑一次、不回环——两张图共用逐词通道的形状，所以骨架写在这一处。
+
 循环由**图的条件边驱动**（路由在 graph/edges.py），Python 层不写 while/for；
 取不到词（result 为 None）就置 has_more=False，由条件边收尾。
 
-IO 一律走工具，与常规线同一套契约：本节点只说步骤名（examples 读判例、fetch 取词），
-步骤 → 工具的路由表在 services/tool_service.py。tool span 由 registry 的统一 tracer
-建，节点不自打点。
+IO 一律走工具，与常规线同一套契约：本节点只说步骤名（examples 读判例、fetch 取词、
+resolve 按词名取词），步骤 → 工具的路由表在 services/tool_service.py。tool span 由
+registry 的统一 tracer 建，节点不自打点。
 """
 
 from __future__ import annotations
@@ -25,6 +28,17 @@ from src.app.graph.state import HotwordLoopState
 from src.app.services.tool_service import tool_service
 
 log = logging.getLogger(__name__)
+
+
+def _new_word(term: str) -> dict[str, Any]:
+    """逐词结果骨架（fetch_one 与 prepare_term 共用这一处形状）。
+
+    这 6 个键就是前端逐词表与汇总读的形状（evidence 的键 = 本轮走过的步骤名），
+    每个词都从这里开始。notice / writeErrors / llm_diag 是各节点按需补的可选键，
+    读侧一律 .get()。
+    """
+    return {"term": term, "verdict": "", "status": "", "model": "",
+            "evidence": {}, "error": ""}
 
 
 def _load_examples() -> dict[str, Any]:
@@ -65,11 +79,30 @@ def fetch_one(state: HotwordLoopState) -> dict[str, Any]:
     seen.add(str(item["key"]))
     # 取到词就同时把逐词通道铺好：word = 该词结果骨架，body = 喂 AI 的素材起点，
     # 之后每个补证据节点往这两个通道里填，collect_word 落账时清空。
-    # word 的这 6 个键就是前端逐词表与汇总读的形状（evidence 的键 = 本轮走过的步骤名），
-    # 每个词都从这里开始，所以形状只写在这一处。notice / writeErrors / llm_diag 是
-    # 各节点按需补的可选键，读侧一律 .get()。
-    word = {"term": item["term"], "verdict": "", "status": "", "model": "",
-            "evidence": {}, "error": ""}
     return {**updates, "current": item, "has_more": True, "seen": seen,
-            "word": word, "body": dict(item),
+            "word": _new_word(item["term"]), "body": dict(item),
             "signals": [], "ai": {}}
+
+
+def prepare_term(state: HotwordLoopState) -> dict[str, Any]:
+    """点名取一个词：按词名回取候选条目，铺好逐词通道（POST /analyze 的入口节点）。
+
+    与 fetch_one 的差别只在取词来源：不按候选池顺序、不受「已收藏 / 已分析」剔除——
+    重新分析本来就要覆盖旧正文与状态。找不到词时置 load_error，由条件边直接收尾。
+    """
+    term = str(state.get("term") or "").strip()
+    if not term:
+        return {"has_more": False, "load_error": "缺词名，无法定位要重新分析的词"}
+
+    res = tool_service.execute_for_step(HotwordStep.RESOLVE.value, term=term)
+    if not res["ok"]:
+        return {"has_more": False, "load_error": "候选查询失败：" + res["error"][:200]}
+    item = res["result"]
+    if item is None:
+        return {"has_more": False,
+                "load_error": f"词库里找不到「{term}」：候选池、收藏与不做清单都没有这个词"}
+
+    updates = {} if state.get("examples_loaded") else _load_examples()
+    return {**updates, "current": item, "has_more": True,
+            "seen": {item["key"]}, "word": _new_word(item["term"]),
+            "body": dict(item), "signals": [], "ai": {}}

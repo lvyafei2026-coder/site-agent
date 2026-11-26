@@ -179,6 +179,7 @@ class HotwordLoopState(TypedDict, total=False):
     """
 
     # ——入口参数（initial_hotword_state 注入，节点只读）——
+    term: str                        # 点名分析的词（POST /analyze）；空 = 逐词循环从候选池取词
     limit: int                       # 本次最多分析的词数（= 最大循环次数）
     prompt_version: Optional[str]    # 本轮提示词版本（None → 节点侧回退默认）
     degrade: DegradeState            # 源级降级状态（已关掉的步骤名 + LLM 失败次数）
@@ -209,15 +210,18 @@ HOTWORD_LIMIT_MAX = 100   # 一轮最多逐词分析多少个；入口模型默�
 def initial_hotword_state(limit: int = 100,
                           prompt_version: Optional[str] = None,
                           evidence: tuple[str, ...] = (),
-                          post: tuple[str, ...] = ()) -> HotwordLoopState:
+                          post: tuple[str, ...] = (),
+                          term: str = "") -> HotwordLoopState:
     """构造热词线一轮的入口状态（与 initial_workflow_state 对称）。
 
     limit 是最大循环次数，收口在 1-100。prompt_version 原样带上（可为 None）：
     默认版本由 prompts.registry 结合 D1 的默认版本决定，不在这里提前拍死。
     evidence / post 是**已解析校验过的步骤名单**——名单与节点的对应关系在
     graph/hotword_graph.py（那里同时决定图怎么连线），这里只负责把通道初始化好。
+    term 非空 = 点名分析那一个词（POST /analyze），此时 limit 恒为 1、不回环。
     """
     return {
+        "term": str(term or ""),
         "limit": max(1, min(int(limit or HOTWORD_LIMIT_MAX), HOTWORD_LIMIT_MAX)),
         "prompt_version": prompt_version,
         "degrade": DegradeState(),

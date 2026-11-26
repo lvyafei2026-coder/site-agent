@@ -47,6 +47,41 @@ def test_http_validation_error():
     assert client.post("/run", json={}).status_code == 422
 
 
+def test_analyze_reanalyzes_named_term(fake_kv, monkeypatch):
+    """POST /analyze 点名重新分析：按词名回取（不看剔除）+ 用缓存证据 + 按新结论回写。"""
+    from src.app.tools.adapters.cloudflare import kv as kvk
+    from src.app.utils import llm_io
+
+    term = "november full moon"
+    key = kvk.term_key(term)
+    fake_kv.put_json("saved", [{"key": key, "term": term, "status": "wip",
+                                "traffic": 1200, "hints": ["工具查询"]}])
+    fake_kv.put_json(kvk.SERP_PREFIX + key,
+                     {"engine": "duckduckgo", "items": [],
+                      "competition": {"score": 1, "level": "low"}})
+    fake_kv.put_json(kvk.TREND_PREFIX + key, {"points": [], "summary": {}})
+    fake_kv.put_text(kvk.AI_CACHE_PREFIX + key, "旧方案正文")   # 已分析过也要能重跑
+    monkeypatch.setattr(llm_io, "complete",
+                        lambda m, **_: ("7) 结论：做\n8) 信号标签：工具查询", "fake"))
+
+    data = TestClient(api).post("/analyze", json={"term": term}).json()
+    assert data["ok"] is True and data["fetched"] == 1 and data["analyzed"] == 1
+    item = data["items"][0]
+    assert item["term"] == term and item["verdict"] == "做" and item["status"] == "todo"
+    # 正文覆盖旧方案，状态按新结论回写（与批量分析同一套 write_result）
+    assert "结论：做" in fake_kv.get_text(kvk.AI_CACHE_PREFIX + key)
+    assert fake_kv.get_json("saved")[0]["status"] == "todo"
+
+
+def test_analyze_unknown_term_reports_error(fake_kv, monkeypatch):
+    """词库里找不到这个词 → 不发 LLM，直接 ok=False 收口。"""
+    from src.app.utils import llm_io
+
+    monkeypatch.setattr(llm_io, "complete", lambda *a, **k: 1 / 0)   # 被调用就炸
+    data = TestClient(api).post("/analyze", json={"term": "no such term"}).json()
+    assert data["ok"] is False and "找不到" in data["error"] and data["items"] == []
+
+
 def _wait_hotwords_idle(timeout=5.0):
     """等后台那一轮收口（done / error），返回最后一次快照。"""
     import time

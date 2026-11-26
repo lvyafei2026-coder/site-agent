@@ -7,15 +7,18 @@
     POST /run              常规线主图（意图分类 → 取数 → 校验 → 输出）
     POST /hotwords         发起热词循环图（立即返回，后台线程逐词跑）
     GET  /hotwords/status  热词线最近一轮的进度（给 /agent 页 3 秒轮询）
+    POST /analyze          按词名重新分析一条热词（同步，一次一个词）
     POST /page             建页子图（取词 → 归类 → 渲染 → 推送 → 验活）
     GET  /health           状态与进程内计数
     GET  /llm-quota        DeepSeek 余额与用量
 
 入口层只做 HTTP 绑定：请求模型 → graph 层的 run_*()。不构造 state、不驱动图、
-不拼 trace——两条线的构造与触发机制在 graph/ 里完全一致（normal_graph / hotword_graph），
+不拼 trace——几条线的构造与触发机制在 graph/ 里完全一致（normal_graph / hotword_graph），
 差别只在节点类型与 state 内容。热词线的 IO 与常规线走同一个工具注册表，
 区别只是它按**步骤名单**逐词循环调用（名单 → 节点的连线在 graph/hotword_graph.py）。
 热词线是唯一异步入口：逐词串行要 5-10 分钟，同步跑会把 console 代理拖超时。
+点名分析只跑一个词（30-90 秒），同步返回；它只接受词名与提示词版本，
+不带步骤名单，不是「任选工具」的旁路。
 """
 
 from __future__ import annotations
@@ -26,7 +29,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from src.app.config import settings
-from src.app.graph import run_hotwords, run_page_build, run_workflow
+from src.app.graph import run_hotwords, run_page_build, run_term_analysis, run_workflow
 from src.app.graph.state import HOTWORD_LIMIT_MAX
 from src.app.llm.quota import check_quota
 from src.app.observability.hotword_progress import hotword_progress
@@ -95,6 +98,22 @@ def hotwords(request: HotwordsRequest) -> dict:
 def hotwords_status() -> dict:
     """最近一轮热词分析的进度；进程重启后回到 idle（结果仍在 KV 的 AI 缓存里）。"""
     return hotword_progress.snapshot()
+
+
+class AnalyzeRequest(BaseModel):
+    term: str                             # 要点名重新分析的词（按 term_key 归一后匹配）
+    prompt_version: str | None = None     # None = 当前默认版本
+
+
+@api.post("/analyze")
+def analyze(request: AnalyzeRequest) -> dict:
+    """按词名重新分析一条热词：请求字段与 run_term_analysis 一一对应。
+
+    回写口径与批量分析一致：做 → saved/todo、不做 → rejected、观望只留正文。
+    只接受词名与提示词版本，步骤名单固定为默认计划（serp + trend + write_result），
+    不传递任意步骤/工具名。
+    """
+    return run_term_analysis(**request.model_dump())
 
 
 class PageRequest(BaseModel):

@@ -14,6 +14,10 @@
                              → route_after_llm ─┬─ write_result → collect_word → END
                                                 └─ collect_word → END（没结论就不写 KV）
 
+点名重新分析（POST /analyze）复用同一张逐词子图，外层换成不回环的短图：
+
+    START → prepare_term → analyze_word → build_summary → END（点名的那一个词跑完即收尾）
+
 名单 → 节点的对应表只有下面两张：加一个证据源 = tools/hotwords_tools.py 加一个工具
 + nodes/hotword_xxx_node.py 加一个节点 + GraphNode 加一个值 + 这里加一行；
 循环、请求模型、汇总节点都不用改。
@@ -45,7 +49,7 @@ from src.app.graph.edges import (
 )
 from src.app.graph.state import HotwordLoopState, initial_hotword_state
 from src.app.nodes.hotword_collect_node import collect_word
-from src.app.nodes.hotword_fetch_node import fetch_one
+from src.app.nodes.hotword_fetch_node import fetch_one, prepare_term
 from src.app.nodes.hotword_llm_node import llm_analyze
 from src.app.nodes.hotword_serp_node import gather_serp
 from src.app.nodes.hotword_summary_node import summary_node
@@ -155,6 +159,33 @@ def get_hotword_graph(evidence: tuple[str, ...] = DEFAULT_EVIDENCE,
     return build_hotword_graph(evidence, post)
 
 
+def build_term_graph(evidence: tuple[str, ...] = DEFAULT_EVIDENCE,
+                     post: tuple[str, ...] = DEFAULT_POST):
+    """点名分析图：prepare_term → 逐词子图 → build_summary（不回环，一次一个词）。
+
+    与循环图共用逐词子图与汇总节点，只是外层没有回环：点名的那一个词跑完就收尾。
+    """
+    graph = StateGraph(HotwordLoopState)
+
+    graph.add_node(GraphNode.PREPARE_TERM, prepare_term)
+    graph.add_node(GraphNode.ANALYZE_WORD, build_word_graph(evidence, post))
+    graph.add_node(GraphNode.SUMMARY, summary_node)
+
+    graph.add_edge(START, GraphNode.PREPARE_TERM)
+    graph.add_conditional_edges(GraphNode.PREPARE_TERM, route_after_fetch, FETCH_EDGE_MAP)
+    graph.add_edge(GraphNode.ANALYZE_WORD, GraphNode.SUMMARY)
+    graph.add_edge(GraphNode.SUMMARY, END)
+
+    return graph.compile()
+
+
+@lru_cache(maxsize=8)
+def get_term_graph(evidence: tuple[str, ...] = DEFAULT_EVIDENCE,
+                   post: tuple[str, ...] = DEFAULT_POST):
+    """按计划缓存编译好的点名分析图（与 get_hotword_graph 同一口径）。"""
+    return build_term_graph(evidence, post)
+
+
 def _run_inputs(limit: int = 100, prompt_version: Optional[str] = None,
                 evidence: Optional[list[str]] = None,
                 post: Optional[list[str]] = None) -> dict[str, Any]:
@@ -211,6 +242,44 @@ def run_hotwords(limit: int = 100,
             "recursion_limit": initial["limit"] * 2 + 4,
             "tags": ["site-agent"],
             "metadata": {"runId": run_id, "limit": initial["limit"]},
+        },
+        snapshot=hotword_snapshot,
+    )
+    return {**final["summary"], "runId": run_id, "trace": trace,
+            "langsmith": public_config()}
+
+
+def _analyze_inputs(term: str = "", prompt_version: Optional[str] = None) -> dict[str, Any]:
+    """根 span 的 inputs：点名的词 + 本轮实际生效的提示词版本。"""
+    return {
+        "term": term[:120],
+        "promptVersion": prompt_version
+        or (settings.default_prompt_versions or {}).get("hotwords", "v1"),
+    }
+
+
+@observed(TraceName.ANALYZE_RUN, kind="chain", inputs=_analyze_inputs,
+          outputs=_run_outputs, tags=["site-agent", "analyze-run"], link="traceRun")
+def run_term_analysis(term: str,
+                      prompt_version: Optional[str] = None) -> dict[str, Any]:
+    """按词名重新分析一条热词（POST /analyze）：点名取词 → 逐词子图 → 汇总收尾。
+
+    与 run_hotwords 同一套机制，差别只在取词与循环：跑点名的那一个词、不回环。
+    ★回写口径与批量分析完全一致（逐词子图的 write_result）：做 → saved/todo、
+      不做 → rejected、观望只留正文——不因「重新分析」另立一套状态规则。
+    找不到词 / 缺词名时由 prepare_term 置 load_error，汇总节点照样收口为 ok=False。
+    """
+    run_id = f"analyze-{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}"
+    initial = initial_hotword_state(1, prompt_version, DEFAULT_EVIDENCE,
+                                    DEFAULT_POST, term=term)
+    # prepare → 逐词子图 → 汇总共 3 个 super-step，给足余量即可（不回环）
+    final, trace = run_traced(
+        get_term_graph(),
+        initial,
+        config={
+            "recursion_limit": 6,
+            "tags": ["site-agent"],
+            "metadata": {"runId": run_id, "term": term[:120]},
         },
         snapshot=hotword_snapshot,
     )

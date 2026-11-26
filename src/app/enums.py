@@ -76,6 +76,7 @@ class GraphNode(StrEnum):
     ERROR = "handle_error"          # 终态错误处理
     # 热词循环图（graph/hotword_graph.py）：取一词 → 逐词子图 → 回环 / 汇总
     FETCH_ONE = "fetch_one"         # 问 tool 要下一个候选词
+    PREPARE_TERM = "prepare_term"   # 点名分析（POST /analyze）：按词名取那一个词，不回环
     ANALYZE_WORD = "analyze_word"   # 逐词子图整体（按本轮名单连线，一个词一次调用）
     SUMMARY = "build_summary"       # 终态汇总（与常规线 build_output 对称）
 
@@ -148,6 +149,7 @@ class HotwordStep(StrEnum):
     """
 
     FETCH = "fetch"                # 取下一个候选词：每轮必做，不进可选名单
+    RESOLVE = "resolve"             # 按词名回取那一个词（POST /analyze 的单词语义）
     EXAMPLES = "examples"          # 读人工判例：每轮一次，不进可选名单
     SERP = "serp"                  # 可选证据步骤：补 SERP 竞争度
     TREND = "trend"                # 可选证据步骤：补 30 天搜索趋势
@@ -159,6 +161,7 @@ class TraceName(StrEnum):
 
     WORKFLOW_RUN = "site-agent:workflow-run"  # 常规线一轮（POST /run）
     HOTWORD_RUN = "site-agent:hotword-run"    # 热词线一轮（POST /hotwords）
+    ANALYZE_RUN = "site-agent:analyze-run"    # 点名重新分析一个词（POST /analyze）
     PAGE_RUN = "site-agent:page-run"          # 建页线一轮（POST /page，一条词一页）
 
 

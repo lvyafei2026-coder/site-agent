@@ -26,10 +26,11 @@ INTENT_TOOLS: dict[str, tuple[str, ...]] = {
     Intent.GENERAL.value: ("get_pending_events", "get_reflections"),
 }
 
-# 热词线：逐词步骤名 → 工具名。取词与读判例每轮必做（不在可选名单里），
+# 热词线：逐词步骤名 → 工具名。取词 / 点名取词 / 读判例每轮必做（不在可选名单里），
 # serp / trend / write_result 是否出现由 graph/hotword_graph.py 的连线名单决定。
 STEP_TOOLS: dict[str, str] = {
     HotwordStep.FETCH.value: "next_candidate",
+    HotwordStep.RESOLVE.value: "resolve_term",
     HotwordStep.EXAMPLES.value: "read_examples",
     HotwordStep.SERP.value: "fetch_serp",
     HotwordStep.TREND.value: "fetch_trend",

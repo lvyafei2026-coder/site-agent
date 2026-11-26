@@ -4,15 +4,17 @@
 
 """hotwords 域：选题雷达取数 + 热词线的取词 / 补数据 / 回写（定义 + 实现同文件）。
 
-候选池分析（POST /hotwords）与常规线（POST /run）都是「工具编排 + LLM + 落库」，
-差别只在节点类型：这条线逐词回环。它用的 IO 与常规线一样是 registry 里的工具，
-没有绕过工具契约的旁路。本域 6 个工具：
+候选池分析（POST /hotwords）、点名重新分析（POST /analyze）与常规线（POST /run）都是
+「工具编排 + LLM + 落库」，差别只在节点类型：前两者共用一个逐词子图，前者逐词回环、
+后者点名单词。它用的 IO 与常规线一样是 registry 里的工具，没有绕过工具契约的旁路。
+本域 7 个工具：
     get_hotwords                候选池快照（常规线 word_plan_page 用）
     next_candidate              取下一个未跟进的词（热词线每轮一次）
+    resolve_term                按词名回取一条词条（点名重新分析用）
     read_examples               读人工判例（热词线每轮一次）
     fetch_serp / fetch_trend    补证据：读缓存 → 现抓 → 写回（ledger：会写缓存表）
     write_hotword_result        后置动作：正文 / 标签 / 状态回写（ledger：幂等 upsert）
-本域 5 个逐词工具与逐词子图的步骤节点一一对应，对应关系只写在
+本域 6 个逐词工具与逐词子图的步骤节点一一对应，对应关系只写在
 services/tool_service.py 的 STEP_TOOLS（步骤名 → 工具名），节点里没有工具名字面量。
 LLM 与纯判据不是工具，节点层直接复用。
 「本轮走哪几步补证据、哪几个后置动作」由 graph/hotword_graph.py 的名单连线决定——
@@ -38,6 +40,9 @@ class HotwordsOps:
 
     def next_candidate(self, seen=()):
         return wordlib.select_pending(set(seen))
+
+    def resolve_term(self, term):
+        return wordlib.candidate_by_term(term)
 
     def read_examples(self):
         return wordlib.read_examples()
@@ -76,6 +81,16 @@ class NextCandidateTool(RuntimeTool):
     class Input(BaseModel):
         seen: list[str] = Field(default_factory=list,
                                 description="本轮已取过的词 key，防 KV 最终一致导致重复取词")
+
+
+class ResolveTermTool(RuntimeTool):
+    """按词名回取一条候选形状的词条（候选池 / 收藏 / 不做三表按序查找）。「重新分析」点名网页上已有的词，不做取词时的「已收藏 / 已分析」剔除；找不到返回 null。"""
+
+    tool_name = "resolve_term"
+    method = "resolve_term"
+
+    class Input(BaseModel):
+        term: str = Field(..., description="词名；大小写与空白归一后匹配")
 
 
 class ReadExamplesTool(RuntimeTool):

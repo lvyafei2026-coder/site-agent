@@ -83,17 +83,38 @@ PLAN = [
 # 设 SERP_FALLBACK_READER=0 可完全关掉（回到纯直连）。
 READER_BASE = "https://r.jina.ai/"
 READER_HEADERS = {"User-Agent": UA, "x-respond-with": "html"}
+# 2026-11-26：强制原文模式会把 DDG 的 202 挑战原样带回来（线上 32 词全挂实证）；
+# 不带 x-respond-with 时 Reader 自己渲染成 markdown，实测能拿到真结果。challenge 时改走这一路。
+READER_MD_HEADERS = {"User-Agent": UA}
 SERP_FALLBACK_READER = os.environ.get("SERP_FALLBACK_READER", "1").strip().lower() not in (
     "0", "false", "no", "")
 
 
 def _fetch_via_reader(q: str, limit: int, sess: Any, proxy: Optional[str]) -> dict:
-    """经 Reader 取原始 DDG HTML。"""
+    """经 Reader 取 DDG 结果：原文模式优先，challenge 时改走 Reader 自己渲染的 markdown。"""
     kwargs: dict[str, Any] = {"headers": READER_HEADERS, "timeout": (6, 20)}
     if proxy:
         kwargs["proxies"] = {"http": proxy, "https": proxy}
     resp = sess.get(READER_BASE + _ep_html(q), **kwargs)
-    return serp_verdict(resp.status_code, resp.text, limit)
+    verdict = serp_verdict(resp.status_code, resp.text, limit)
+    if verdict["ok"] or verdict["kind"] != SerpVerdict.CHALLENGE.value:
+        return verdict
+
+    # 原文模式下 Reader 只是原样转发 DDG 的 202 anomaly；正常模式由 Reader 解析渲染，
+    # 同一查询实测 200 且含 10 条结果。仅在 challenge 时多打一发，不影响正常路径。
+    md_kwargs: dict[str, Any] = {"headers": READER_MD_HEADERS, "timeout": (6, 20)}
+    if proxy:
+        md_kwargs["proxies"] = {"http": proxy, "https": proxy}
+    try:
+        md = sess.get(READER_BASE + _ep_html(q), **md_kwargs)
+        items = parse_jina_markdown(md.text, limit)
+        if md.status_code == 200 and items:
+            return {"ok": True, "kind": "ok", "status": 200, "items": items,
+                    "note": "Reader markdown 模式"}
+        note = f"Reader markdown {md.status_code} / {len(items)} 条"
+    except Exception as exc:  # noqa: BLE001 - 兜底的兜底失败只影响诊断文案
+        note = f"Reader markdown 也连不上（{type(exc).__name__}）"
+    return {**verdict, "note": f"{verdict['note']}；{note}"}
 
 
 # ★直连被判定不通后，短时间内不再每个词都撞 4 次 6 秒 connect 超时。
@@ -185,6 +206,27 @@ def parse_ddg(html: str, limit: int = 10) -> list[dict[str, str]]:
             continue
         seen.add(dedupe)
         out.append({"url": url, "domain": domain, "title": _clean_text(m.group(2))})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def parse_jina_markdown(md: str, limit: int = 10) -> list[dict[str, str]]:
+    """解析 Reader 正常模式的 markdown：只取 `## [标题](链接)` 一级结果行。
+
+    链接仍是 DDG 的 uddg 跳转，复用 decode_uddg / domain_of 保持与 parse_ddg 同口径；
+    图片行、摘要行、重复域名都不算一条结果。
+    """
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for m in re.finditer(r"^##\s+\[([^\]]+)\]\(([^)]+)\)", str(md or ""), re.M):
+        title = re.sub(r"\*\*|__", "", m.group(1)).strip()
+        url = decode_uddg(m.group(2).strip())
+        domain = domain_of(url)
+        if not url or not domain or domain in seen:
+            continue
+        seen.add(domain)
+        out.append({"url": url, "domain": domain, "title": _clean_text(title)})
         if len(out) >= limit:
             break
     return out

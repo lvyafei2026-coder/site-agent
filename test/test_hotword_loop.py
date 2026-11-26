@@ -21,7 +21,7 @@ from src.app.graph.edges import (
 )
 from src.app.graph.hotword_graph import DEFAULT_EVIDENCE, DEFAULT_POST, build_word_graph
 from src.app.graph.state import initial_hotword_state
-from src.app.nodes.hotword_fetch_node import fetch_one
+from src.app.nodes.hotword_fetch_node import fetch_one, prepare_term
 from src.app.tools.adapters.cloudflare import kv as kvk
 from src.app.tools.adapters.hotwords import scrape_serp, scrape_trend
 from src.app.tools.adapters.hotwords import wordlib
@@ -39,6 +39,34 @@ def test_loop_graph_topology():
     assert END in nodes
     # 步骤节点在外层不可见——它们是子图内部的事（trace 因此保持逐词粒度）
     assert not {"gather_serp", "llm_analyze", "collect_word"} & nodes
+
+
+def test_term_graph_topology():
+    """点名分析图：prepare_term → 逐词子图 → 汇总，没有回环节点。"""
+    nodes = _nodes(hotword_graph.get_term_graph())
+    assert {"prepare_term", "analyze_word", "build_summary"} <= nodes
+    assert END in nodes
+    assert "fetch_one" not in nodes
+
+
+def test_prepare_term_takes_named_term(fake_kv):
+    """点名取词不看「已收藏 / 已分析」剔除：词在 saved 且已有正文时也能取到。"""
+    term = "november full moon"
+    key = kvk.term_key(term)
+    fake_kv.put_json("saved", [{"key": key, "term": term, "status": "wip"}])
+    fake_kv.put_text(kvk.AI_CACHE_PREFIX + key, "旧方案正文")
+
+    s = initial_hotword_state(1, term=term)
+    s1 = {**s, **prepare_term(s)}
+    assert s1["has_more"] is True and s1["current"]["term"] == term
+    assert s1["word"]["term"] == term and s1["word"]["verdict"] == ""
+    assert s1["body"]["term"] == term and s1["examples_loaded"] is True
+
+
+def test_prepare_term_missing_term_closes(fake_kv):
+    """词库没有这个词 → has_more=False + load_error，条件边直接收尾。"""
+    out = prepare_term(initial_hotword_state(1, term="no such term"))
+    assert out["has_more"] is False and "找不到" in out["load_error"]
 
 
 def test_word_graph_is_wired_from_step_names():
