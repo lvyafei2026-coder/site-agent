@@ -396,7 +396,7 @@ def test_upsert_rejected_manual_priority():
 
 
 def test_one_key_rejected_manual_priority_and_clear(fake_kv):
-    """★一词一键门面：人工优先、改判清 AI 键但保留人工键、聚合读形状与整表一致。"""
+    """★一词一键门面：人工优先、改判清 AI 键但保留人工键、聚合读形状一致。"""
     from src.app.tools.adapters.cloudflare import kv as kvk
 
     term = "Foo Bar"
@@ -415,11 +415,9 @@ def test_one_key_rejected_manual_priority_and_clear(fake_kv):
     assert wordlib.clear_ai_rejected(fake_kv, other) is True
     assert fake_kv.get_json(kvk.rejected_key(other)) is None
 
-    # 聚合读返回统一数组，新键与 legacy 都能读到
-    fake_kv.put_json("rejected", [{"key": kvk.term_key("Legacy Term"),
-                                    "term": "Legacy Term", "source": "ai"}])
+    # 聚合读返回统一数组，一词一键的标记都读得到
     keys = {x["key"] for x in wordlib.list_rejected(fake_kv)}
-    assert kvk.term_key(term) in keys and kvk.term_key("Legacy Term") in keys
+    assert kvk.term_key(term) in keys
 
 
 def test_set_hint_override_filters_names():

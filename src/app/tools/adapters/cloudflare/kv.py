@@ -38,7 +38,6 @@ TREND_PREFIX = "trend:v1:"          # 某词 30 天趋势曲线（TTL 3 天）
 HINTS_KEY = "aihints"               # 词 → 信号标签覆盖（人工 / AI 修正）
 CANDIDATES_KEY = "candidates"       # radar 重建的候选全表
 SAVED_KEY = "saved"                 # 收藏 / 跟进表（含 status）
-REJECTED_KEY = "rejected"           # legacy「不做」整表（2026-11-27 起只读兜底，写入改下面前缀）
 REJECTED_PREFIX = "rejected:v1:"    # 「不做」一词一键：rejected:v1:<termKey> = 单条标记
 TAGS_KEY = "tags"                   # 词 → 标签
 COMPETITION_KEY = "competition"     # 词 → {score, level, at} 摘要表
@@ -310,7 +309,7 @@ def atomic_update(
 # ---- 「不做」一词一键（2026-11-27）----
 # 键：rejected:v1:<termKey>，值：单条 {key,term,reason,source,at,updatedAt}。
 # 每个词写自己的键，彻底避开整表读改写的并发覆盖（那是漏写的根因）。
-# 读侧 list_rejected 把前缀键聚合成数组喂给既有纯函数，形状与 legacy 整表完全一致。
+# 读侧 list_rejected 把前缀键聚合成数组喂给既有纯函数（形状不变）。
 
 def rejected_key(term: str) -> str:
     return REJECTED_PREFIX + term_key(term)
@@ -330,39 +329,22 @@ def delete_rejected(kv: Any, term: str) -> bool:
 
 
 def list_rejected(kv: Any) -> list[dict[str, Any]]:
-    """聚合一词一键 + legacy 整表，返回统一形状的数组（新键优先、按 at 倒序）。
+    """聚合一词一键前缀键，返回数组（按 at 倒序）。
 
-    ★legacy `rejected` 整表只读兜底：迁移窗口期 / 回滚时仍能读到旧数据；
-      同一词两边都在时以一词一键为准（最新写入）。
-      ★逐键 GET 必须并发：一词一键迁移后线上 736 键，串行 736 次 REST 读会很慢；
+    ★逐键 GET 必须并发：迁移后线上 736 键，串行 736 次 REST 读会很慢；
       线程池并发后降到秒级。不引入进程缓存以免跨端写入读到旧值（KV 最终一致下
-      缓存只会更糟）。
+      缓存只会更糟）。单键 get_json 自身 fail-open（读失败返回 None），不会拖垮整批。
     """
     out: list[dict[str, Any]] = []
     keys = kv.list_keys(REJECTED_PREFIX)
-    # 并发取值；单键 get_json 自身 fail-open（读失败返回 None），不会拖垮整批。
     with ThreadPoolExecutor(max_workers=16) as pool:
         rows = list(pool.map(lambda k: kv.get_json(k, None), keys))
     for row in rows:
         if isinstance(row, dict) and row.get("key"):
             key = term_key(row["key"])
             out.append({**row, "key": key})
-    # legacy 整表：同一 key 若新键已有则跳过（新值优先）
-    seen = {x["key"] for x in out}
-    for row in kv_list_compat(kv, REJECTED_KEY):
-        if isinstance(row, dict):
-            key = term_key(row.get("key") or row.get("term"))
-            if key and key not in seen:
-                out.append({**row, "key": key})
-                seen.add(key)
     out.sort(key=lambda x: (x.get("at") or 0), reverse=True)
     return out
-
-
-def kv_list_compat(kv: Any, key: str) -> list[Any]:
-    """形状兜底的整表读（避免循环 import kv_shape，这里就地做最小实现）。"""
-    value = kv.get_json(key, None)
-    return value if isinstance(value, list) else []
 
 
 # 模块级单例：生产路径从这里取，避免每批词重建客户端。

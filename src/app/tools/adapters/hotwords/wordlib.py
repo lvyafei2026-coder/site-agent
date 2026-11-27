@@ -35,7 +35,7 @@ from typing import Any, Optional
 from src.app.enums import CandidateStatus, CurationStatus, HintName, RejectSource
 
 from src.app.tools.adapters.cloudflare.kv import (
-    AI_CACHE_PREFIX, CANDIDATES_KEY, INTERESTS_KEY, REJECTED_KEY, REJECTED_PREFIX,
+    AI_CACHE_PREFIX, CANDIDATES_KEY, INTERESTS_KEY, REJECTED_PREFIX,
     SAVED_KEY, TAGS_KEY, CloudflareKV, delete_rejected, get_kv, list_rejected,
     put_rejected, rejected_key, term_key,
 )
@@ -125,7 +125,7 @@ def snapshot(status: str = CandidateStatus.DOING.value, limit: int = 40,
 def read_examples() -> list[dict[str, str]]:
     """读人工「不做」标记并挑出可喂回 AI 的判例。
 
-    ★2026-11-27：rejected 已改一词一键，list_rejected 聚合新键 + legacy 整表，
+    ★2026-11-27：rejected 已改一词一键，list_rejected 返回统一数组，
       形状与旧的整表数组一致，pick_examples 纯函数不用动。
     """
     return pick_examples(list_rejected(get_kv()))

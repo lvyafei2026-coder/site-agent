@@ -599,7 +599,7 @@ def test_word_llm_failure_reports_real_cause(fake_kv, monkeypatch):
     assert "LLM_API_KEY 未配置" not in item["error"]
     assert item["llm_diag"]["finish_reason"] == "length"
     assert out["analyzed"] == 0
-    assert fake_kv.get_json("rejected", []) == []       # 不编正文、不写状态
+    assert fake_kv.list_keys(kvk.REJECTED_PREFIX) == []  # 不编正文、不写状态
     assert fake_kv.get_json("saved", []) == []
 
 
@@ -660,7 +660,7 @@ def test_select_pending_excludes_curated(fake_kv):
         {"term": "a"}, {"term": "b"}, {"term": "c"}, {"term": "d"},
     ])
     fake_kv.put_json("saved", [{"key": kvk.term_key("a"), "term": "a", "status": "saved"}])
-    fake_kv.put_json("rejected", [{"key": kvk.term_key("b"), "term": "b", "status": "rejected"}])
+    fake_kv.put_json(kvk.rejected_key("b"), {"key": kvk.term_key("b"), "term": "b", "source": "ai"})
     fake_kv.put_json("tags", {kvk.term_key("c"): ["工具查询"]})
     fake_kv.put_text(kvk.AI_CACHE_PREFIX + kvk.term_key("d"), "already analyzed")
     pending = wordlib.select_pending(set())
@@ -681,7 +681,7 @@ def test_select_pending_survives_shape_drift(fake_kv):
     fake_kv.put_json("candidates", [{"term": "a"}, {"term": "b"}])
     fake_kv.put_json("tags", ["不是对象而是数组"])          # 期望 dict，实际 list
     fake_kv.put_json("saved", {"a": {"status": "saved"}})   # 期望 list，实际 dict
-    fake_kv.put_json("rejected", "垃圾")
+    fake_kv.put_json(kvk.rejected_key("x"), "垃圾")         # 期望 dict，实际字符串
     pending = wordlib.select_pending(set())  # 不抛
     assert pending["term"] == "a"  # 形状坏的当空，不误剔除
 
@@ -746,7 +746,7 @@ def test_body_write_failure_never_writes_state(fake_kv, monkeypatch):
     assert "KV 写入失败" in out["items"][0]["error"]
     assert out["analyzed"] == 0
     assert fake_kv.get_json("saved", []) == []
-    assert fake_kv.get_json("rejected", []) == []
+    assert fake_kv.list_keys(kvk.REJECTED_PREFIX) == []
     assert fake_kv.get_json("aihints", {}) == {}
     assert fake_kv.get_text(key) is None
     assert wordlib.select_pending(set()) is not None   # 下次还会重跑
