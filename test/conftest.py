@@ -235,6 +235,12 @@ class FakeKV:
     def list_keys(self, prefix: str) -> list[str]:
         return [k for k in self.store if k.startswith(prefix)]
 
+    def delete(self, key: str) -> bool:
+        if key in self.fail_keys:
+            return False
+        self.store.pop(key, None)
+        return True
+
 
 @pytest.fixture
 def fake_kv(monkeypatch):

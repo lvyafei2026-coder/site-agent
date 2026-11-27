@@ -35,8 +35,9 @@ from typing import Any, Optional
 from src.app.enums import CandidateStatus, CurationStatus, HintName, RejectSource
 
 from src.app.tools.adapters.cloudflare.kv import (
-    AI_CACHE_PREFIX, CANDIDATES_KEY, INTERESTS_KEY, REJECTED_KEY, SAVED_KEY,
-    TAGS_KEY, CloudflareKV, get_kv, term_key,
+    AI_CACHE_PREFIX, CANDIDATES_KEY, INTERESTS_KEY, REJECTED_KEY, REJECTED_PREFIX,
+    SAVED_KEY, TAGS_KEY, CloudflareKV, delete_rejected, get_kv, list_rejected,
+    put_rejected, rejected_key, term_key,
 )
 from src.app.utils.kv_shape import kv_dict, kv_list
 
@@ -122,8 +123,12 @@ def snapshot(status: str = CandidateStatus.DOING.value, limit: int = 40,
 # ---- 读侧：取下一词 / 读判例 ----
 
 def read_examples() -> list[dict[str, str]]:
-    """读人工「不做」标记并挑出可喂回 AI 的判例。"""
-    return pick_examples(kv_list(get_kv(), REJECTED_KEY))
+    """读人工「不做」标记并挑出可喂回 AI 的判例。
+
+    ★2026-11-27：rejected 已改一词一键，list_rejected 聚合新键 + legacy 整表，
+      形状与旧的整表数组一致，pick_examples 纯函数不用动。
+    """
+    return pick_examples(list_rejected(get_kv()))
 
 
 def pick_examples(rejected: list, limit: int = EXAMPLE_LIMIT) -> list[dict[str, str]]:
@@ -197,7 +202,7 @@ def select_pending(seen: set[str]) -> dict[str, Any] | None:
     kv = get_kv()
     candidates = kv_list(kv, CANDIDATES_KEY)
     saved = kv_list(kv, SAVED_KEY)
-    rejected = kv_list(kv, REJECTED_KEY)
+    rejected = list_rejected(kv)
     tags = kv_dict(kv, TAGS_KEY)
 
     curated = set()
@@ -231,7 +236,7 @@ def candidate_by_term(term: str) -> dict[str, Any] | None:
     if not key:
         return None
     kv = get_kv()
-    for row in kv_list(kv, SAVED_KEY) + kv_list(kv, REJECTED_KEY) + kv_list(kv, CANDIDATES_KEY):
+    for row in kv_list(kv, SAVED_KEY) + list_rejected(kv) + kv_list(kv, CANDIDATES_KEY):
         if isinstance(row, dict) and row.get("term") \
                 and term_key(row.get("key") or row.get("term")) == key:
             return _project(row)
@@ -332,6 +337,32 @@ def remove_ai_rejected(list_: Optional[list], term: str) -> list:
                 and term_key(x.get("key") or x.get("term")) == key
                 and x.get("source") != RejectSource.MANUAL.value)
     ]
+
+
+# ---- 不做：一词一键 IO（2026-11-27）----
+# 上面两个纯函数是「整表语义」的合并/移除规则，语义（人工优先、AI 改判不覆盖人工）
+# 原样复用：把单键读出的 prev 当单元素数组喂进去。网络与键名只在 kv.py。
+
+def write_rejected(kv: Any, payload: dict[str, Any]) -> bool:
+    """写一条不做标记（单键）。人工优先、at/updatedAt 规则与 upsert_rejected 一致。
+
+    与整表版的关键差别：只读自己那一个键（不读整表），只写自己那一个键（不写整表），
+    因此并发分析再也不会互相覆盖掉别人的行——这是漏写的根因。
+    """
+    prev = kv.get_json(rejected_key(payload.get("term")), None)
+    row = upsert_rejected([prev] if isinstance(prev, dict) else [], payload)
+    return put_rejected(kv, row[0])
+
+
+def clear_ai_rejected(kv: Any, term: str) -> bool:
+    """改判「做」时清掉 AI 的不做标记；人工标记保留不动（返回 True 表示无需处理）。
+
+    同样只读自己那一个键：AI 行删键，人工行/空值都是 no-op。
+    """
+    row = kv.get_json(rejected_key(term), None)
+    if not isinstance(row, dict) or row.get("source") == RejectSource.MANUAL.value:
+        return True
+    return delete_rejected(kv, term)
 
 
 def remove_unstarted_saved(list_: Optional[list], term: str) -> list:

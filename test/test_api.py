@@ -58,8 +58,8 @@ def test_analyze_reanalyzes_named_term(fake_kv, monkeypatch):
                                 "traffic": 1200, "hints": ["工具查询"]}])
     # ★线上事故形态：这个词早先被 AI 判过不做，改判「做」时必须把不做记录一并清掉，
     #   否则候选页默认隐藏判不做的词，状态再对也看不见。
-    fake_kv.put_json("rejected", [{"key": key, "term": term,
-                                   "reason": "AI 判定不做", "source": "ai"}])
+    fake_kv.put_json(kvk.rejected_key(term), {"key": key, "term": term,
+                                              "reason": "AI 判定不做", "source": "ai"})
     fake_kv.put_json(kvk.SERP_PREFIX + key,
                      {"engine": "duckduckgo", "items": [],
                       "competition": {"score": 1, "level": "low"}})
@@ -86,7 +86,7 @@ def test_analyze_reanalyzes_named_term(fake_kv, monkeypatch):
     assert "结论：做" in fake_kv.get_text(kvk.AI_CACHE_PREFIX + key)
     assert fake_kv.get_json("saved")[0]["status"] == "todo"
     # 改判互清：AI 的不做记录被清掉，这个词不会再被「隐藏判不做」藏起来
-    assert fake_kv.get_json("rejected", []) == []
+    assert fake_kv.get_json(kvk.rejected_key(term), None) is None
     # ★专属收尾：新正文里的 Beaver Moon 命中 beaver-moon 别名 → 回写待建行 site
     assert data["siteRetarget"]["site"] == "beaver-moon"
     assert data["siteRetarget"]["changed"] is True
@@ -129,7 +129,7 @@ def test_analyze_skip_clears_pending_saved(fake_kv, monkeypatch):
     data = TestClient(api).post("/analyze", json={"term": term}).json()
     assert data["items"][0]["status"] == "rejected"
     assert fake_kv.get_json("saved", []) == []
-    assert [r["source"] for r in fake_kv.get_json("rejected")] == ["ai"]
+    assert fake_kv.get_json(kvk.rejected_key(term))["source"] == "ai"
 
 
 def test_analyze_skip_keeps_started_saved(fake_kv, monkeypatch):
@@ -149,7 +149,7 @@ def test_analyze_skip_keeps_started_saved(fake_kv, monkeypatch):
     data = TestClient(api).post("/analyze", json={"term": term}).json()
     assert data["items"][0]["status"] == "rejected"
     assert fake_kv.get_json("saved")[0]["status"] == "wip"
-    assert fake_kv.get_json("rejected")[0]["source"] == "ai"
+    assert fake_kv.get_json(kvk.rejected_key(term))["source"] == "ai"
 
 
 def _wait_hotwords_idle(timeout=5.0):

@@ -217,9 +217,10 @@ def test_run_hotwords_writes_kv(fake_kv, monkeypatch):
     # 做 → saved(status=todo)
     saved = fake_kv.get_json("saved", [])
     assert any(x["key"] == kvk.term_key("free invoice calculator") and x["status"] == "todo" for x in saved)
-    # 不做 → rejected(source=ai)
-    rejected = fake_kv.get_json("rejected", [])
-    assert any(x["key"] == kvk.term_key("Taylor Swift net worth") and x["source"] == "ai" for x in rejected)
+    # 不做 → rejected:v1:<key>(source=ai)
+    rejected_row = fake_kv.get_json(kvk.rejected_key("Taylor Swift net worth"))
+    assert rejected_row and rejected_row["key"] == kvk.term_key("Taylor Swift net worth") \
+        and rejected_row["source"] == "ai"
     # 正文回写 ai:v3:，标签回写 aihints
     assert fake_kv.get_text(kvk.AI_CACHE_PREFIX + kvk.term_key("free invoice calculator"))
     hints = fake_kv.get_json("aihints", {})
@@ -752,10 +753,11 @@ def test_body_write_failure_never_writes_state(fake_kv, monkeypatch):
 
 
 def test_concurrent_table_updates_do_not_lose_rows(fake_kv, monkeypatch):
-    """★回归：4 个 worker 并发「读-改-写」5 张整表不能互相覆盖。
+    """★回归：4 个 worker 并发写多张表不能互相覆盖。
 
     故意给 get/put 加延时放大竞态：没有 kv.atomic_update 的全局 RLock 时，
-    saved/rejected/aihints/competition/interests 会只留下最后写入的那一条。
+    saved/aihints/competition/interests 这些整表会只留下最后写入的那一条；
+    rejected 已于 2026-11-27 改一词一键，每个词写自己的键，天然不互相覆盖。
     """
     import time
 
@@ -785,7 +787,9 @@ def test_concurrent_table_updates_do_not_lose_rows(fake_kv, monkeypatch):
 
     assert out["analyzed"] == n
     assert len(fake_kv.list_keys(kvk.AI_CACHE_PREFIX)) == n
-    assert len(fake_kv.get_json("saved", [])) + len(fake_kv.get_json("rejected", [])) == n
+    # ★rejected 已改一词一键：判不做的词各写自己的 rejected:v1:<key>，
+    #   不再走整表，并发下也必须一条不丢（这正是旧整表反复漏写的根因）。
+    assert len(fake_kv.get_json("saved", [])) + len(fake_kv.list_keys(kvk.REJECTED_PREFIX)) == n
     assert len(fake_kv.get_json("aihints", {})) == n
     assert len(fake_kv.get_json("competition", {})) == n
     assert len(fake_kv.get_json("interests", {})) == n

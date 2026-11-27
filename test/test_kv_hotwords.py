@@ -395,6 +395,33 @@ def test_upsert_rejected_manual_priority():
     assert arr[0]["reason"] == "manual reason"  # AI 不覆盖人工标记
 
 
+def test_one_key_rejected_manual_priority_and_clear(fake_kv):
+    """★一词一键门面：人工优先、改判清 AI 键但保留人工键、聚合读形状与整表一致。"""
+    from src.app.tools.adapters.cloudflare import kv as kvk
+
+    term = "Foo Bar"
+    # AI 先写，人工再写 → 人工优先且 reason 不被 AI 覆盖
+    assert wordlib.write_rejected(fake_kv, {"term": term, "reason": "ai reason", "source": "ai"})
+    assert wordlib.write_rejected(fake_kv, {"term": term, "reason": "manual reason", "source": "manual"})
+    row = fake_kv.get_json(kvk.rejected_key(term))
+    assert row["source"] == "manual" and row["reason"] == "manual reason"
+    # 改判「做」：人工键不动
+    assert wordlib.clear_ai_rejected(fake_kv, term) is True
+    assert fake_kv.get_json(kvk.rejected_key(term))["source"] == "manual"
+
+    # AI 标记键可清
+    other = "Baz Qux"
+    assert wordlib.write_rejected(fake_kv, {"term": other, "reason": "ai", "source": "ai"})
+    assert wordlib.clear_ai_rejected(fake_kv, other) is True
+    assert fake_kv.get_json(kvk.rejected_key(other)) is None
+
+    # 聚合读返回统一数组，新键与 legacy 都能读到
+    fake_kv.put_json("rejected", [{"key": kvk.term_key("Legacy Term"),
+                                    "term": "Legacy Term", "source": "ai"}])
+    keys = {x["key"] for x in wordlib.list_rejected(fake_kv)}
+    assert kvk.term_key(term) in keys and kvk.term_key("Legacy Term") in keys
+
+
 def test_set_hint_override_filters_names():
     m = wordlib.set_hint_override({}, "Foo", ["工具查询", "不存在", "价格规格", "日程日期"])
     assert m[wordlib.term_key("Foo")] == ["工具查询", "价格规格", "日程日期"]  # 只留 HINT_NAMES 内、最多 3

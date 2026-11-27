@@ -34,12 +34,13 @@ from typing import Any, Optional
 
 from src.app.enums import AnalysisPhase, CurationStatus, RejectSource, Verdict
 from src.app.tools.adapters.cloudflare.kv import (
-    atomic_update, get_kv, term_key, AI_CACHE_PREFIX, SAVED_KEY, REJECTED_KEY, HINTS_KEY,
+    AI_CACHE_PREFIX, HINTS_KEY, REJECTED_PREFIX, SAVED_KEY,
+    atomic_update, get_kv, rejected_key, term_key,
 )
 from src.app.utils.kv_shape import kv_dict, kv_list
 from .wordlib import (
-    remove_ai_rejected, remove_unstarted_saved, set_hint_override,
-    upsert_rejected, upsert_saved,
+    clear_ai_rejected, remove_unstarted_saved, set_hint_override,
+    upsert_saved, write_rejected,
 )
 
 log = logging.getLogger(__name__)
@@ -88,6 +89,26 @@ class WriteLog:
         ok, _updated = atomic_update(kv, key, mutator, reader=reader, ttl=ttl)
         return self._record(key, ok, "atomic_update")
 
+    def rejected(self, kv: Any, payload: dict[str, Any]) -> bool:
+        """一词一键写不做标记（单键 PUT，人工优先规则在 wordlib.write_rejected）。"""
+        key = rejected_key(payload.get("term"))
+        try:
+            ok = write_rejected(kv, payload)
+        except Exception as exc:  # noqa: BLE001 - 单词级失败不拖垮其它词
+            log.warning("KV 写不做异常 term=%s key=%s: %s", self.term, key, exc)
+            ok = False
+        return self._record(key, ok, "rejected_put")
+
+    def unreject(self, kv: Any, term: str) -> bool:
+        """改判「做」时清 AI 不做标记（单键 DELETE，人工标记保留）。"""
+        key = rejected_key(term)
+        try:
+            ok = clear_ai_rejected(kv, term)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("KV 清不做异常 term=%s key=%s: %s", self.term, key, exc)
+            ok = False
+        return self._record(key, ok, "rejected_delete")
+
     def error(self) -> str:
         return "KV 写入失败：" + "、".join(self.failed) if self.failed else ""
 
@@ -122,8 +143,9 @@ def write_result(item: dict[str, Any], text: str, hints: Optional[list[str]],
         if verdict == Verdict.SKIP.value:
             payload = {"term": term, "reason": reason or "AI 判定不做",
                        "source": RejectSource.AI.value}
-            if writes.table(kv, REJECTED_KEY,
-                            lambda arr: upsert_rejected(arr, payload), reader=kv_list):
+            # ★一词一键写不做：每个词写自己的 rejected:v1:<key>，不再整表读改写，
+            #   并发分析不会互相覆盖（2026-11-26/27 反复漏写的根因）。
+            if writes.rejected(kv, payload):
                 out["status"] = "rejected"
                 # 改判互清：原来判「做」的词改判不做，从跟进池移除（开工后的状态不动）
                 writes.table(kv, SAVED_KEY,
@@ -135,9 +157,8 @@ def write_result(item: dict[str, Any], text: str, hints: Optional[list[str]],
             if writes.table(kv, SAVED_KEY,
                             lambda arr: upsert_saved(arr, payload), reader=kv_list):
                 out["status"] = CurationStatus.TODO.value
-                # 改判互清：原来判「不做」的词改判做，从不做清单移除（人工标记不动）
-                writes.table(kv, REJECTED_KEY,
-                             lambda arr: remove_ai_rejected(arr, term), reader=kv_list)
+                # 改判互清：原来判「不做」的词改判做，单键清 AI 不做标记（人工标记不动）
+                writes.unreject(kv, term)
 
     out["writes"] = writes.records
     out["writeErrors"] = writes.failed

@@ -37,15 +37,18 @@ TREND_PREFIX = "trend:v1:"          # 某词 30 天趋势曲线（TTL 3 天）
 HINTS_KEY = "aihints"               # 词 → 信号标签覆盖（人工 / AI 修正）
 CANDIDATES_KEY = "candidates"       # radar 重建的候选全表
 SAVED_KEY = "saved"                 # 收藏 / 跟进表（含 status）
-REJECTED_KEY = "rejected"           # 「不做」表
+REJECTED_KEY = "rejected"           # legacy「不做」整表（2026-11-27 起只读兜底，写入改下面前缀）
+REJECTED_PREFIX = "rejected:v1:"    # 「不做」一词一键：rejected:v1:<termKey> = 单条标记
 TAGS_KEY = "tags"                   # 词 → 标签
 COMPETITION_KEY = "competition"     # 词 → {score, level, at} 摘要表
 INTERESTS_KEY = "interests"         # 词 → {term, summary, points} 趋势摘要表
 
 # agent 会并发写回的 5 张「整表」：每张都是「读全表 → 改一项 → 写全表」。
 # candidates / tags 只读，不在此列；ai:v3: / serp:v1: / trend:v1: 是单词独立键，天然不冲突。
+# ★rejected 已于 2026-11-27 从整表改为一词一键（rejected:v1:<termKey>），
+#   不再走「读整表→改一项→写整表」，从根上消除并发写互相整表覆盖导致的漏写。
 SHARED_TABLE_KEYS: tuple[str, ...] = (
-    SAVED_KEY, REJECTED_KEY, HINTS_KEY, COMPETITION_KEY, INTERESTS_KEY,
+    SAVED_KEY, HINTS_KEY, COMPETITION_KEY, INTERESTS_KEY,
 )
 
 # ★一把进程级 RLock 覆盖 5 张整表（不是每表一把）：跨表组合写入也要串行，
@@ -164,6 +167,17 @@ class CloudflareKV:
         except (TypeError, ValueError):
             return False
         return self.put_text(key, text, ttl=ttl)
+
+    # ---- 删除（一词一键的撤销 / 改判用）----
+    def delete(self, key: str) -> bool:
+        """删单键。Cloudflare DELETE /values/<key> 成功返回 200；404 视为已删成功。"""
+        if not self.configured:
+            return False
+        status, text = self._request("DELETE", key)
+        if status in (200, 202, 204, 404):
+            return True
+        log.warning("KV 删除异常 %s: status=%s %s", key, status, str(text)[:120])
+        return False
 
     # ---- 列举 ----
     def list_keys(self, prefix: str) -> list[str]:
@@ -290,6 +304,60 @@ def atomic_update(
         log.warning("KV 整表写入未成功 key=%s（put_json 返回 False）", key)
         return False, None
     return True, updated
+
+
+# ---- 「不做」一词一键（2026-11-27）----
+# 键：rejected:v1:<termKey>，值：单条 {key,term,reason,source,at,updatedAt}。
+# 每个词写自己的键，彻底避开整表读改写的并发覆盖（那是漏写的根因）。
+# 读侧 list_rejected 把前缀键聚合成数组喂给既有纯函数，形状与 legacy 整表完全一致。
+
+def rejected_key(term: str) -> str:
+    return REJECTED_PREFIX + term_key(term)
+
+
+def put_rejected(kv: Any, row: dict[str, Any]) -> bool:
+    """写一条不做标记（单键 PUT，幂等）。row 必须已带归一化 key。"""
+    key = str(row.get("key") or "")
+    if not key:
+        return False
+    return bool(kv.put_json(REJECTED_PREFIX + key, row))
+
+
+def delete_rejected(kv: Any, term: str) -> bool:
+    """撤销一条不做标记（单键 DELETE）。"""
+    return bool(kv.delete(rejected_key(term)))
+
+
+def list_rejected(kv: Any) -> list[dict[str, Any]]:
+    """聚合一词一键 + legacy 整表，返回统一形状的数组（新键优先、按 at 倒序）。
+
+    ★legacy `rejected` 整表只读兜底：迁移窗口期 / 回滚时仍能读到旧数据；
+      同一词两边都在时以一词一键为准（最新写入）。逐键 GET 有 N 次读开销，
+      但「不做」表本来就是低频人工操作（百级），且调用方（读判例 / 取词）本就
+      低频——不引入进程缓存以免跨端写入读到旧值（KV 最终一致下缓存只会更糟）。
+    """
+    out: list[dict[str, Any]] = []
+    for full_key in kv.list_keys(REJECTED_PREFIX):
+        row = kv.get_json(full_key, None)
+        if isinstance(row, dict) and row.get("key"):
+            key = term_key(row["key"])
+            out.append({**row, "key": key})
+    # legacy 整表：同一 key 若新键已有则跳过（新值优先）
+    seen = {x["key"] for x in out}
+    for row in kv_list_compat(kv, REJECTED_KEY):
+        if isinstance(row, dict):
+            key = term_key(row.get("key") or row.get("term"))
+            if key and key not in seen:
+                out.append({**row, "key": key})
+                seen.add(key)
+    out.sort(key=lambda x: (x.get("at") or 0), reverse=True)
+    return out
+
+
+def kv_list_compat(kv: Any, key: str) -> list[Any]:
+    """形状兜底的整表读（避免循环 import kv_shape，这里就地做最小实现）。"""
+    value = kv.get_json(key, None)
+    return value if isinstance(value, list) else []
 
 
 # 模块级单例：生产路径从这里取，避免每批词重建客户端。
