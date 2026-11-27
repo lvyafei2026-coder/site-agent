@@ -24,6 +24,7 @@ import os
 import re
 import threading
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Optional
 
 import requests
@@ -332,13 +333,17 @@ def list_rejected(kv: Any) -> list[dict[str, Any]]:
     """聚合一词一键 + legacy 整表，返回统一形状的数组（新键优先、按 at 倒序）。
 
     ★legacy `rejected` 整表只读兜底：迁移窗口期 / 回滚时仍能读到旧数据；
-      同一词两边都在时以一词一键为准（最新写入）。逐键 GET 有 N 次读开销，
-      但「不做」表本来就是低频人工操作（百级），且调用方（读判例 / 取词）本就
-      低频——不引入进程缓存以免跨端写入读到旧值（KV 最终一致下缓存只会更糟）。
+      同一词两边都在时以一词一键为准（最新写入）。
+      ★逐键 GET 必须并发：一词一键迁移后线上 736 键，串行 736 次 REST 读会很慢；
+      线程池并发后降到秒级。不引入进程缓存以免跨端写入读到旧值（KV 最终一致下
+      缓存只会更糟）。
     """
     out: list[dict[str, Any]] = []
-    for full_key in kv.list_keys(REJECTED_PREFIX):
-        row = kv.get_json(full_key, None)
+    keys = kv.list_keys(REJECTED_PREFIX)
+    # 并发取值；单键 get_json 自身 fail-open（读失败返回 None），不会拖垮整批。
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        rows = list(pool.map(lambda k: kv.get_json(k, None), keys))
+    for row in rows:
         if isinstance(row, dict) and row.get("key"):
             key = term_key(row["key"])
             out.append({**row, "key": key})

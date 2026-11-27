@@ -867,3 +867,40 @@ def test_atomic_update_parallel_writes_keep_all_rows(fake_kv):
     assert all(results)
     final = fake_kv.get_json(key, [])
     assert {x["key"] for x in final} == {f"term-{i}" for i in range(10)}
+
+
+def test_list_rejected_reads_concurrently():
+    """★回归（2026-11-27 页面卡死）：list_rejected 必须并发读一词一键。
+
+    线上迁移后 736 键，串行 736 次 REST 读会拖到分钟级。用「在途峰值」桩证明
+    并发：串行峰值恒为 1，并发峰值 > 1。不引入生产测试注入口，桩走公共 kv 接口。
+    """
+    import threading
+    import time
+
+    class ConcKV:
+        def __init__(self, n):
+            self.names = [f"{kvmod.REJECTED_PREFIX}term-{i}" for i in range(n)]
+            self.in_flight = 0
+            self.peak = 0
+            self._lock = threading.Lock()
+
+        def list_keys(self, prefix):
+            return [k for k in self.names if k.startswith(prefix)]
+
+        def get_json(self, key, default=None):
+            with self._lock:
+                self.in_flight += 1
+                self.peak = max(self.peak, self.in_flight)
+            time.sleep(0.005)
+            with self._lock:
+                self.in_flight -= 1
+            return {"key": key[len(kvmod.REJECTED_PREFIX):], "source": "ai"}
+
+        def get_text(self, key, default=None):
+            return None
+
+    kv = ConcKV(60)
+    rows = kvmod.list_rejected(kv)
+    assert kv.peak > 1, f"并发峰值应 > 1，实际 {kv.peak}"
+    assert len(rows) == 60, f"并发下不应丢键，实际 {len(rows)}"
