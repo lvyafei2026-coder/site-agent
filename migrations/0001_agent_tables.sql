@@ -1,4 +1,4 @@
--- site-agent 业务台账（在 tool-proxy 的 D1 库执行，与 events 同库便于 join）
+-- Agent 业务台账（在统一 radar-db 中执行，与 Radar / Console 共用数据库）
 -- 表与列必须与 src/app/tools/adapters/cloudflare/sql.py 的 LEDGER_TABLES 一致：
 -- 每个 UNIQUE 就是 SqlBuilder 的 ON CONFLICT 目标，缺了写入会直接报错。
 -- checkpointer 表由 langgraph-checkpoint-sqlite 自动创建，不要手工改。
