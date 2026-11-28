@@ -169,7 +169,9 @@ def test_pick_word_explicit_and_auto(fake, fake_d1, monkeypatch):
     assert page_build_service.pick_word("cold brew ratio") is None   # 无正文不建页
     assert page_build_service.pick_word()["term"] == "free invoice generator"
 
-    fake_d1.put_text("ai:v3:live page speed", "x" * 40)
+    live_id = fake_d1.seed_term("live page speed")
+    fake_d1.seed_status(live_id, status="live", is_favorite=1)
+    fake_d1.seed_analysis(live_id, text="x" * 40)
     assert page_build_service.todo_pool_size() == 2
 
 
@@ -183,7 +185,7 @@ def test_pick_word_skips_bodyless_todo(fake, fake_d1):
 def test_pick_word_prefers_planned_rows(fake, fake_d1, monkeypatch):
     """排产入选的 planned 行优先：连目标站点一起带出来，不被池顺序和重判抢走。"""
     _seed_todo(fake_d1, "pool order word")
-    fake_d1.put_text("ai:v3:planned word", "Planned body paragraph. " * 6)
+    _seed_todo(fake_d1, "planned word", with_body=True)
     monkeypatch.setattr(page_build_service, "_planned_rows", lambda limit=5: [
         {"site": "invoices", "keyword": "planned word", "slug": "planned-word"},
     ])
@@ -347,7 +349,9 @@ def test_page_write_replaces_draft_with_written_copy(fake, fake_d1, monkeypatch)
 def test_page_write_blocks_analysis_prose_before_render(fake, fake_d1, monkeypatch):
     """写作没成功、解析稿仍是内部决策稿 → 在渲染前拦下，一个写工具都不碰。"""
     _stub_extract(monkeypatch, _SITE_OK)
-    fake_d1.put_text("ai:v3:black friday today", (
+    black_friday_id = fake_d1.seed_term("black friday today")
+    fake_d1.seed_status(black_friday_id, status="todo")
+    fake_d1.seed_analysis(black_friday_id, text=(
         "1) 词义与意图：判断今天是不是黑五。\n\n"
         "2) 建议站型：倒计时 + 日期对照页，接住日期类长尾。"))
     monkeypatch.setattr(content_mod, "complete_json",
@@ -364,7 +368,8 @@ def test_page_write_reports_prompt_load_failure(fake, fake_d1, monkeypatch):
     """page_content 提示词读不到时，失败信息直接点名，不用去日志里猜是哪一步。"""
     _stub_extract(monkeypatch, _SITE_OK)
     _seed_todo(fake_d1, "free invoice generator", with_body=False)
-    fake_d1.put_text("ai:v3:free invoice generator", (
+    free_invoice_id = fake_d1.query("SELECT term_id FROM radar_terms WHERE term_key = ?", ["free invoice generator"])[0]["term_id"]
+    fake_d1.seed_analysis(free_invoice_id, text=(
         "1) 词义与意图：给自由职业者开票。\n\n"
         "A paragraph explaining what the tool does, long enough to pass the\n"
         "paragraph length filter without any trouble at all.\n\n"
