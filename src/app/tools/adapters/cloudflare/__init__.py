@@ -14,19 +14,10 @@
 
 from .client import CloudflareClient
 from .database import D1Database
-from .kv import (
-    CloudflareKV,
-    WorkersKV,
-    atomic_update,
-    get_kv,
-    table_lock,
-)
+from .client import CloudflareClient
+from .database import D1Database
 
-_client = CloudflareClient()
-database = D1Database(_client)
-keyvalue = WorkersKV(CloudflareKV.from_env())
+client = CloudflareClient()
+database = D1Database(client)
 
-__all__ = [
-    "CloudflareClient", "CloudflareKV", "D1Database", "WorkersKV",
-    "atomic_update", "get_kv", "table_lock", "database", "keyvalue",
-]
+__all__ = ["CloudflareClient", "D1Database", "client", "database"]
