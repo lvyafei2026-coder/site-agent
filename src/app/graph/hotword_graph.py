@@ -12,7 +12,7 @@
 
     analyze_word（逐词子图）：START → gather_serp → gather_trend → llm_analyze
                              → route_after_llm ─┬─ write_result → collect_word → END
-                                                └─ collect_word → END（没结论就不写 KV）
+                                                └─ collect_word → END（没结论就不写分析状态）
 
 点名重新分析（POST /analyze）复用同一张逐词子图，外层换成不回环的短图：
 
@@ -91,7 +91,7 @@ def resolve_steps(evidence: Optional[list[str]] = None,
 
     ★白名单是上面两张表，不是任意 registry 工具名——/hotwords 这个入口不带强鉴权，
       绝不能让它变成 git_push / send_notice 之类不可逆动作的旁路。未知名字在这里就抛
-      ValueError，由 run_hotwords 收进 state.load_error，走与 KV 不可达同一条失败收口
+      ValueError，由 run_hotwords 收进 state.load_error，终止本轮
       路径（一次 IO 都不发）。
     """
     return (_resolve(evidence, EVIDENCE_STEPS, DEFAULT_EVIDENCE, "证据"),
@@ -217,7 +217,7 @@ def run_hotwords(limit: int = 100,
 
     limit 是最大循环次数（1-100，由 state 工厂收口）。evidence / post 是步骤名单，
     只能取本文件两张表里的名字（None=默认计划，[]=该段不做）；名单非法或
-    KV 候选池不可达时整轮失败，不写任何状态。
+    D1 候选池不可读时整轮失败，不写任何状态。
     每个词独立跑完、失败只落在该词 items[].error；源级故障只降级「取数」那一个节点。
     trace 由切面与共用驱动器承担，函数体只有纯业务：解析名单 → 构造 state → 跑图 → 取终态。
     """
@@ -267,7 +267,7 @@ def run_term_analysis(term: str,
 
     与 run_hotwords 同一套机制，差别只在取词与循环：跑点名的那一个词、不回环。
     ★回写口径与批量分析完全一致（逐词子图的 write_result）：做 → saved/todo、
-      不做 → rejected、观望只留正文——不因「重新分析」另立一套状态规则。
+      不做 → 写入 D1 不做状态、观望只保留分析结果——不因「重新分析」另立一套状态规则。
     找不到词 / 缺词名时由 prepare_term 置 load_error，汇总节点照样收口为 ok=False。
     """
     run_id = f"analyze-{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}"
