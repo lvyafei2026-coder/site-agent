@@ -21,11 +21,10 @@ API = "https://api.cloudflare.com/client/v4"
 
 class CloudflareClient:
     def __init__(self, *, account_id: str = "", api_token: str = "",
-                 database_id: str = "", namespace_id: str = ""):
+                 database_id: str = ""):
         self._account_id = account_id
         self._api_token = api_token
         self._database_id = database_id
-        self._namespace_id = namespace_id
 
     @property
     def account_id(self) -> str:
@@ -37,11 +36,8 @@ class CloudflareClient:
 
     @property
     def database_id(self) -> str:
-        return self._database_id or env("D1_DATABASE_ID", required=True)
+        return self._database_id or env("RADAR_DB_ID", required=True)
 
-    @property
-    def namespace_id(self) -> str:
-        return self._namespace_id or env("KV_NAMESPACE_ID", required=True)
 
     def url(self, *segments: str) -> str:
         path = "/".join(quote(str(s), safe=":") for s in segments)
