@@ -18,6 +18,9 @@ _RANK = {
     CurationStatus.TODO.value: 1,
     CurationStatus.WIP.value: 2,
     CurationStatus.LIVE.value: 3,
+    "done": 4,
+    "ignored": 4,
+    CurationStatus.PARKED.value: 4,
 }
 _TARGET = {
     PageStatus.PLANNED.value: CurationStatus.WIP.value,
@@ -46,7 +49,7 @@ def project(rows: list[dict], statuses: list[dict]) -> tuple[list[dict], list[di
         key = norm_term(row.get("term_key") or row.get("term"))
         current = str(row.get("status") or "new")
         target = targets.get(key)
-        if not target or current == CurationStatus.PARKED.value:
+        if not target or current in (CurationStatus.PARKED.value, "done", "ignored"):
             continue
         if _RANK.get(target, -1) <= _RANK.get(current, -1):
             continue
