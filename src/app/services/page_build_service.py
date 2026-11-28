@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Optional
 
@@ -22,9 +23,8 @@ from src.app.config import SITES
 from src.app.enums import ClassifyBy, CurationStatus, Intent, PageQueryMode
 from src.app.services.extraction_service import extraction_service
 from src.app.tools.adapters.cloudflare import database
-from src.app.tools.adapters.cloudflare.kv import AI_CACHE_PREFIX, SAVED_KEY, get_kv, term_key
+from src.app.utils.term_key import term_key
 from src.app.tools.adapters.cloudflare.sql import PAGE_QUERIES, Sql
-from src.app.utils.kv_shape import kv_list
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _NUM_HEADING = re.compile(r"(?:^|\n)\s*\d+\)\s*([^\n]{2,40})\n?")
@@ -179,6 +179,69 @@ def pick_word(term: Optional[str] = None) -> Optional[dict[str, Any]]:
             return {"term": t, "text": text}
     return None
 
+
+def retarget_planned_site(term: str, text: str = "") -> dict[str, Any]:
+    """重新分析后重判 planned 行的目标站点。"""
+    body = text or _analysis_text(term)
+    cls = classify_site(term, body)
+    site = str(cls.get("site") or "")
+    out = {"changed": False, "site": site, "by": str(cls.get("by") or ClassifyBy.NONE.value),
+           "term": term}
+    if not site:
+        out["reason"] = "未匹配到已有站，保留新建站方案"
+        return out
+    database.execute(Sql.RETARGET_PLANNED_SITE, [site, term])
+    out["changed"] = True
+    return out
+
+def todo_pool_size() -> int:
+    rows = database.query("SELECT COUNT(*) AS count FROM radar_term_status WHERE status = 'todo'")
+    return int(rows[0]["count"]) if rows else 0
+    query = PAGE_QUERIES[PageQueryMode.PLANNED.value]
+    return database.query(f"{query.sql} LIMIT 1000")
+
+
+def _analysis_text(term: str) -> str:
+    rows = database.query(
+        """SELECT a.result_json
+           FROM radar_term_analyses a
+           JOIN radar_terms t ON t.term_id = a.term_id
+           WHERE t.term_key = ? AND a.status = 'completed'
+           LIMIT 1""",
+        [term_key(term)],
+    )
+    if not rows or not rows[0].get("result_json"):
+        return ""
+    return str(json.loads(rows[0]["result_json"]).get("text") or "")
+
+
+def pick_word(term: Optional[str] = None) -> Optional[dict[str, Any]]:
+    """从 planned 台账或 todo 状态中取一条有完整分析正文的词。"""
+    if term:
+        text = _analysis_text(term)
+        return {"term": term, "text": text} if text else None
+
+    for row in _planned_rows():
+        keyword = str(row.get("keyword") or "")
+        if not keyword:
+            continue
+        text = _analysis_text(keyword)
+        if text:
+            return {"term": keyword, "text": text, "site": str(row.get("site") or "")}
+
+    rows = database.query(
+        """SELECT t.term
+           FROM radar_term_status s
+           JOIN radar_terms t ON t.term_id = s.term_id
+           JOIN radar_term_analyses a ON a.term_id = t.term_id
+           WHERE s.status = 'todo' AND a.status = 'completed'
+           ORDER BY s.updated_at ASC LIMIT 1"""
+    )
+    if not rows:
+        return None
+    keyword = str(rows[0]["term"])
+    text = _analysis_text(keyword)
+    return {"term": keyword, "text": text} if text else None
 
 def retarget_planned_site(term: str, text: str = "") -> dict[str, Any]:
     """重新分析后重判目标站：命中已有站就改该词待建行的 site。
