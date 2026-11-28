@@ -108,7 +108,7 @@ src/app/
 │   ├── *_tools.py           6 个业务域：<Domain>Ops 实现 + 工具类
 │   └── adapters/            cloudflare · terms · hosting · publishing
 ├── models/                  ExtractionSchema · WorkflowResult
-├── prompts/                 提示词唯一真源 = radar-rules D1（d1_source.py 读库+60s 缓存）
+├── prompts/                 提示词唯一真源 = Radar D1（d1_source.py 读 prompts_config / prompt_defaults_config + 60s 缓存）
 │   ├── d1_source.py         D1 全表快照 + 失败旧快照兜底；本地 versions/*.txt 已删除
 │   └── registry.py          版本解析（缺失回退默认版本）+ 读库；test/conftest.py 注入桩
 │                            D1 由 site-console /rules/prompts 页面维护，改措辞不发版
