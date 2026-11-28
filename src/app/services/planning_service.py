@@ -33,7 +33,8 @@ from src.app.observability.langsmith import traceable
 from src.app.services.page_build_service import slugify
 from src.app.services.prompt_service import prompt_service
 from src.app.services import term_state_service
-from src.app.tools.adapters.cloudflare.kv import AI_CACHE_PREFIX, get_kv, term_key
+from src.app.tools.adapters.cloudflare import database
+from src.app.utils.term_key import term_key
 from src.app.tools.ledger_tools import LedgerOps
 from src.app.utils.logger import get_logger
 from src.app.utils.text import clip_with_count
@@ -184,18 +185,18 @@ def intent_from_analysis(text: str) -> str:
 
 
 def term_intent(term: str) -> str:
-    """读该词的 ai:v3 分析稿，取「词义与意图」；KV 未配置/读取失败一律留空。
-
-    ★fail-open：这是报告里锦上添花的一列，读不到照常出报告，不能像写状态那样阻断。
-    """
-    kv = get_kv()
-    if not kv.configured:
+    rows = database.query(
+        """SELECT a.result_json
+           FROM radar_term_analyses a
+           JOIN radar_terms t ON t.term_id = a.term_id
+           WHERE t.term_key = ? AND a.status = 'completed'
+           LIMIT 1""",
+        [term_key(term)],
+    )
+    if not rows or not rows[0].get("result_json"):
         return ""
-    try:
-        return intent_from_analysis(kv.get_text(AI_CACHE_PREFIX + term_key(term)) or "")
-    except Exception as exc:  # noqa: BLE001 - 分析稿读不到只影响一列，不打断排产
-        log.warning("分析稿读取失败 %s：%s", term, str(exc)[:120])
-        return ""
+    result = json.loads(rows[0]["result_json"])
+    return intent_from_analysis(str(result.get("text") or ""))
 
 
 def render_report(items: list[dict], excluded: list[dict],
