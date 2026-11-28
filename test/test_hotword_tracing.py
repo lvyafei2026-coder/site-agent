@@ -119,7 +119,7 @@ def test_batch_tree_is_nested_under_graph_root(fake_d1, monkeypatch, traced_runs
         _fake_openai_call(term)
         return "7) 结论：观望，等长尾\n8) 信号标签：工具查询", "fake"
 
-    _seed(fake_kv, monkeypatch, count=6, llm=llm)
+    _seed(fake_d1, monkeypatch, count=6, llm=llm)
 
     with ls_trace("site-agent:analyze_hotwords") as root:
         out = hotword_graph.run_hotwords(limit=6)
@@ -147,7 +147,7 @@ def test_batch_tree_is_nested_under_graph_root(fake_d1, monkeypatch, traced_runs
     assert run_helpers.get_current_run_tree() is None
 
 
-def test_word_failure_is_recorded_without_breaking_others(fake_kv, monkeypatch,
+def test_word_failure_is_recorded_without_breaking_others(fake_d1, monkeypatch,
                                                           traced_runs):
     """某词 LLM 抛异常：该词的 llm_analyze run 里带真因，其余词照常完成且在同一棵树下。"""
     def llm(messages, **_):
@@ -156,7 +156,7 @@ def test_word_failure_is_recorded_without_breaking_others(fake_kv, monkeypatch,
             raise RuntimeError("LLM 连接超时")
         return "7) 结论：观望，等长尾\n8) 信号标签：工具查询", "fake"
 
-    _seed(fake_kv, monkeypatch, count=5, llm=llm)
+    _seed(fake_d1, monkeypatch, count=5, llm=llm)
 
     with ls_trace("site-agent:analyze_hotwords") as root:
         out = hotword_graph.run_hotwords(limit=5)
@@ -182,7 +182,7 @@ def test_batch_nests_under_real_langgraph_node(fake_d1, monkeypatch, traced_runs
     from langgraph.graph import END, START, StateGraph
 
     monkeypatch.setattr(LangChainTracer, "_persist_run_single", lambda self, run: None)
-    _seed(fake_kv, monkeypatch, count=3)
+    _seed(fake_d1, monkeypatch, count=3)
 
     node_run_ids: list[str] = []
 
@@ -230,11 +230,11 @@ def test_early_return_still_has_batch_span_and_link(fake_d1, monkeypatch, traced
     assert run.outputs["error"].startswith("候选查询失败")
 
 
-def test_tracing_off_has_no_spans_and_plain_result(fake_kv, monkeypatch):
+def test_tracing_off_has_no_spans_and_plain_result(fake_d1, monkeypatch):
     """关闭追踪时零开销：正常出结果，不生成 traceRun，也不 import langsmith 运行时。"""
     monkeypatch.setattr(settings, "langsmith_tracing", False)
     monkeypatch.setattr(settings, "langsmith_api_key", "")
-    _seed(fake_kv, monkeypatch, count=3)
+    _seed(fake_d1, monkeypatch, count=3)
 
     out = hotword_graph.run_hotwords(limit=3)
     assert out["analyzed"] == 3
@@ -245,13 +245,13 @@ def test_tracing_off_has_no_spans_and_plain_result(fake_kv, monkeypatch):
 # ---------------------------------------------------------------------------
 # 工具可见性：热词线与常规线共用 registry 的 30 个 RuntimeTool，都要看得到出入参
 # ---------------------------------------------------------------------------
-def test_run_tool_spans_capture_serp_trend_writes(fake_kv, monkeypatch, traced_runs):
+def test_run_tool_spans_capture_serp_trend_writes(fake_d1, monkeypatch, traced_runs):
     """每词三条 tool span + 每轮一次取词 + 判例读一次，各自嵌在调用它的步骤节点下。"""
     def llm(messages, **_):
         _fake_openai_call("x")
         return "7) 结论：不做，影视作品\n8) 信号标签：工具查询", "fake"
 
-    _seed(fake_kv, monkeypatch, count=3, llm=llm)
+    _seed(fake_d1, monkeypatch, count=3, llm=llm)
     with ls_trace("site-agent:analyze_hotwords") as root:
         out = hotword_graph.run_hotwords(limit=3)
 
@@ -317,11 +317,11 @@ def test_run_tool_spans_capture_serp_trend_writes(fake_kv, monkeypatch, traced_r
     assert out["analyzed"] == 3
 
 
-def test_source_down_marks_tool_spans_red_and_batch_continues(fake_kv, monkeypatch,
+def test_source_down_marks_tool_spans_red_and_batch_continues(fake_d1, monkeypatch,
                                                              traced_runs):
     """源整体挂掉：只撞一次，span 标红带真因且 retryable=True；后续词跳过取数
     （没有工具调用就不伪造 span，词结果里留 notice + evidence=False），整轮不中止。"""
-    _seed(fake_kv, monkeypatch, count=8)
+    _seed(fake_d1, monkeypatch, count=8)
 
     def serp_boom(term, session=None, limit=10):
         raise SourceUnavailable("duckduckgo", "连不上 DuckDuckGo 出口", [])
