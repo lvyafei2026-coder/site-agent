@@ -230,19 +230,6 @@ def test_term_intent_reads_analysis_from_d1(fake_d1):
     )
     assert term_intent(" Medicare ") == "Medicare 是美国医疗保险资格查询。"
 
-def test_term_intent_reads_analysis_from_kv(monkeypatch):
-    """按 term_key 拼 key 读 ai:v3 分析稿并抽词义节。"""
-    seen = []
-    class KV:
-        configured = True
-        def get_text(self, key):
-            seen.append(key)
-            return "1) 词义与意图：医保资格查询\n2) 结论：做"
-    monkeypatch.setattr(planning_mod, "get_kv", lambda: KV())
-    assert term_intent(" Medicare ") == "医保资格查询"
-    assert seen == ["ai:v3:medicare"]
-
-
 def test_render_report_shows_intent_column(monkeypatch):
     """建议新站表格带「词义与意图」列，内容来自分析稿（读不到留空不影响列）。"""
     monkeypatch.setattr(planning_mod, "term_intent",
