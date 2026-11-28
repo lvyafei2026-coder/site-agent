@@ -289,7 +289,7 @@ def test_run_tool_spans_capture_serp_trend_writes(fake_d1, monkeypatch, traced_r
     body = serp.outputs["result"]
     assert body["fromCache"] is False
     assert "itemCount" in body and "competition" in body
-    serp_keys = {w["key"] for w in body["writes"]}
+    serp_keys = {w["table"] for w in body["writes"]}
     assert serp_keys == {"radar_term_analyses.serp_json"}
     assert all(w["ok"] for w in body["writes"])
     # 适配器 note 的诊断属于这次工具调用，不漂到外层步骤节点 run
