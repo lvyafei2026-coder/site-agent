@@ -47,109 +47,103 @@ def test_http_validation_error():
     assert client.post("/run", json={}).status_code == 422
 
 
-def test_analyze_reanalyzes_named_term(fake_kv, monkeypatch):
-    """POST /analyze 点名重新分析：按词名回取（不看剔除）+ 用缓存证据 + 按新结论回写。"""
-    from src.app.tools.adapters.cloudflare import kv as kvk
-    from src.app.utils import llm_io
+def _seed_analyzed_term(fake_d1, term, status="wip", favorite=0):
+    import time
 
-    term = "november full moon"
-    key = kvk.term_key(term)
-    fake_kv.put_json("saved", [{"key": key, "term": term, "status": "wip",
-                                "traffic": 1200, "hints": ["工具查询"]}])
-    # ★线上事故形态：这个词早先被 AI 判过不做，改判「做」时必须把不做记录一并清掉，
-    #   否则候选页默认隐藏判不做的词，状态再对也看不见。
-    fake_kv.put_json(kvk.rejected_key(term), {"key": key, "term": term,
-                                              "reason": "AI 判定不做", "source": "ai"})
-    fake_kv.put_json(kvk.SERP_PREFIX + key,
-                     {"engine": "duckduckgo", "items": [],
-                      "competition": {"score": 1, "level": "low"}})
-    fake_kv.put_json(kvk.TREND_PREFIX + key, {"points": [], "summary": {}})
-    fake_kv.put_text(kvk.AI_CACHE_PREFIX + key, "旧方案正文")   # 已分析过也要能重跑
-    monkeypatch.setattr(llm_io, "complete",
-                        lambda m, **_: ("7) 结论：做\n8) 信号标签：工具查询", "fake"))
-    # D1 写桩掉，只验调用参数；归类 LLM 桩成「无结果」→ 由别名规则兜底命中。
+    term_id = fake_d1.seed_term(term, hints=["工具查询"])
+    fake_d1.seed_candidate(term_id, score=80, hints=["工具查询"])
+    fake_d1.seed_status(
+        term_id, status=status, is_favorite=favorite,
+        rejected_at="2026-11-01T00:00:00Z" if status == "wip" else None,
+        rejected_reason="AI 判定不做" if status == "wip" else None,
+        rejected_source="ai" if status == "wip" else None,
+    )
+    at = int(time.time() * 1000)
+    fake_d1.seed_analysis(
+        term_id, text="旧方案正文", verdict="不做",
+        serp={"engine": "duckduckgo", "items": [],
+              "competition": {"score": 1, "level": "low"}, "at": at},
+        trend={"points": [], "summary": {}, "at": at},
+    )
+    return term_id
+
+
+def test_analyze_reanalyzes_named_term(fake_d1, monkeypatch):
+    """点名重新分析从 D1 读取词条和证据，并更新同一条分析记录。"""
+    from src.app.utils import llm_io
     from src.app.services import page_build_service as pbs
     from src.app.services.extraction_service import extraction_service
     from src.app.tools.adapters.cloudflare.sql import Sql
 
+    term = "november full moon"
+    term_id = _seed_analyzed_term(fake_d1, term, status="new")
+    fake_d1.execute(
+        "UPDATE radar_term_status SET rejected_at=?, rejected_reason=?, rejected_source=? WHERE term_id=?",
+        ["2026-11-01T00:00:00Z", "AI 判定不做", "ai", term_id],
+    )
+    monkeypatch.setattr(llm_io, "complete",
+                        lambda m, **_: ("7) 结论：做\\n8) 信号标签：工具查询", "fake"))
     monkeypatch.setattr(extraction_service, "extract",
                         lambda text, intent, versions=None: {"target_site": ""})
     updates = []
-    monkeypatch.setattr(pbs.database, "execute",
-                        lambda sql, params: updates.append((sql, params)))
 
+    class PageBuildD1:
+        query = staticmethod(fake_d1.query)
+
+        @staticmethod
+        def execute(sql, params):
+            updates.append((sql, params))
+
+    monkeypatch.setattr(pbs, "database", PageBuildD1())
     data = TestClient(api).post("/analyze", json={"term": term}).json()
     assert data["ok"] is True and data["fetched"] == 1 and data["analyzed"] == 1
     item = data["items"][0]
     assert item["term"] == term and item["verdict"] == "做" and item["status"] == "todo"
-    # 正文覆盖旧方案，状态按新结论回写（与批量分析同一套 write_result）
-    assert "结论：做" in fake_kv.get_text(kvk.AI_CACHE_PREFIX + key)
-    assert fake_kv.get_json("saved")[0]["status"] == "todo"
-    # 改判互清：AI 的不做记录被清掉，这个词不会再被「隐藏判不做」藏起来
-    assert fake_kv.get_json(kvk.rejected_key(term), None) is None
-    # ★专属收尾：新正文里的 Beaver Moon 命中 beaver-moon 别名 → 回写待建行 site
+    analysis = fake_d1.query("SELECT * FROM radar_term_analyses WHERE term_id=?", [term_id])[0]
+    status = fake_d1.query("SELECT * FROM radar_term_status WHERE term_id=?", [term_id])[0]
+    assert "结论：做" in analysis["result_json"]
+    assert status["status"] == "todo" and status["rejected_at"] is None
     assert data["siteRetarget"]["site"] == "beaver-moon"
     assert data["siteRetarget"]["changed"] is True
     assert updates == [(Sql.RETARGET_PLANNED_SITE, ["beaver-moon", term])]
 
 
-def test_analyze_unknown_term_reports_error(fake_kv, monkeypatch):
-    """词库里找不到这个词 → 不发 LLM，直接 ok=False 收口。"""
+def test_analyze_unknown_term_reports_error(fake_d1, monkeypatch):
     from src.app.utils import llm_io
-
-    monkeypatch.setattr(llm_io, "complete", lambda *a, **k: 1 / 0)   # 被调用就炸
+    monkeypatch.setattr(llm_io, "complete", lambda *a, **k: 1 / 0)
     data = TestClient(api).post("/analyze", json={"term": "no such term"}).json()
     assert data["ok"] is False and "找不到" in data["error"] and data["items"] == []
 
 
-def _stub_retarget(monkeypatch):
-    """站点重判的两条外部 IO 都桩掉：归类 LLM 无结果（走别名规则）、D1 UPDATE 不落库。"""
+def test_analyze_skip_clears_pending_saved(fake_d1, monkeypatch):
+    from src.app.utils import llm_io
     from src.app.services import page_build_service as pbs
-    from src.app.services.extraction_service import extraction_service
-
-    monkeypatch.setattr(extraction_service, "extract",
-                        lambda text, intent, versions=None: {"target_site": ""})
-    monkeypatch.setattr(pbs.database, "execute", lambda sql, params: None)
-
-
-def test_analyze_skip_clears_pending_saved(fake_kv, monkeypatch):
-    """改判「不做」：saved 里未开工（saved/todo）的行被清，不做清单记 AI 来源。"""
-    from src.app.tools.adapters.cloudflare import kv as kvk
-    from src.app.utils import llm_io
-
     term = "november full moon"
-    key = kvk.term_key(term)
-    fake_kv.put_json("saved", [{"key": key, "term": term, "status": "todo"}])
-    fake_kv.put_json(kvk.SERP_PREFIX + key, {"engine": "duckduckgo", "items": []})
-    fake_kv.put_json(kvk.TREND_PREFIX + key, {"points": [], "summary": {}})
+    term_id = _seed_analyzed_term(fake_d1, term, status="todo", favorite=1)
+    fake_d1.execute("UPDATE radar_term_status SET rejected_at=NULL,rejected_reason=NULL,rejected_source=NULL WHERE term_id=?", [term_id])
     monkeypatch.setattr(llm_io, "complete",
-                        lambda m, **_: ("7) 结论：不做\n8) 信号标签：无", "fake"))
-    _stub_retarget(monkeypatch)
-
+                        lambda m, **_: ("7) 结论：不做\\n8) 信号标签：无", "fake"))
+    monkeypatch.setattr(pbs, "database", fake_d1)
     data = TestClient(api).post("/analyze", json={"term": term}).json()
+    status = fake_d1.query("SELECT * FROM radar_term_status WHERE term_id=?", [term_id])[0]
     assert data["items"][0]["status"] == "rejected"
-    assert fake_kv.get_json("saved", []) == []
-    assert fake_kv.get_json(kvk.rejected_key(term))["source"] == "ai"
+    assert status["status"] == "new" and status["is_favorite"] == 0
+    assert status["rejected_source"] == "ai"
 
 
-def test_analyze_skip_keeps_started_saved(fake_kv, monkeypatch):
-    """改判「不做」不抹人工进度：wip/live/parked 的跟进行保留，只写不做清单。"""
-    from src.app.tools.adapters.cloudflare import kv as kvk
+def test_analyze_skip_keeps_started_saved(fake_d1, monkeypatch):
     from src.app.utils import llm_io
-
+    from src.app.services import page_build_service as pbs
     term = "november full moon"
-    key = kvk.term_key(term)
-    fake_kv.put_json("saved", [{"key": key, "term": term, "status": "wip"}])
-    fake_kv.put_json(kvk.SERP_PREFIX + key, {"engine": "duckduckgo", "items": []})
-    fake_kv.put_json(kvk.TREND_PREFIX + key, {"points": [], "summary": {}})
+    term_id = _seed_analyzed_term(fake_d1, term, status="wip", favorite=1)
     monkeypatch.setattr(llm_io, "complete",
-                        lambda m, **_: ("7) 结论：不做\n8) 信号标签：无", "fake"))
-    _stub_retarget(monkeypatch)
-
+                        lambda m, **_: ("7) 结论：不做\\n8) 信号标签：无", "fake"))
+    monkeypatch.setattr(pbs, "database", fake_d1)
     data = TestClient(api).post("/analyze", json={"term": term}).json()
+    status = fake_d1.query("SELECT * FROM radar_term_status WHERE term_id=?", [term_id])[0]
     assert data["items"][0]["status"] == "rejected"
-    assert fake_kv.get_json("saved")[0]["status"] == "wip"
-    assert fake_kv.get_json(kvk.rejected_key(term))["source"] == "ai"
+    assert status["status"] == "wip" and status["is_favorite"] == 1
+    assert status["rejected_source"] == "ai"
 
 
 def _wait_hotwords_idle(timeout=5.0):
