@@ -197,7 +197,7 @@ def select_pending(seen: set[str]) -> dict[str, Any] | None:
               AND COALESCE(s.is_favorite, 0) = 0
               AND COALESCE(s.tag, '') = ''
               AND s.rejected_at IS NULL
-              AND (a.term_id IS NULL OR a.status = 'failed')
+              AND (a.term_id IS NULL OR a.status IN ('queued', 'failed'))
               {excluded}
             ORDER BY c.score DESC, c.last_seen_at DESC
             LIMIT 1""",
