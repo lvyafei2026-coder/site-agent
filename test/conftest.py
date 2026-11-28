@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from collections import defaultdict
 from typing import Any
@@ -188,78 +189,151 @@ class FakeRuntime(PromotionOps):
         return {"sent": True}
 
 
-class FakeKV:
-    """内存版 KV，接口与 kv.CloudflareKV 对齐：测试不碰 Cloudflare。
+class FakeD1:
+    """SQLite-backed D1 fixture. Tests exercise the same SQL used in production."""
 
-    支持 get_text/get_json/put_text/put_json/list_keys/configured；TTL 在内存实现里
-    被忽略（纯逻辑测试不关心过期）。writes 记录写入次数，便于断言「是否真的回写了 KV」。
-    fail_keys 里的键会模拟 Cloudflare 401/5xx：put_* 返回 False 且不落库，用来验证
-    「写失败 → 该词记 error、不算 analyzed」。
-    """
+    def __init__(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript("""
+        CREATE TABLE radar_terms (
+          term_id INTEGER PRIMARY KEY AUTOINCREMENT, term_key TEXT NOT NULL UNIQUE,
+          term TEXT NOT NULL, source TEXT, hints_json TEXT NOT NULL DEFAULT '[]',
+          related_json TEXT NOT NULL DEFAULT '[]', first_seen_at TEXT, last_seen_at TEXT,
+          last_round_id INTEGER, latest_traffic TEXT, peak_traffic_at TEXT,
+          total_geo_count INTEGER NOT NULL DEFAULT 0, created_at TEXT, updated_at TEXT
+        );
+        CREATE TABLE radar_candidates (
+          term_id INTEGER PRIMARY KEY REFERENCES radar_terms(term_id),
+          last_run_id TEXT, score REAL NOT NULL DEFAULT 0, signals_json TEXT NOT NULL DEFAULT '[]',
+          reason TEXT, geos_json TEXT NOT NULL DEFAULT '[]', related_json TEXT NOT NULL DEFAULT '[]',
+          traffic TEXT, geo_count INTEGER NOT NULL DEFAULT 0, survival_rounds INTEGER NOT NULL DEFAULT 0,
+          is_active INTEGER NOT NULL DEFAULT 1, first_entered_at TEXT, last_seen_at TEXT,
+          exited_at TEXT, created_at TEXT, updated_at TEXT
+        );
+        CREATE TABLE radar_term_status (
+          term_id INTEGER PRIMARY KEY REFERENCES radar_terms(term_id),
+          status TEXT NOT NULL DEFAULT 'new', is_favorite INTEGER NOT NULL DEFAULT 0,
+          tag TEXT, notes TEXT, rejected_at TEXT, rejected_reason TEXT, rejected_source TEXT,
+          hints_override_json TEXT, updated_at TEXT
+        );
+        CREATE TABLE radar_runs (
+          run_id TEXT PRIMARY KEY, status TEXT, started_at TEXT, finished_at TEXT, metadata_json TEXT
+        );
+        CREATE TABLE radar_term_analyses (
+          term_id INTEGER PRIMARY KEY REFERENCES radar_terms(term_id),
+          status TEXT NOT NULL DEFAULT 'queued', verdict TEXT, summary TEXT, result_json TEXT,
+          serp_json TEXT, trend_json TEXT, model TEXT, prompt_version TEXT, result_version TEXT,
+          error_message TEXT, started_at TEXT, completed_at TEXT, created_at TEXT, updated_at TEXT
+        );
+        CREATE TABLE agent_pages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, site TEXT NOT NULL, keyword TEXT NOT NULL,
+          slug TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'generated', gsc_clicks INTEGER,
+          gsc_impressions INTEGER, avg_position REAL, created_at INTEGER NOT NULL,
+          verified_at INTEGER, UNIQUE(site, slug)
+        );
+        CREATE TABLE agent_backlinks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT NOT NULL, target_url TEXT NOT NULL,
+          source_url TEXT, anchor_text TEXT, status TEXT NOT NULL DEFAULT 'draft', score REAL,
+          created_at INTEGER NOT NULL, checked_at INTEGER, event_key TEXT NOT NULL UNIQUE
+        );
+        CREATE TABLE agent_reports (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, report_date TEXT NOT NULL,
+          kind TEXT NOT NULL DEFAULT 'daily', summary TEXT, anomalies TEXT, actions TEXT,
+          created_at INTEGER NOT NULL, UNIQUE(report_date, kind)
+        );
+        CREATE TABLE agent_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, event_key TEXT NOT NULL UNIQUE, kind TEXT NOT NULL,
+          payload TEXT, status TEXT NOT NULL DEFAULT 'pending', created_at INTEGER NOT NULL,
+          consumed_at INTEGER, thread_id TEXT
+        );
+        CREATE TABLE agent_reflections (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, event_key TEXT NOT NULL UNIQUE, slot TEXT NOT NULL,
+          action_key TEXT, reason TEXT, detail TEXT, created_at INTEGER NOT NULL
+        );
+        CREATE TABLE agent_tool_calls (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, event_key TEXT NOT NULL UNIQUE, tool TEXT NOT NULL,
+          kind TEXT, thread_id TEXT, slot TEXT, args TEXT, ok INTEGER, detail TEXT, created_at INTEGER NOT NULL
+        );
+        CREATE TABLE agent_idempotency (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, idem_key TEXT NOT NULL UNIQUE, tool TEXT,
+          result TEXT, created_at INTEGER NOT NULL
+        );
+        CREATE TABLE agent_runtime_state (
+          key TEXT PRIMARY KEY, value_json TEXT NOT NULL, expires_at INTEGER, updated_at INTEGER NOT NULL
+        );
+        """)
 
-    def __init__(self) -> None:
-        self.store: dict[str, str] = {}
-        self.writes = 0
-        self.fail_keys: set[str] = set()
+    def query(self, sql, params=None):
+        cursor = self.conn.execute(sql, params or [])
+        return [dict(row) for row in cursor.fetchall()]
 
-    @property
-    def configured(self) -> bool:
-        return True
+    def execute(self, sql, params=None):
+        cursor = self.conn.execute(sql, params or [])
+        self.conn.commit()
+        return {"changes": cursor.rowcount}
 
-    def get_text(self, key: str, default=None):
-        return self.store.get(key, default)
+    def seed_term(self, term, *, key=None, source="trends", hints=None, related=None):
+        key = key or " ".join(term.strip().lower().split())
+        cursor = self.conn.execute(
+            "INSERT INTO radar_terms (term_key,term,source,hints_json,related_json) VALUES (?,?,?,?,?)",
+            (key, term, source, json.dumps(hints or [], ensure_ascii=False),
+             json.dumps(related or [], ensure_ascii=False)),
+        )
+        self.conn.commit()
+        return int(cursor.lastrowid)
 
-    def get_json(self, key: str, default=None):
-        text = self.store.get(key)
-        if text is None:
-            return default
-        try:
-            return json.loads(text)
-        except (ValueError, TypeError):
-            return default
+    def seed_candidate(self, term_id, *, score=50, hints=None, geos=None, related=None,
+                       traffic=1000, geo_count=1, survival_rounds=1, active=1):
+        self.execute(
+            """INSERT INTO radar_candidates
+               (term_id,score,signals_json,geos_json,related_json,traffic,geo_count,
+                survival_rounds,is_active,first_entered_at,last_seen_at)
+               VALUES (?,?,?,?,?,?,?,?,1,'2026-11-01T00:00:00Z','2026-11-28T00:00:00Z')""",
+            [term_id, score, json.dumps(hints or [], ensure_ascii=False),
+             json.dumps(geos or ["US"]), json.dumps(related or []), str(traffic),
+             geo_count, survival_rounds],
+        )
 
-    def put_text(self, key: str, text: str, ttl=None) -> bool:
-        if key in self.fail_keys:
-            return False
-        self.store[key] = str(text)
-        self.writes += 1
-        return True
+    def seed_status(self, term_id, **values):
+        columns = ["term_id", *values.keys()]
+        placeholders = ",".join("?" for _ in columns)
+        self.execute(
+            f"INSERT INTO radar_term_status ({','.join(columns)}) VALUES ({placeholders})",
+            [term_id, *values.values()],
+        )
 
-    def put_json(self, key: str, obj, ttl=None) -> bool:
-        if key in self.fail_keys:
-            return False
-        self.store[key] = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
-        self.writes += 1
-        return True
+    def seed_analysis(self, term_id, *, status="completed", text="analysis", verdict="DO",
+                      serp=None, trend=None):
+        result = {"text": text, "verdict": verdict}
+        self.execute(
+            """INSERT INTO radar_term_analyses
+               (term_id,status,verdict,summary,result_json,serp_json,trend_json,completed_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            [term_id, status, verdict, text[:300], json.dumps(result, ensure_ascii=False),
+             json.dumps(serp, ensure_ascii=False) if serp is not None else None,
+             json.dumps(trend, ensure_ascii=False) if trend is not None else None,
+             "2026-11-28T00:00:00Z"],
+        )
 
-    def list_keys(self, prefix: str) -> list[str]:
-        return [k for k in self.store if k.startswith(prefix)]
-
-    def delete(self, key: str) -> bool:
-        if key in self.fail_keys:
-            return False
-        self.store.pop(key, None)
-        return True
+    def seed_run(self, run_id="1", metadata=None):
+        self.execute(
+            "INSERT INTO radar_runs (run_id,status,started_at,finished_at,metadata_json) VALUES (?,?,?,?,?)",
+            [run_id, "completed", "2026-11-28T00:00:00Z", "2026-11-28T00:00:00Z",
+             json.dumps(metadata or {}, ensure_ascii=False)],
+        )
 
 
 @pytest.fixture
-def fake_kv(monkeypatch):
-    """内存 KV 替身：生产函数一律自己取 get_kv()，测试只替换取数点。
+def fake_d1(monkeypatch):
+    from src.app.services import page_build_service, planning_service
+    from src.app.tools import ledger_tools
+    from src.app.tools.adapters.hotwords import fetch, state_sync, wordlib, writeback
 
-    热词线的 IO 已全部收进工具（next_candidate / read_examples / fetch_serp /
-    fetch_trend / write_hotword_result），句柄由这些适配器自取，所以逐个 patch
-    它们的 get_kv 引用；state 不再携带 kv 句柄。建页线（page_build_service）
-    同样持有自己的 get_kv 绑定，一并 patch。
-    """
-    from src.app.services import page_build_service
-    from src.app.tools.adapters.cloudflare import kv as kvmod
-    from src.app.tools.adapters.hotwords import (
-        fetch, wordlib, writeback,
-    )
-
-    fake = FakeKV()
-    for mod in (kvmod, wordlib, fetch, writeback, page_build_service):
-        monkeypatch.setattr(mod, "get_kv", lambda: fake)
+    fake = FakeD1()
+    for mod in (page_build_service, planning_service, ledger_tools, fetch,
+                state_sync, wordlib, writeback):
+        monkeypatch.setattr(mod, "database", fake)
     return fake
 
 
