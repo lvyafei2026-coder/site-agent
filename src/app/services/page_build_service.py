@@ -138,65 +138,7 @@ def classify_site(term: str, text: str = "") -> dict[str, Any]:
     return {"site": site, "by": by}
 
 
-def _planned_rows(limit: int = 5) -> list[dict[str, Any]]:
-    """排产入选待建的行，按写入顺序（= 排产给的优先级）返回。
-
-    D1 不可达时返回空列表：建页线回退到待开发池顺序，不因为台账读不到就停摆。
-    """
-    query = PAGE_QUERIES[PageQueryMode.PLANNED.value]
-    try:
-        return database.query(f"{query.sql} LIMIT ?", [limit])
-    except Exception:  # noqa: BLE001 - 台账不可读按无计划处理
-        return []
-
-
-def pick_word(term: Optional[str] = None) -> Optional[dict[str, Any]]:
-    """取一条要建页的词，连带它的 ai:v3 方案正文与排产给的目标站点。
-
-    显式给 term 就只查该词；否则**先读排产计划**（agent_pages 里 status=planned
-    的行，写入顺序即优先级顺序），计划里有带正文的词就用它和它定的站点；
-    计划为空或都没正文时回退 saved 表顺序自己找一条。
-    没有正文的词跳过——没分析过的词不该建页（漏斗顺序 = 分析筛选 → 排产 → 建页）。
-    找不到返回 None（本轮无事可做）。
-    """
-    kv = get_kv()
-    if term:
-        text = kv.get_text(AI_CACHE_PREFIX + term_key(term))
-        return {"term": term, "text": text} if text else None
-    for row in _planned_rows():
-        t = str(row.get("keyword") or "")
-        if not t:
-            continue
-        text = kv.get_text(AI_CACHE_PREFIX + term_key(t))
-        if text:
-            return {"term": t, "text": text, "site": str(row.get("site") or "")}
-    for row in kv_list(kv, SAVED_KEY):
-        if not isinstance(row, dict) or row.get("status") != CurationStatus.TODO.value:
-            continue
-        t = str(row.get("term") or "")
-        text = kv.get_text(AI_CACHE_PREFIX + term_key(t))
-        if text:
-            return {"term": t, "text": text}
-    return None
-
-
-def retarget_planned_site(term: str, text: str = "") -> dict[str, Any]:
-    """重新分析后重判 planned 行的目标站点。"""
-    body = text or _analysis_text(term)
-    cls = classify_site(term, body)
-    site = str(cls.get("site") or "")
-    out = {"changed": False, "site": site, "by": str(cls.get("by") or ClassifyBy.NONE.value),
-           "term": term}
-    if not site:
-        out["reason"] = "未匹配到已有站，保留新建站方案"
-        return out
-    database.execute(Sql.RETARGET_PLANNED_SITE, [site, term])
-    out["changed"] = True
-    return out
-
-def todo_pool_size() -> int:
-    rows = database.query("SELECT COUNT(*) AS count FROM radar_term_status WHERE status = 'todo'")
-    return int(rows[0]["count"]) if rows else 0
+def _planned_rows() -> list[dict[str, Any]]:
     query = PAGE_QUERIES[PageQueryMode.PLANNED.value]
     return database.query(f"{query.sql} LIMIT 1000")
 
@@ -243,51 +185,28 @@ def pick_word(term: Optional[str] = None) -> Optional[dict[str, Any]]:
     text = _analysis_text(keyword)
     return {"term": keyword, "text": text} if text else None
 
+
 def retarget_planned_site(term: str, text: str = "") -> dict[str, Any]:
-    """重新分析后重判目标站：命中已有站就改该词待建行的 site。
-
-    ★只在「点名重新分析」（POST /analyze）的收尾调用，批量候选池分析不碰台账——
-      那批词还没有 planned 行，改了也是空操作。
-
-    判定复用 classify_site（规则别名 + LLM 清单），正文优先用本次分析新写的 ai:v3；
-    没传就从 KV 读。结果分三种：
-      - 命中已有站且与台账不同 → UPDATE agent_pages，返回 {changed:True, site, by}
-      - 命中但和台账一样 → {changed:False, site, by}（幂等，不写）
-      - 判不出站（无匹配）→ {changed:False, site:"", by}，保留原新建站行
-
-    fail-soft：归类/D1 写失败都不抛给 analyze 主流程——重判是增强，不能让一条词
-    的分析整轮报失败；错误进 reason 由前端展示。
-    """
-    out: dict[str, Any] = {"changed": False, "site": "", "by": ClassifyBy.NONE.value,
-                           "term": term}
-    try:
-        body = text or get_kv().get_text(AI_CACHE_PREFIX + term_key(term)) or ""
-        cls = classify_site(term, body)
-    except Exception as exc:  # noqa: BLE001 - 归类失败不打断 analyze
-        out["reason"] = f"站点重判失败：{str(exc)[:120]}"
-        log.warning("站点重判归类异常 %s：%s", term, str(exc)[:120])
-        return out
+    """重新分析后重判目标站；只更新已有的 planned 行。"""
+    body = text or _analysis_text(term)
+    cls = classify_site(term, body)
     site = str(cls.get("site") or "")
-    out["by"] = str(cls.get("by") or ClassifyBy.NONE.value)
-    if not site:                      # 仍判无匹配 → 保持原来的新建站行
+    out = {
+        "changed": False,
+        "site": site,
+        "by": str(cls.get("by") or ClassifyBy.NONE.value),
+        "term": term,
+    }
+    if not site:
         out["reason"] = "未匹配到已有站，保留新建站方案"
         return out
-    out["site"] = site
-    try:
-        # UPDATE 只动 planned 行；若该词不在待建台账（如从候选池点名分析）影响 0 行，
-        # 仍把判定结果返回给前端参考，不报错。
-        database.execute(Sql.RETARGET_PLANNED_SITE, [site, term])
-        out["changed"] = True
-    except Exception as exc:  # noqa: BLE001 - D1 写失败不打断 analyze
-        out["reason"] = f"目标站回写失败：{str(exc)[:120]}"
-        log.warning("待建行目标站回写失败 %s→%s：%s", term, site, str(exc)[:120])
+    database.execute(Sql.RETARGET_PLANNED_SITE, [site, term])
+    out["changed"] = True
     return out
 
 
 def todo_pool_size() -> int:
-    """待开发池大小（汇总/日志用）。读失败按 0，不阻塞建页。"""
-    try:
-        return sum(1 for r in kv_list(get_kv(), SAVED_KEY)
-                   if isinstance(r, dict) and r.get("status") == CurationStatus.TODO.value)
-    except Exception:  # noqa: BLE001 - KV 漂移时汇总口径失败不该打断主流程
-        return 0
+    rows = database.query(
+        "SELECT COUNT(*) AS count FROM radar_term_status WHERE status = 'todo'"
+    )
+    return int(rows[0]["count"]) if rows else 0
