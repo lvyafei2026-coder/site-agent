@@ -142,6 +142,7 @@ def pick_examples(rows: list[dict[str, Any]], limit: int = EXAMPLE_LIMIT) -> lis
     """从人工不做记录中挑少量可泛化判例。"""
     seen: set[str] = set()
     out: list[dict[str, str]] = []
+    rows = [row for row in (rows or []) if isinstance(row, dict)]
     for row in sorted(rows, key=lambda x: x.get("updatedAt") or x.get("at") or "", reverse=True):
         if row.get("source") != RejectSource.MANUAL.value:
             continue
