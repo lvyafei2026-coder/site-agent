@@ -151,15 +151,10 @@ def load_sites(path: Path = SITES_FILE) -> dict[str, SiteConfig]:
 # assets.directory 指向它）、页面能套 templates/site-page.html、有 Contents 写权限。
 SITES: dict[str, SiteConfig] = load_sites()
 
-# 共享 KV（与 radar / console 同一个命名空间 RADAR_KV）：agent 直读直写，不调它们的 App 接口。
-# 三个值来自 Render 环境变量，必须与 Cloudflare 侧 RADAR_KV 的 namespace id / 账户一致。
-# 这是「存储介质依赖」而非「服务接口依赖」：agent 经 Cloudflare KV REST API 操作同一个 KV，
-# 不经由 site-console 的 /api/hotwords 或 google-trend-radar 的 /api/serp、/api/trend。
+# Agent、Radar 与 Console 共用 radar-db；Agent 通过 Cloudflare D1 REST API 访问。
 CF_ACCOUNT_ID = env("CF_ACCOUNT_ID", "")
-KV_NAMESPACE_ID = env("KV_NAMESPACE_ID", "")
 CF_API_TOKEN = env("CF_API_TOKEN", "")
-# 提示词真源库 radar-db 的 D1 id（非 secret，与 Console 的 RADAR_DB 同一库）。
-# site-agent 经 CF REST API 读 prompts_config / prompt_defaults_config；可用 RADAR_DB_ID 覆盖。
+# 统一业务数据库 radar-db 的 D1 id（非 secret，Radar / Console / Agent 共用）。
 RADAR_DB_ID = env("RADAR_DB_ID", "3ee65aec-e671-41ce-9d09-249cf5a59a1a")
 CONTACT_EMAIL = env("CONTACT_EMAIL", f"hello@{FLEET_DOMAIN}")
 
