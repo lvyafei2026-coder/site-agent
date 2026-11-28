@@ -46,13 +46,14 @@ def _stub_extract(monkeypatch, extracted):
                         lambda text, intent, versions=None: dict(extracted))
 
 
-def _seed_todo(fake_kv, term, with_body=True, status="todo"):
-    """往 saved 表加一条词，正文放 ai:v3:<term>。"""
-    rows = [r for r in (fake_kv.get_json("saved", []) or [])]
-    rows.append({"term": term, "status": status})
-    fake_kv.put_json("saved", rows)
+def _seed_todo(fake_d1, term, with_body=True, status="todo"):
+    """在 D1 词库、人工状态与分析表中准备建页数据。"""
+    term_id = fake_d1.seed_term(term)
+    fake_d1.seed_status(term_id, status=status,
+                        is_favorite=1 if status in ("watching", "wip", "live", "parked") else 0)
     if with_body:
-        fake_kv.put_text("ai:v3:" + term.lower(), _BODY)
+        fake_d1.seed_analysis(term_id, text=_BODY, verdict="DO")
+    return term_id
 
 
 # ---- 图结构与机制同构 ----
@@ -76,10 +77,10 @@ def test_page_line_shares_one_mechanism():
     assert s["planned_site"] == "" and s["status_filter"] == "todo" and s["stage"] == "plan"
 
 
-def test_http_page_entry(fake, fake_kv, monkeypatch):
+def test_http_page_entry(fake, fake_d1, monkeypatch):
     """POST /page：dry-run 请求字段与 run_page_build 一一对应，返回终态汇总。"""
     _stub_extract(monkeypatch, _SITE_OK)
-    _seed_todo(fake_kv, "free invoice generator")
+    _seed_todo(fake_d1, "free invoice generator")
     client = TestClient(api)
     resp = client.post("/page", json={"term": "free invoice generator"})
     assert resp.status_code == 200
@@ -97,7 +98,7 @@ def test_http_page_entry(fake, fake_kv, monkeypatch):
 # ---- 解析（parse_page）----
 
 def test_parse_page_numbered_sections():
-    """ai:v3 正文按「数字) 标题」切节：节标题、段落、intro/description 都到位。"""
+    """D1 分析正文按「数字) 标题」切节：节标题、段落、intro/description 都到位。"""
     page = page_build_service.parse_page("free invoice generator", _BODY)
     assert page["slug"] == "free-invoice-generator"
     assert page["title"] == "Free Invoice Generator"
@@ -158,31 +159,31 @@ def test_classify_site_rule_matches_semantic_aliases(monkeypatch):
 
 # ---- 取词（pick_word）----
 
-def test_pick_word_explicit_and_auto(fake, fake_kv, monkeypatch):
+def test_pick_word_explicit_and_auto(fake, fake_d1, monkeypatch):
     """显式给词只查该词；自动取按 saved 表顺序找第一条带正文的 todo 词。"""
     _stub_extract(monkeypatch, _SITE_OK)
-    _seed_todo(fake_kv, "free invoice generator")
+    _seed_todo(fake_d1, "free invoice generator")
     assert page_build_service.pick_word("free invoice generator")["text"].startswith("Free")
 
-    _seed_todo(fake_kv, "cold brew ratio", with_body=False)
+    _seed_todo(fake_d1, "cold brew ratio", with_body=False)
     assert page_build_service.pick_word("cold brew ratio") is None   # 无正文不建页
     assert page_build_service.pick_word()["term"] == "free invoice generator"
 
-    fake_kv.put_text("ai:v3:live page speed", "x" * 40)
+    fake_d1.put_text("ai:v3:live page speed", "x" * 40)
     assert page_build_service.todo_pool_size() == 2
 
 
-def test_pick_word_skips_bodyless_todo(fake, fake_kv):
+def test_pick_word_skips_bodyless_todo(fake, fake_d1):
     """排在前面的 todo 词没正文 → 跳过它取下一条，绝不建无分析词。"""
-    _seed_todo(fake_kv, "no body word", with_body=False)
-    _seed_todo(fake_kv, "body ready word")
+    _seed_todo(fake_d1, "no body word", with_body=False)
+    _seed_todo(fake_d1, "body ready word")
     assert page_build_service.pick_word()["term"] == "body ready word"
 
 
-def test_pick_word_prefers_planned_rows(fake, fake_kv, monkeypatch):
+def test_pick_word_prefers_planned_rows(fake, fake_d1, monkeypatch):
     """排产入选的 planned 行优先：连目标站点一起带出来，不被池顺序和重判抢走。"""
-    _seed_todo(fake_kv, "pool order word")
-    fake_kv.put_text("ai:v3:planned word", "Planned body paragraph. " * 6)
+    _seed_todo(fake_d1, "pool order word")
+    fake_d1.put_text("ai:v3:planned word", "Planned body paragraph. " * 6)
     monkeypatch.setattr(page_build_service, "_planned_rows", lambda limit=5: [
         {"site": "invoices", "keyword": "planned word", "slug": "planned-word"},
     ])
@@ -191,9 +192,9 @@ def test_pick_word_prefers_planned_rows(fake, fake_kv, monkeypatch):
     assert picked["site"] == "invoices"
 
 
-def test_pick_word_falls_back_when_plan_has_no_body(fake, fake_kv, monkeypatch):
+def test_pick_word_falls_back_when_plan_has_no_body(fake, fake_d1, monkeypatch):
     """计划行对应的词没正文（不该发生）→ 跳过它回退池顺序，不建空页面。"""
-    _seed_todo(fake_kv, "body ready word")
+    _seed_todo(fake_d1, "body ready word")
     monkeypatch.setattr(page_build_service, "_planned_rows", lambda limit=5: [
         {"site": "invoices", "keyword": "planned without body", "slug": "planned-without-body"},
     ])
@@ -202,10 +203,10 @@ def test_pick_word_falls_back_when_plan_has_no_body(fake, fake_kv, monkeypatch):
 
 # ---- 子图端到端 ----
 
-def test_run_page_build_dry_run_touches_nothing(fake, fake_kv, monkeypatch):
+def test_run_page_build_dry_run_touches_nothing(fake, fake_d1, monkeypatch):
     """confirm=False：plan 出结构与站点就收尾，render/push/verify 一个都不跑。"""
     _stub_extract(monkeypatch, _SITE_OK)
-    _seed_todo(fake_kv, "free invoice generator")
+    _seed_todo(fake_d1, "free invoice generator")
     out = graph.run_page_build("", confirm=False)
     assert out["ok"] is True and out["dryRun"] is True and out["stage"] == "write"
     assert out["site"] == "invoices" and out["classifyBy"] == "llm"
@@ -214,10 +215,10 @@ def test_run_page_build_dry_run_touches_nothing(fake, fake_kv, monkeypatch):
     assert "note" in out and "dry-run" in out["note"]
 
 
-def test_run_page_build_confirm_full_chain(fake, fake_kv, monkeypatch):
+def test_run_page_build_confirm_full_chain(fake, fake_d1, monkeypatch):
     """confirm=True：render → push → verify 全链跑完，台账由 push 工具层负责。"""
     _stub_extract(monkeypatch, _SITE_OK)
-    _seed_todo(fake_kv, "free invoice generator")
+    _seed_todo(fake_d1, "free invoice generator")
     out = graph.run_page_build("free invoice generator", confirm=True)
     assert out["ok"] is True and out["stage"] == "verify"
     assert out["sha"] == "deadbeef" and out["liveOk"] is True
@@ -225,16 +226,16 @@ def test_run_page_build_confirm_full_chain(fake, fake_kv, monkeypatch):
     assert fake.counts["render_files"] == 1 and fake.counts["git_push"] == 1
 
 
-def test_run_page_build_stops_when_nothing_to_classify(fake, fake_kv, monkeypatch):
+def test_run_page_build_stops_when_nothing_to_classify(fake, fake_d1, monkeypatch):
     """归不进任何已有站 → plan 短路，写工具一次都不碰，错误说明去向。"""
     _stub_extract(monkeypatch, {"target_site": ""})
-    _seed_todo(fake_kv, "totally unrelated words here")
+    _seed_todo(fake_d1, "totally unrelated words here")
     out = graph.run_page_build("", confirm=True)
     assert out["stage"] == "plan" and "建新站" in out["error"]
     assert fake.counts["render_files"] == 0 and fake.counts["git_push"] == 0
 
 
-def test_run_page_build_empty_pool(fake, fake_kv, monkeypatch):
+def test_run_page_build_empty_pool(fake, fake_d1, monkeypatch):
     """池里没有可建词：正常收尾、带提示，不算异常。"""
     _stub_extract(monkeypatch, _SITE_OK)
     out = graph.run_page_build("", confirm=True)
@@ -242,19 +243,19 @@ def test_run_page_build_empty_pool(fake, fake_kv, monkeypatch):
     assert "待开发池" in out["error"] and out["todoPool"] == 0
 
 
-def test_run_page_build_uses_planned_site_over_llm(fake, fake_kv, monkeypatch):
+def test_run_page_build_uses_planned_site_over_llm(fake, fake_d1, monkeypatch):
     """从台账点单时带上的排产站优先：LLM 想判 invoices，也不许改投。"""
     _stub_extract(monkeypatch, _SITE_OK)          # LLM 会说 invoices
-    _seed_todo(fake_kv, "free invoice generator")
+    _seed_todo(fake_d1, "free invoice generator")
     out = graph.run_page_build("free invoice generator", confirm=False,
                                planned_site="clocksgoback")
     assert out["site"] == "clocksgoback" and out["classifyBy"] == "plan"
 
 
-def test_run_page_build_ignores_unknown_planned_site(fake, fake_kv, monkeypatch):
+def test_run_page_build_ignores_unknown_planned_site(fake, fake_d1, monkeypatch):
     """台账里留着已删站的旧行时，不能拿去渲染：当没给，回退现场归类。"""
     _stub_extract(monkeypatch, _SITE_OK)
-    _seed_todo(fake_kv, "free invoice generator")
+    _seed_todo(fake_d1, "free invoice generator")
     out = graph.run_page_build("free invoice generator", confirm=False,
                                planned_site="gone-site")
     assert out["site"] == "invoices" and out["classifyBy"] == "llm"
@@ -328,10 +329,10 @@ def _llm_page():
     }
 
 
-def test_page_write_replaces_draft_with_written_copy(fake, fake_kv, monkeypatch):
+def test_page_write_replaces_draft_with_written_copy(fake, fake_d1, monkeypatch):
     """LLM 给正文时：只覆盖文案字段，slug 仍由词决定，汇总标 contentBy=llm。"""
     _stub_extract(monkeypatch, _SITE_OK)
-    _seed_todo(fake_kv, "free invoice generator")
+    _seed_todo(fake_d1, "free invoice generator")
     monkeypatch.setattr(content_mod, "complete_json",
                         lambda *_args, **_kwargs: (_llm_page(), False, False))
     out = graph.run_page_build("free invoice generator", confirm=False)
@@ -343,10 +344,10 @@ def test_page_write_replaces_draft_with_written_copy(fake, fake_kv, monkeypatch)
     assert "正文已按访客口吻写好" in out["note"]
 
 
-def test_page_write_blocks_analysis_prose_before_render(fake, fake_kv, monkeypatch):
+def test_page_write_blocks_analysis_prose_before_render(fake, fake_d1, monkeypatch):
     """写作没成功、解析稿仍是内部决策稿 → 在渲染前拦下，一个写工具都不碰。"""
     _stub_extract(monkeypatch, _SITE_OK)
-    fake_kv.put_text("ai:v3:black friday today", (
+    fake_d1.put_text("ai:v3:black friday today", (
         "1) 词义与意图：判断今天是不是黑五。\n\n"
         "2) 建议站型：倒计时 + 日期对照页，接住日期类长尾。"))
     monkeypatch.setattr(content_mod, "complete_json",
@@ -359,11 +360,11 @@ def test_page_write_blocks_analysis_prose_before_render(fake, fake_kv, monkeypat
     assert fake.counts["render_files"] == 0 and fake.counts["git_push"] == 0
 
 
-def test_page_write_reports_prompt_load_failure(fake, fake_kv, monkeypatch):
+def test_page_write_reports_prompt_load_failure(fake, fake_d1, monkeypatch):
     """page_content 提示词读不到时，失败信息直接点名，不用去日志里猜是哪一步。"""
     _stub_extract(monkeypatch, _SITE_OK)
-    _seed_todo(fake_kv, "free invoice generator", with_body=False)
-    fake_kv.put_text("ai:v3:free invoice generator", (
+    _seed_todo(fake_d1, "free invoice generator", with_body=False)
+    fake_d1.put_text("ai:v3:free invoice generator", (
         "1) 词义与意图：给自由职业者开票。\n\n"
         "A paragraph explaining what the tool does, long enough to pass the\n"
         "paragraph length filter without any trouble at all.\n\n"
@@ -383,10 +384,10 @@ def test_page_write_reports_prompt_load_failure(fake, fake_kv, monkeypatch):
     assert fake.counts["render_files"] == 0
 
 
-def test_page_write_blocks_written_copy_that_copied_analysis_words(fake, fake_kv, monkeypatch):
+def test_page_write_blocks_written_copy_that_copied_analysis_words(fake, fake_d1, monkeypatch):
     """LLM 写出来了、但把分析稿小标题抄进正文：同样拦下，消息指明是改写稿。"""
     _stub_extract(monkeypatch, _SITE_OK)
-    _seed_todo(fake_kv, "free invoice generator")
+    _seed_todo(fake_d1, "free invoice generator")
     page = _llm_page()
     page["sections"][0]["heading"] = "词义与意图"
     monkeypatch.setattr(content_mod, "complete_json",
@@ -418,7 +419,7 @@ def test_normalize_page_drops_broken_sections_and_envelope():
     assert content_mod.normalize_page({"sections": []}, "term") is None
 
 
-def test_page_push_auto_registers_proxy_sitemap(fake, fake_kv, monkeypatch):
+def test_page_push_auto_registers_proxy_sitemap(fake, fake_d1, monkeypatch):
     """推送成功后自动把规范 URL 登记进代理 sitemap；失败只记录、不影响上线。"""
     from src.app.nodes import page_nodes
     from src.app.services import sitemap_service
