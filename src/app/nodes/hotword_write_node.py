@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""结论回写节点：把 AI 正文 / 标签 / 跟进状态写回共享 KV。
+"""结论回写节点：把 AI 正文 / 标签 / 跟进状态写入统一 D1。
 
 「正文先写、正文失败就收手不写状态」这条不变量在这一步路由到的工具里
 （tool_service.STEP_TOOLS → write_hotword_result），本节点只负责把它挂到本轮的
