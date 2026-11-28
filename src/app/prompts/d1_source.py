@@ -5,7 +5,7 @@
 """提示词的 D1 数据源（radar-db 库）——运行时唯一真源。
 
 ★2026-11-17（用户定）：提示词从 site-agent 本地 versions/*.txt 全部迁到 radar-db D1
-（prompts / prompt_defaults 两表，与 console /rules 的规则库同一账号同一库），本地
+（prompts_config / prompt_defaults_config 两表，与 console /rules 的Radar 统一数据库），本地
 txt 文件已删除。运行时只读 D1，/rules/prompts 页面改完最多 TTL_SECONDS 秒生效。
 
 设计要点：
@@ -16,7 +16,7 @@ txt 文件已删除。运行时只读 D1，/rules/prompts 页面改完最多 TTL
   - 未配 CF_ACCOUNT_ID / CF_API_TOKEN 时（本地开发）完全不碰网络，注册表按
     无快照处理并给出明确错误。
 
-数据库 id：默认雷达规则库 radar-db（dca72fb2…，非 secret，已在 wrangler.toml 公开）；
+数据库 id：默认 Radar D1 数据库 radar-db（3ee65aec…，非 secret，已在 wrangler.toml 公开）；
 可用 RADAR_DB_ID 覆盖。CF_API_TOKEN 需要有该库的 D1 读权限。
 """
 
