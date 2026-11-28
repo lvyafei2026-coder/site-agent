@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用。详见 LICENSE.
 
-"""提示词的 D1 数据源（radar-rules 库）——运行时唯一真源。
+"""提示词的 D1 数据源（radar-db 库）——运行时唯一真源。
 
-★2026-11-17（用户定）：提示词从 site-agent 本地 versions/*.txt 全部迁到 radar-rules D1
+★2026-11-17（用户定）：提示词从 site-agent 本地 versions/*.txt 全部迁到 radar-db D1
 （prompts / prompt_defaults 两表，与 console /rules 的规则库同一账号同一库），本地
 txt 文件已删除。运行时只读 D1，/rules/prompts 页面改完最多 TTL_SECONDS 秒生效。
 
@@ -16,8 +16,8 @@ txt 文件已删除。运行时只读 D1，/rules/prompts 页面改完最多 TTL
   - 未配 CF_ACCOUNT_ID / CF_API_TOKEN 时（本地开发）完全不碰网络，注册表按
     无快照处理并给出明确错误。
 
-数据库 id：默认雷达规则库 radar-rules（dca72fb2…，非 secret，已在 wrangler.toml 公开）；
-可用 PROMPTS_DB_ID 覆盖。CF_API_TOKEN 需要有该库的 D1 读权限。
+数据库 id：默认雷达规则库 radar-db（dca72fb2…，非 secret，已在 wrangler.toml 公开）；
+可用 RADAR_DB_ID 覆盖。CF_API_TOKEN 需要有该库的 D1 读权限。
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from typing import Any
 
 import requests
 
-from src.app.config import PROMPTS_DB_ID, env
+from src.app.config import RADAR_DB_ID, env
 from src.app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -41,8 +41,8 @@ def _http_fetch(account_id: str, api_token: str, database_id: str) -> dict[str, 
     headers = {"Authorization": f"Bearer {api_token}", "Content-Type": "application/json"}
     out: dict[str, list[dict[str, Any]]] = {}
     for key, sql in (
-        ("prompts", "SELECT task, version, content FROM prompts"),
-        ("defaults", "SELECT task, version FROM prompt_defaults"),
+        ("prompts", "SELECT task, version, content FROM prompts_config"),
+        ("defaults", "SELECT task, version FROM prompt_defaults_config"),
     ):
         resp = requests.post(url, headers=headers, json={"sql": sql, "params": []}, timeout=10)
         resp.raise_for_status()
@@ -78,7 +78,7 @@ class D1PromptStore:
             return cache[1], cache[2]
 
         try:
-            data = self._fetcher(env("CF_ACCOUNT_ID"), env("CF_API_TOKEN"), PROMPTS_DB_ID)
+            data = self._fetcher(env("CF_ACCOUNT_ID"), env("CF_API_TOKEN"), RADAR_DB_ID)
             prompts = {
                 (str(r["task"]), str(r["version"])): str(r["content"])
                 for r in data.get("prompts", [])
