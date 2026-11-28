@@ -80,7 +80,7 @@ class NextCandidateTool(RuntimeTool):
 
     class Input(BaseModel):
         seen: list[str] = Field(default_factory=list,
-                                description="本轮已取过的词 key，防 KV 最终一致导致重复取词")
+                                description="本轮已取过的词 key，避免同一轮重复分析")
 
 
 class ResolveTermTool(RuntimeTool):
@@ -126,7 +126,7 @@ class FetchTrendTool(RuntimeTool):
 
 
 class WriteHotwordResultTool(RuntimeTool):
-    """把一个词的分析结论写回共享 KV：正文先写，成功后才写信号标签与跟进状态（做→saved/todo，不做→rejected，观望只留正文）。幂等 upsert，可重复执行。"""
+    """把一个词的分析正文、证据和结论写入 radar_term_analyses，并更新 radar_term_status。"""
 
     tool_name = "write_hotword_result"
     method = "write_hotword_result"
