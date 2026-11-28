@@ -54,8 +54,8 @@ def fetch_one(state: HotwordLoopState) -> dict[str, Any]:
     """问工具要下一个词；取到就放进 current，取不到就标记 has_more=False。
 
     每轮都是一次真实的工具调用——没有「首次加载整个候选池、之后游标推进」。
-    KV 最终一致可能让刚取的词仍留在候选池里，故传 seen 排除本轮已取过的 key。
-    load_error 非空 = 入口已判定本轮跑不起来（步骤名单非法），不再碰 KV，直接交给收尾。
+    候选状态更新后仍需在本轮排除已取过的 key，故传 seen。
+    load_error 非空 = 入口已判定本轮跑不起来（步骤名单非法），直接交给收尾。
     """
     if state.get("load_error"):
         return {}
@@ -67,7 +67,7 @@ def fetch_one(state: HotwordLoopState) -> dict[str, Any]:
     seen: set[str] = set(state.get("seen") or set())
     res = tool_service.execute_for_step(HotwordStep.FETCH.value, seen=sorted(seen))
     if not res["ok"]:
-        # KV 不可达 → 整轮失败，不写任何状态
+        # D1 不可读 → 整轮失败，不写任何状态
         log.warning("候选查询失败：%s", res["error"])
         return {**updates, "current": None, "has_more": False,
                 "load_error": "候选查询失败：" + res["error"][:200]}
