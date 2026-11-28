@@ -32,10 +32,9 @@ from langsmith.run_trees import RunTree
 
 from src.app.config import settings
 from src.app.enums import TraceName
-from src.app.tools.adapters.cloudflare import kv as kvk
 from src.app.tools.adapters.hotwords import fetch
 from src.app.tools.adapters.hotwords import scrape_serp, scrape_trend
-from src.app.tools.adapters.hotwords import wordlib
+from src.app.tools.adapters.hotwords import wordlib, writeback
 from src.app.utils import llm_io
 from src.app.utils.source_errors import SourceUnavailable
 from src.app.graph import hotword_graph
@@ -61,10 +60,12 @@ def traced_runs(monkeypatch):
     utils.get_env_var.cache_clear()
 
 
-def _seed(fake_kv, monkeypatch, count=6, llm=None):
+def _seed(fake_d1, monkeypatch, count=6, llm=None):
     """离线铺候选词：SERP / Trends / LLM 全部替身，不碰任何外部服务。"""
     monkeypatch.setattr(fetch, "SERP_GAP_SEC", 0)
-    fake_kv.put_json("candidates", [{"term": f"term {i}"} for i in range(count)])
+    for i in range(count):
+        term_id = fake_d1.seed_term(f"term {i}")
+        fake_d1.seed_candidate(term_id, score=100 - i)
     monkeypatch.setattr(scrape_serp, "fetch_serp",
                         lambda term, session=None, limit=10: {
                             "engine": "duckduckgo", "items": [], "attempts": []})
@@ -107,7 +108,7 @@ def _word(run: RunTree) -> dict:
     return outputs.get("word") or {}
 
 
-def test_batch_tree_is_nested_under_graph_root(fake_kv, monkeypatch, traced_runs):
+def test_batch_tree_is_nested_under_graph_root(fake_d1, monkeypatch, traced_runs):
     """一条根展开看完 6 个词：run 挂外层根、每词一条 collect_word 在 run 下、LLM 在对应词的 llm_analyze 下。"""
     seen_in_llm: list[tuple[str, str]] = []
 
@@ -172,7 +173,7 @@ def test_word_failure_is_recorded_without_breaking_others(fake_kv, monkeypatch,
     assert run.outputs["analyzed"] == 4
 
 
-def test_batch_nests_under_real_langgraph_node(fake_kv, monkeypatch, traced_runs):
+def test_batch_nests_under_real_langgraph_node(fake_d1, monkeypatch, traced_runs):
     """真实 LangGraph 节点里调用（不是手工造的根）：run span 要挂在节点 run 下。"""
     from typing import TypedDict
 
@@ -215,19 +216,16 @@ def test_batch_nests_under_real_langgraph_node(fake_kv, monkeypatch, traced_runs
     assert result["out"]["analyzed"] == 3
 
 
-def test_early_return_still_has_batch_span_and_link(monkeypatch, traced_runs):
-    """KV 读挂了提前返回：run span 照样记录 error，返回照样带根 run 回链。"""
-    class BoomKV:
-        def get_json(self, *a, **k):
-            raise RuntimeError("unreachable")
-
-    monkeypatch.setattr(wordlib, "get_kv", lambda: BoomKV())
+def test_early_return_still_has_batch_span_and_link(fake_d1, monkeypatch, traced_runs):
+    """D1 读失败时 run span 记录 error，返回带根 run 回链。"""
+    monkeypatch.setattr(wordlib.database, "query",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("D1 unavailable")))
     with ls_trace("site-agent:analyze_hotwords") as root:
         out = hotword_graph.run_hotwords(limit=5)
 
     run = next(r for r in traced_runs if r.name == TraceName.HOTWORD_RUN)
     assert str(run.parent_run_id) == str(root.id)
-    assert "候选查询失败" in out["error"]
+    assert "D1 unavailable" in out["error"]
     assert out["traceRun"]["traceRunId"] == str(run.id)
     assert run.outputs["error"].startswith("候选查询失败")
 
@@ -292,8 +290,7 @@ def test_run_tool_spans_capture_serp_trend_writes(fake_kv, monkeypatch, traced_r
     assert body["fromCache"] is False
     assert "itemCount" in body and "competition" in body
     serp_keys = {w["key"] for w in body["writes"]}
-    assert any(k.startswith(kvk.SERP_PREFIX) for k in serp_keys)
-    assert kvk.COMPETITION_KEY in serp_keys
+    assert serp_keys == {"radar_term_analyses.serp_json"}
     assert all(w["ok"] for w in body["writes"])
     # 适配器 note 的诊断属于这次工具调用，不漂到外层步骤节点 run
     assert serp.outputs["engine"] == "duckduckgo"
@@ -310,8 +307,7 @@ def test_run_tool_spans_capture_serp_trend_writes(fake_kv, monkeypatch, traced_r
     wbody = kvwrite.outputs["result"]
     assert wbody["textChars"] > 0 and wbody["textPreview"]
     assert wbody["status"] == "rejected"
-    assert kvk.AI_CACHE_PREFIX + kvk.term_key("term 0") in {
-        w["key"] for w in wbody["writes"]}
+    assert {w["table"] for w in wbody["writes"]} == {"radar_term_analyses", "radar_term_status"}
     assert wbody["writeErrors"] == []
 
     llms = [r for r in traced_runs if r.name == "ChatOpenAI"]
@@ -360,23 +356,25 @@ def test_source_down_marks_tool_spans_red_and_batch_continues(fake_kv, monkeypat
     assert out["analyzed"] == 8 and out["failed"] == 0
 
 
-def test_kv_write_failure_is_visible_on_tool_span(fake_kv, monkeypatch, traced_runs):
-    """正文写失败：tool:write_hotword_result 上直接看到失败的 key 与「已收手不写状态」。"""
-    _seed(fake_kv, monkeypatch, count=1)
-    failed_key = kvk.AI_CACHE_PREFIX + "term 0"
-    fake_kv.fail_keys.add(failed_key)
+def test_d1_write_failure_is_visible_on_tool_span(fake_d1, monkeypatch, traced_runs):
+    """D1 写失败直接标红工具 span，不能伪装成分析成功。"""
+    _seed(fake_d1, monkeypatch, count=1)
 
+    class BrokenWrite:
+        query = staticmethod(fake_d1.query)
+
+        @staticmethod
+        def execute(*args, **kwargs):
+            raise RuntimeError("D1 write failed")
+
+    monkeypatch.setattr(writeback, "database", BrokenWrite())
     with ls_trace("site-agent:analyze_hotwords"):
         out = hotword_graph.run_hotwords(limit=1)
 
     span = next(r for r in traced_runs if r.name == "tool:write_hotword_result")
-    body = span.outputs["result"]
-    assert body["stoppedAfterTextFailure"] is True
-    assert failed_key in body["writeErrors"]
-    assert any(w["key"] == failed_key and w["ok"] is False for w in body["writes"])
-    assert out["failed"] == 1 and out["items"][0]["writeErrors"] == [failed_key]
-    assert fake_kv.get_json("saved", []) == [] and fake_kv.get_json("rejected", []) == []
-
+    assert "D1 write failed" in str(span.error)
+    assert out["failed"] == 1
+    assert fake_d1.query("SELECT COUNT(*) AS count FROM radar_term_analyses")[0]["count"] == 0
 
 def test_runtime_tools_emit_tool_spans_with_io(fake, traced_runs):
     """30 个 RuntimeTool 统一打点：成功带返回体，Input 校验失败要让 span 标红。"""
