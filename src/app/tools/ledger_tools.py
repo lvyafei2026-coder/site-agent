@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # 非商业授权：可学习、研究、修改、非商业使用；禁止商业使用。详见 LICENSE.
 
-"""ledger 域：Agent 台账表 / KV 状态标记 / 事件队列（定义 + 实现同文件）。
+"""ledger 域：Agent 台账表 / D1 运行状态 / 事件队列（定义 + 实现同文件）。
 
 本域全是**幂等记账**（read / ledger 两种 kind）；对外发信不在这里，见
 tools/notification_tools.py。
@@ -17,14 +17,14 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from src.app.enums import EventKind, EventStatus, LedgerStrategy, ToolKind
-from src.app.tools.adapters.cloudflare import database, keyvalue
+from src.app.tools.adapters.cloudflare import database
 from src.app.tools.adapters.cloudflare.sql import LEDGER_TABLES, Sql, SqlBuilder
 from src.app.tools.base import RuntimeTool
 from src.app.utils.hashing import stable_key
 
 
 class LedgerOps:
-    """ledger 域的实现：白名单台账表 + agent: 命名空间 KV。"""
+    """ledger 域的实现：白名单台账表 + agent_runtime_state。"""
 
     def reflections(self, limit=8):
         return database.query(Sql.REFLECTIONS, [limit])
@@ -35,7 +35,16 @@ class LedgerOps:
         return database.query(Sql.PENDING_EVENTS, [limit])
 
     def flag(self, key, default=None):
-        return keyvalue.get(key, default)
+        rows = database.query(
+            "SELECT value_json, expires_at FROM agent_runtime_state WHERE key = ? LIMIT 1",
+            [f"agent:{key}"],
+        )
+        if not rows:
+            return default
+        row = rows[0]
+        if row.get("expires_at") and int(row["expires_at"]) <= int(time.time()):
+            return default
+        return json.loads(row["value_json"])
 
     def ledger_upsert(self, table, row):
         spec = LEDGER_TABLES.get(table)
@@ -66,7 +75,17 @@ class LedgerOps:
         return {"table": table, "written": len(cols), "key": key}
 
     def flag_set(self, key, value, ttl_sec=None):
-        keyvalue.put(key, value, ttl_sec=ttl_sec)
+        now = int(time.time())
+        expires_at = now + int(ttl_sec) if ttl_sec else None
+        database.execute(
+            """INSERT INTO agent_runtime_state (key, value_json, expires_at, updated_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(key) DO UPDATE SET
+                 value_json = excluded.value_json,
+                 expires_at = excluded.expires_at,
+                 updated_at = excluded.updated_at""",
+            [f"agent:{key}", json.dumps(value, ensure_ascii=False), expires_at, now],
+        )
         return {"key": key, "set": True}
 
     def event_emit(self, kind, payload, key):
