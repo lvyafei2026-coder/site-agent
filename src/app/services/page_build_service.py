@@ -8,7 +8,7 @@
 工具步骤（render / push / verify）经 tool_service 分发到 registry，这里的三个函数
 不进 registry——它们是「LLM 与判据」这类横切能力，不是工具。
 
-★解析是「尽力而为 + 确定性兜底」：ai:v3 正文的 8 小节只认「数字) 标题」的形状、
+★解析是「尽力而为 + 确定性兜底」：D1 分析正文的 8 小节只认「数字) 标题」的形状、
   不写死节名（节名可变，verdict_of 同一原则）；一节都认不出来就整篇当单节，
   解析永不抛错——建页失败必须落在明确的一步（render / push / verify），不能坏在解析。
 """
@@ -51,7 +51,7 @@ def _paragraphs(block: str) -> list[str]:
 
 
 def parse_page(term: str, text: str) -> dict[str, Any]:
-    """ai:v3 方案正文 → 页面结构。任何输入都返回可用 dict，不抛错。
+    """D1 分析正文 → 页面结构。任何输入都返回可用 dict，不抛错。
 
     切分按「数字) 节标题」的形状；认不出节就整篇单节。description / intro 取正文
     开头，FAQ 正文里没有结构化来源，恒为空（模板对空 FAQ 的渲染已验证）。
