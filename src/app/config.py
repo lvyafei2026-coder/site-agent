@@ -54,7 +54,7 @@ class Settings:
 
     def __post_init__(self) -> None:
         if self.default_prompt_versions is None:
-            # ★D1 读不到默认版本时的兜底版本号（不是提示词正文）。唯一真源在 radar-rules
+            # ★D1 读不到默认版本时的兜底版本号（不是提示词正文）。唯一真源在 radar-db
             #   库的 prompt_defaults 表，由 /rules/prompts 页面维护；这里只作最后一次兜底。
             # ★这里的版本号只在 D1 的 prompt_defaults 取不到时兜底；要跟着「结构化输出」
             #   那一版走——word_plan_page 的 v1 要求 markdown 正文，拿它兜底会让排产解析
@@ -158,9 +158,9 @@ SITES: dict[str, SiteConfig] = load_sites()
 CF_ACCOUNT_ID = env("CF_ACCOUNT_ID", "")
 KV_NAMESPACE_ID = env("KV_NAMESPACE_ID", "")
 CF_API_TOKEN = env("CF_API_TOKEN", "")
-# 提示词真源库 radar-rules 的 D1 id（非 secret，与 console 的 RULES_DB 同一库）。
-# site-agent 经 CF REST API 读 prompts / prompt_defaults；可用 PROMPTS_DB_ID 覆盖。
-PROMPTS_DB_ID = env("PROMPTS_DB_ID", "dca72fb2-9090-429c-9698-d2086e6b49c8")
+# 提示词真源库 radar-db 的 D1 id（非 secret，与 console 的 RULES_DB 同一库）。
+# site-agent 经 CF REST API 读 prompts / prompt_defaults；可用 RADAR_DB_ID 覆盖。
+RADAR_DB_ID = env("RADAR_DB_ID", "3ee65aec-e671-41ce-9d09-249cf5a59a1a")
 CONTACT_EMAIL = env("CONTACT_EMAIL", f"hello@{FLEET_DOMAIN}")
 
 # 建站仓库的本地工作副本（git clone 落盘位置）
