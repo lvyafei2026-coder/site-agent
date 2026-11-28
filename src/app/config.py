@@ -158,8 +158,8 @@ SITES: dict[str, SiteConfig] = load_sites()
 CF_ACCOUNT_ID = env("CF_ACCOUNT_ID", "")
 KV_NAMESPACE_ID = env("KV_NAMESPACE_ID", "")
 CF_API_TOKEN = env("CF_API_TOKEN", "")
-# 提示词真源库 radar-db 的 D1 id（非 secret，与 console 的 RULES_DB 同一库）。
-# site-agent 经 CF REST API 读 prompts / prompt_defaults；可用 RADAR_DB_ID 覆盖。
+# 提示词真源库 radar-db 的 D1 id（非 secret，与 Console 的 RADAR_DB 同一库）。
+# site-agent 经 CF REST API 读 prompts_config / prompt_defaults_config；可用 RADAR_DB_ID 覆盖。
 RADAR_DB_ID = env("RADAR_DB_ID", "3ee65aec-e671-41ce-9d09-249cf5a59a1a")
 CONTACT_EMAIL = env("CONTACT_EMAIL", f"hello@{FLEET_DOMAIN}")
 
