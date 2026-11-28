@@ -217,22 +217,18 @@ def test_intent_from_analysis_empty_when_no_section():
     assert intent_from_analysis(None) == ""
 
 
-def test_term_intent_failopen_without_kv(monkeypatch):
-    """KV 未配置 / 读取异常时留空，不抛错、不阻塞排产报告。"""
-    class Off:
-        configured = False
-        def get_text(self, key):
-            raise AssertionError("未配置时不应发起读取")
-    monkeypatch.setattr(planning_mod, "get_kv", lambda: Off())
+def test_term_intent_empty_without_analysis(fake_d1):
+    term_id = fake_d1.seed_term("medicare")
     assert term_intent("medicare") == ""
 
-    class Broken:
-        configured = True
-        def get_text(self, key):
-            raise RuntimeError("KV down")
-    monkeypatch.setattr(planning_mod, "get_kv", lambda: Broken())
-    assert term_intent("medicare") == ""
 
+def test_term_intent_reads_analysis_from_d1(fake_d1):
+    term_id = fake_d1.seed_term("medicare")
+    fake_d1.seed_analysis(
+        term_id,
+        text="1) 词义与意图\\nMedicare 是美国医疗保险资格查询。",
+    )
+    assert term_intent(" Medicare ") == "Medicare 是美国医疗保险资格查询。"
 
 def test_term_intent_reads_analysis_from_kv(monkeypatch):
     """按 term_key 拼 key 读 ai:v3 分析稿并抽词义节。"""
