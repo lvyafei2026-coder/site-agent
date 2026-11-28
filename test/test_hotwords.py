@@ -203,16 +203,15 @@ def test_select_pending_excludes_completed_and_curated_terms(fake_d1):
     todo = _seed_candidate(fake_d1, "todo calculator", score=80)
     tagged = _seed_candidate(fake_d1, "tagged calculator", score=70)
     rejected = _seed_candidate(fake_d1, "rejected calculator", score=60)
+    pending_term = _seed_candidate(fake_d1, "pending calculator", score=50)
     fake_d1.seed_analysis(done, text="already analysed")
     fake_d1.seed_status(todo, status="todo")
     fake_d1.seed_status(tagged, tag="tool")
     fake_d1.seed_status(rejected, rejected_at="2026-11-28T00:00:00Z",
                         rejected_reason="not a tool query", rejected_source="manual")
     pending = wordlib.select_pending(set())
-    assert pending["term"] == "todo calculator" or pending["term"] == "tagged calculator"
-    assert wordlib.select_pending({pending["key"]})["term"] in {
-        "todo calculator", "tagged calculator", "rejected calculator"
-    }
+    assert pending["term"] == "pending calculator"
+    assert wordlib.select_pending({pending["key"]}) is None
 
 
 def test_select_pending_returns_one_and_respects_seen(fake_d1):
